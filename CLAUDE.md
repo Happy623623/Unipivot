@@ -6,17 +6,18 @@
 
 - `web/` Next.js 16 + Tailwind 4 화면. 규칙은 `web/CLAUDE.md`
 - `api/` FastAPI(Python 3.12, uv) API와 에이전트. 규칙은 `api/CLAUDE.md`
-- `supabase/migrations/` DB 마이그레이션. `docs/ERD_v0.8.md` 7장의 v0.7 DDL → v0.8 마이그레이션 순서
+- `supabase/migrations/` DB 마이그레이션. 스키마 기준은 이 폴더의 SQL이고, 적용 순서는 v07 → v08 → v09 → seed다(`docs/ERD_v0.9.md` 7장)
 - `docs/` 기준 문서
 
 ## 기준 문서 (충돌하면 위가 이긴다)
 
-1. API 계약: `docs/API_명세_v0.3.md`
-2. DB: `docs/ERD_v0.8.md`
-3. 기능·우선순위: `docs/PRD_v0.8.md` (기능 ID F-xx)
-4. 구현 기록: `docs/Nextjs_이식_가이드.md`, `docs/온보딩_구현.md`, `docs/API_뼈대_구현.md`
+1. API 계약: `docs/API_명세_v0.4.md`
+2. DB: `docs/ERD_v0.9.md` (스키마 본문은 `supabase/migrations/`)
+3. 기능·우선순위: `docs/PRD_v0.9.md` (기능 ID F-xx)
+4. 판정 규칙: `docs/판정엔진_규칙.md`
+5. 구현 기록: `docs/Nextjs_이식_가이드.md`, `docs/온보딩_구현.md`, `docs/API_뼈대_구현.md`, `docs/판정엔진_구현.md`
 
-v0.7·v0.2 원본과 변경분 문서는 `docs/archive/`에 있다. 이력 확인용이고 기준이 아니다.
+지난 버전 합본과 변경분 문서는 `docs/archive/`에 있다. 이력 확인용이고 기준이 아니다.
 
 문서에 없는 엔드포인트·필드·컬럼을 만들지 않는다. 꼭 필요하면 먼저 기준 문서를 고치고 같은 PR에서 코드와 함께 올린다.
 
@@ -39,7 +40,7 @@ v0.7·v0.2 원본과 변경분 문서는 `docs/archive/`에 있다. 이력 확�
 
 - `.env`·`.env.local`은 읽거나 커밋하지 않는다. 예시는 `.env.example`에만 적는다.
 - Google·LMS 토큰은 암호화해 저장하고, 응답·로그·`tool_calls.input`에 남기지 않는다.
-- 자격 판정은 코드로 한다. LLM은 공고 원문에서 요건을 구조화하는 데까지만 쓴다.
+- 자격 판정은 코드로 한다. LLM은 공고 원문에서 요건을 구조화하는 데까지만 쓴다. 판정 규칙은 `docs/판정엔진_규칙.md`를 따르고, 프로필 값은 LLM 프롬프트와 `tool_calls.input`에 넣지 않는다.
 - LLM과 외부 도구 호출은 모두 `api/app/agent_log.py`의 실행 로깅을 거친다. AOP 지표가 여기서 나온다.
 - 시간은 DB에 UTC로 저장하고 화면에는 KST로 보여준다.
-- 탈퇴하면 사용자 데이터를 지운다. 공유 포스터 공고의 업로더는 가려서(김\*지) 보여준다.
+- 탈퇴하면 사용자 데이터를 지운다. 포스터 공고는 "내가 올린 포스터"로 표시하고 업로더 이름은 보여주지 않는다.

@@ -1,5 +1,7 @@
 # api — FastAPI
 
+기준 문서는 `docs/API_명세_v0.4.md`(계약), `docs/ERD_v0.9.md`(DB), `docs/PRD_v0.9.md`(기능·우선순위), `docs/판정엔진_규칙.md`(판정 규칙)다.
+
 ## 구조
 
 - `app/main.py` 앱·CORS·라우터 등록, `app/config.py` `.env` 설정
@@ -19,7 +21,7 @@
 - 토큰은 `crypto.encrypt`로 암호화해 저장하고, 로그·응답·`tool_calls.input`에 넣지 않는다(`scrub`가 키 이름으로 한 번 더 지운다).
 - 오래 걸리는 작업(포스터 추출, 준비하기 등)은 202와 `run_id`로 응답하고, 진행은 `GET /runs/{id}`로 보여준다(명세 2장).
 - 시간은 `timestamptz`(UTC)로 저장한다. 날짜 계산(D-day, 만 나이)은 KST 기준이다.
-- 자격 판정은 코드로 한다. LLM은 요건 추출까지만 쓴다.
+- 자격 판정은 코드로 한다. LLM은 요건 추출까지만 쓴다. 판정 규칙은 `docs/판정엔진_규칙.md`를 따르고, 프로필 값은 LLM 프롬프트와 `tool_calls.input`에 넣지 않는다.
 
 ## 테스트
 
@@ -31,4 +33,4 @@
 ## DB 변경
 
 - 테이블·컬럼 변경은 `supabase/migrations/`에 새 파일로만 한다. 이미 적용한 파일은 고치지 않는다.
-- 같은 PR에서 ERD 변경분 문서와 CI의 DB 테스트를 함께 고친다.
+- 적용 순서는 v07 → v08 → v09 → seed다. 같은 PR에서 `docs/ERD_v0.9.md`와 CI의 DB 테스트를 함께 고친다.
