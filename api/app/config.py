@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     token_encryption_key: str = ""
     cors_origins: list[str] = ["http://localhost:3000"]
     api_prefix: str = "/api/v1"
+    # Gemini 플랫폼(Google Cloud). 모델 ID는 단가표(app/pricing.py) 키와 같아야 한다
+    google_cloud_project: str = ""
+    google_cloud_location: str = "global"
+    extraction_model: str = "gemini-3.8-flash"
+    vision_model: str = "gemini-3.8-flash"
+    extraction_max_reads: int = 4  # 요건 추출 읽기 도구 상한(PRD 14장 미결, W2–3에 확정)
+    extraction_max_tokens: int = 150_000
 
 
 @lru_cache
