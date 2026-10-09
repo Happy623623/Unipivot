@@ -255,7 +255,7 @@ erDiagram
         timestamptz apply_start_at
         timestamptz deadline_at
         date eligibility_basis_date "판정 기준일, null이면 마감일"
-        text content_hash "본문 + 첨부 텍스트 sha256"
+        text content_hash "본문 글자(공백 정리) + 첨부 파일 sha256(첨부 순서대로)"
         int requirements_version
         numeric extraction_confidence
         boolean needs_review "원문 확인 필요"
@@ -569,12 +569,12 @@ erDiagram
 
 - `missing_fields`에는 결과가 "모름"인 묶음에서 `missing_profile`인 조건의 항목만 넣는다. 이미 충족한 묶음의 빈 항목은 넣지 않는다.
 - 판정 기준일은 `opportunities.eligibility_basis_date`를 쓴다. null이면 마감일의 KST 날짜, 마감일도 없으면 판정한 날이다.
-- 다시 추출: 본문 + 첨부 추출 텍스트의 sha256(`content_hash`)이 바뀌면 그 공고의 요건을 지우고 다시 넣는다. `requirements_version`을 1 올리고 그 공고의 판정을 모두 다시 계산한다. 판정 결과의 `requirements_version`이 공고와 다르면 낡은 결과다.
+- 다시 추출: 본문 + 첨부 추출 텍스트의 sha256(`content_hash`)이 바뀌면 그 공고의 요건을 지우고 다시 넣는다. `requirements_version`을 1 올리고 그 공고의 판정을 모두 다시 계산한다. 판정 결과의 `requirements_version`이 공고와 다르면 낡은 결과다. 추출에 실패하면(받은 제출 없음) 요건·서류를 지우고 extraction_run_id를 비운다. extraction_run_id가 null인 공고는 판정하지 않는다.
 
 ### 첨부파일
 
 - 크롤러가 게시글 첨부를 내려받아 Storage에 두고 행을 만든다. 추출 방식은 `extract_method`에, 실패 사유는 `extract_error`에 남긴다. 실패한 첨부가 있는 공고는 `needs_review`(원문 확인 필요 배지)다.
-- 어떤 첨부를 읽을지는 요건 추출 에이전트가 고른다(PRD 6장). 읽지 않은 첨부는 `extract_method`가 null이다.
+- 어떤 첨부를 읽을지는 요건 추출 에이전트가 고른다(PRD 6장). 읽지 않은 첨부는 `extract_method`가 null이다. Vision으로 읽은 첨부는 옮겨 적은 글자를 extracted_text에 두고 extract_method는 vision이다.
 
 ### 학과
 
