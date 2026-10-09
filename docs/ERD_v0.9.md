@@ -576,6 +576,13 @@ erDiagram
 - 크롤러가 게시글 첨부를 내려받아 Storage에 두고 행을 만든다. 추출 방식은 `extract_method`에, 실패 사유는 `extract_error`에 남긴다. 실패한 첨부가 있는 공고는 `needs_review`(원문 확인 필요 배지)다.
 - 어떤 첨부를 읽을지는 요건 추출 에이전트가 고른다(PRD 6장). 읽지 않은 첨부는 `extract_method`가 null이다. Vision으로 읽은 첨부는 옮겨 적은 글자를 extracted_text에 두고 extract_method는 vision이다.
 
+### 학교 공지 (A안)
+
+- sources: 한양대 공지사항 행 하나(type school_notice, base_url https://www.hanyang.ac.kr/notice_all). last_collected_at은 가져오기를 마친 시각
+- opportunities: 학교 공지는 external_id가 게시판 글 번호(entryId), original_url이 고유 주소(https://www.hanyang.ac.kr/notice/url/…), raw_text가 게시판 정보 몇 줄 + 본문 글자(모델이 본 그대로)다. category는 공지분류로 정한다
+- opportunity_attachments: 학교 공지는 source_url이 학교 다운로드 주소다. 본문 이미지도 첨부 행으로 두고(source_url 없음) 첨부 번호를 이어서 쓴다. storage_path는 비운다(파일을 복제하지 않는다). 가져오지 못한 첨부는 extract_error를 남긴다
+- status: 학교 공지의 hidden은 가져오기가 쓴다(서울캠퍼스로 바뀌면 숨기고 돌아오면 푼다). expired는 내용이 바뀌었고 마감이 지나지 않았을 때 가져오기가 푼다
+
 ### 학과
 
 - 프로필 학과는 `departments.name`만 쓸 수 있다. 학과 이름이 바뀌면 `on update cascade`로 프로필도 따라간다. 폐지된 학과는 `is_active = false`로 목록에서만 숨긴다. 통폐합 이력은 MVP에서 다루지 않는다.
