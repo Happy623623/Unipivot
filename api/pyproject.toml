@@ -1,0 +1,29 @@
+[project]
+name = "unipivot-api"
+version = "0.2.0"
+description = "UNIPIVOT 학내 정보 에이전트 API"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic-settings>=2.4",
+  "psycopg[binary,pool]>=3.2",
+  "pyjwt[crypto]>=2.9",
+  "cryptography>=43",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["db: Postgres가 필요한 통합 테스트 (DATABASE_URL이 없으면 건너뜀)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]  # 한국어 문구·주석 길이는 ruff format에 맡긴다
