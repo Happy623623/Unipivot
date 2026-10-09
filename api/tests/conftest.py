@@ -11,6 +11,7 @@ from app.config import Settings, get_settings
 from app.main import create_app
 from app.repositories.meta import get_meta_repo
 from app.repositories.profiles import get_profile_repo
+from app.runtime import event_loop_factory
 from tests.fakes import FakeMetaRepository, FakeProfileRepository
 
 JWT_SECRET = "unit-test-jwt-secret-not-used-anywhere-else"
@@ -33,8 +34,9 @@ def make_token(
 
 
 @pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
+def anyio_backend() -> str | tuple[str, dict[str, Any]]:
+    factory = event_loop_factory()  # Windows: 명령줄 도구와 같은 Selector 루프(psycopg 비동기 연결)
+    return ("asyncio", {"loop_factory": factory}) if factory else "asyncio"
 
 
 @pytest.fixture
