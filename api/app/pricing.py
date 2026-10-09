@@ -1,7 +1,9 @@
 """모델 단가표 (PRD 7장 비용). 비용을 이 표로 계산해서, 단가가 바뀌어도 개선 전후를 같은 기준으로 비교한다.
 
-PRICES에는 실제로 쓰는 모델을 각 사의 공식 가격표에서 옮겨 적는다.
-값은 100만 토큰당 USD이고, 같은 모델은 적용 시작일 순서로 둔다. 표에 없는 모델을 부르면 KeyError가 난다.
+값은 100만 토큰당 USD이고, 같은 모델은 적용 시작일 순서로 둔다. 단가가 바뀌면 기존 줄을 고치지 말고
+새 적용일로 한 줄을 더한다(지난 호출의 비용이 그대로 남는다). 표에 없는 모델을 부르면 KeyError가 난다.
+출력 단가는 생각(thinking) 토큰에도 붙으므로, record_llm의 output_tokens에는 생각 토큰을 포함해 넘긴다
+(Gemini는 candidates_token_count + thoughts_token_count, Claude는 usage.output_tokens).
 """
 
 from collections.abc import Mapping
@@ -17,9 +19,23 @@ class Price:
     output_per_mtok: Decimal
 
 
-# (provider, model) → 적용 시작일 순서의 단가
-# TODO(Dev1): 쓰기로 정한 모델의 단가를 공식 가격표에서 채운다 (PRD 14장 "LLM 작업별 기본 모델")
-PRICES: dict[tuple[str, str], tuple[Price, ...]] = {}
+# 2026-10-07에 공식 가격표에서 확인한 단가 (Gemini는 결제를 연결한 유료 등급 Standard)
+# https://platform.claude.com/docs/en/about-claude/pricing
+# https://ai.google.dev/gemini-api/docs/pricing
+_CHECKED = date(2026, 10, 7)
+
+# (provider, model) → 적용 시작일 순서의 단가. model은 API에 보내는 ID와 똑같이 쓴다
+PRICES: dict[tuple[str, str], tuple[Price, ...]] = {
+    ("anthropic", "claude-haiku-4-5-20251001"): (
+        Price(_CHECKED, Decimal("1.00"), Decimal("5.00")),
+    ),
+    ("anthropic", "claude-sonnet-5-5"): (Price(_CHECKED, Decimal("2.00"), Decimal("10.00")),),
+    ("google", "gemini-3.8-flash"): (
+        Price(_CHECKED, Decimal("0.75"), Decimal("3.75")),  # 2026-12-31까지
+        Price(date(2027, 1, 1), Decimal("1.50"), Decimal("7.50")),
+    ),
+    ("google", "gemini-3.5-flash-lite"): (Price(_CHECKED, Decimal("0.30"), Decimal("2.50")),),
+}
 
 
 def price_on(
