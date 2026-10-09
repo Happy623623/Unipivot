@@ -2,7 +2,7 @@
 
 > 📝 문서 상태: 초안 v0.9 · 2026-10-06 · 기준 문서: PRD v0.9, API 명세 v0.4 · DB: Supabase (PostgreSQL 15+)
 >
-> v0.9 변경: 요건 묶음(clause_no)·비교 기준(basis), 판정 기준일·변경 감지·요건 버전, 첨부·학과·사용 이벤트 테이블, 소득 선택 동의 제약, 알림 dedupe_key, 플래너·파일·캘린더 제약, enum 3개 → text + check, FK 인덱스, 전 테이블 RLS
+> v0.9 보완 (2026-10-09): content_hash 정의, 추출 실패 처리, Vision 첨부, 학교 공지(A안) 설명
 
 ---
 
@@ -791,6 +791,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보완 (2026-10-09): content_hash 정의, 추출 실패 처리, Vision 첨부, 학교 공지(A안) 설명
 - v0.9 (2026-10-06): 요건 묶음(clause_no)·비교 기준(basis), 판정 기준일·변경 감지·요건 버전, 첨부·학과·사용 이벤트 테이블, 소득 선택 동의 제약, 알림 dedupe_key, 플래너·파일·캘린더 제약, enum 3개 → text + check, FK 인덱스, 전 테이블 RLS
 - v0.8: 알림함 읽음 상태와 profile_needed, user_settings·opportunity_views 신설, 동의 기록, 서류 작성 시간·양식 링크, 서류–할 일 1:1 유니크, 과목 마지막 열람·공지 요약, 파일 원래 이름
 - v0.7: `material_outputs`를 `materials`(문서 단위: 분량·처리 범위·전체 요약) + `material_sections`(구간 단위: 구간 요약·구간 번역)로 교체, `run_trigger`에 `material_translate` 추가
