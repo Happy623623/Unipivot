@@ -10,6 +10,7 @@ from typing import Any
 import psycopg
 import pytest
 
+from app.crawl import cli
 from app.crawl.cli import main
 from app.crawl.hanyang import BOARD_URL
 from app.extraction import ExtractionAgent
@@ -155,11 +156,28 @@ async def test_import_explains_db_problems(
     monkeypatch.setenv("DATABASE_URL", "")
     assert await main(["import", str(root)]) == 1
     assert "DATABASE_URL이 없어요" in capsys.readouterr().out
-    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody:x@127.0.0.1:1/none")
+    # 닫힌 포트. 보안 프로그램이 응답 없이 버리는 PC에서도 2초 안에 끝나게 시간 제한을 준다
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody:x@127.0.0.1:1/none?connect_timeout=2")
     assert await main(["import", str(root)]) == 1
     assert "DB에 연결하지 못했어요" in capsys.readouterr().out
     assert await main(["import", str(tmp_path / "빈 폴더")]) == 1  # 폴더가 없다
     assert "폴더가 없어요" in capsys.readouterr().out
+
+
+async def test_db_connect_gives_up_after_ten_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """주소에 connect_timeout이 없으면 10초만 기다린다. psycopg 기본값은 130초다."""
+    seen: list[Any] = []
+
+    async def connect(conninfo: str, **kwargs: Any) -> None:
+        seen.append(kwargs.get("connect_timeout"))
+        raise psycopg.OperationalError("연결 안 됨")
+
+    monkeypatch.setattr(cli.AsyncConnection, "connect", connect)
+    url = "postgresql://u:p@db.example/x"
+    for database_url in (url, f"{url}?connect_timeout=30"):
+        with pytest.raises(psycopg.OperationalError):
+            await cli._connect(database_url)
+    assert seen == [cli.CONNECT_TIMEOUT, None]  # 주소에 있으면 주소 값을 쓴다
 
 
 async def _cleanup(scenario: str, entry_ids: tuple[str, ...]) -> None:

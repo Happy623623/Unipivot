@@ -18,6 +18,7 @@ from pathlib import Path
 
 import psycopg
 from psycopg import AsyncConnection
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 
 from app.attachments import KIND_LABELS, AttachmentText
@@ -49,6 +50,7 @@ from app.extraction.store import load_departments
 from app.runtime import event_loop_factory, utf8_output
 
 AgentFactory = Callable[..., ExtractionAgent]
+CONNECT_TIMEOUT = 10  # DB 연결을 기다리는 초. DATABASE_URL에 connect_timeout이 있으면 그 값을 쓴다
 _SCOPE = {"erica": "가져올 대상", "seoul": "건너뜀(서울)", "unmarked": "건너뜀(캠퍼스 표시 없음)"}
 _FIX = "고칠 것"
 
@@ -408,9 +410,19 @@ def _folders(paths: Sequence[Path]) -> list[Path] | None:
 
 
 async def _connect(database_url: str) -> AsyncConnection:
-    """autocommit 연결. 실패한 실행도 로그에 남고, 공지 저장은 공지마다 트랜잭션으로 묶는다."""
+    """autocommit 연결. 실패한 실행도 로그에 남고, 공지 저장은 공지마다 트랜잭션으로 묶는다.
+
+    주소에 connect_timeout이 없으면 CONNECT_TIMEOUT초만 기다린다. psycopg 기본값(130초)이면
+    연결을 막는 네트워크에서 2분 넘게 기다린 뒤에야 실패를 알린다.
+    """
+    # 주소에 있으면 None을 넘긴다. psycopg는 None인 인자를 빼고 주소의 값을 쓴다
+    timeout = None if "connect_timeout" in conninfo_to_dict(database_url) else CONNECT_TIMEOUT
     return await AsyncConnection.connect(
-        database_url, row_factory=dict_row, autocommit=True, prepare_threshold=None
+        database_url,
+        row_factory=dict_row,
+        autocommit=True,
+        prepare_threshold=None,
+        connect_timeout=timeout,
     )
 
 
