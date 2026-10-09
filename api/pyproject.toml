@@ -1,6 +1,6 @@
 [project]
 name = "unipivot-api"
-version = "0.3.0"
+version = "0.4.0"
 description = "UNIPIVOT 학내 정보 에이전트 API"
 requires-python = ">=3.12"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
   "google-genai>=2.29",
   "pypdf>=6",
   "olefile>=0.47",
+  "beautifulsoup4>=4.12",
 ]
 
 [dependency-groups]

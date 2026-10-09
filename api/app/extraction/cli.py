@@ -31,6 +31,7 @@ from app.extraction.agent import ExtractionAgent
 from app.extraction.models import AttachmentInput, ExtractionResult, NoticeInput
 from app.extraction.setup import build_agent
 from app.pricing import cost_usd
+from app.runtime import event_loop_factory, utf8_output
 
 
 @dataclass
@@ -185,4 +186,5 @@ async def _run_with_db(
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main(sys.argv[1:])))
+    utf8_output()  # 출력을 파이프로 보낼 때 cp949에 없는 글자에서 멈추지 않게(Windows)
+    sys.exit(asyncio.run(main(sys.argv[1:]), loop_factory=event_loop_factory()))
