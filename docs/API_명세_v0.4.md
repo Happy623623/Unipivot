@@ -6,6 +6,8 @@
 >
 > v0.4 보강(10/9, S1-5): 피드 판정 갱신, counts 기준, cursor 규칙
 >
+> v0.4 보강(10/10, S1-6): 공고 상세의 판정·공개 범위·순서·처리 과정 규칙
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -277,6 +279,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - 활성 공고: 포스터는 올린 본인만, 과목 공지 공고는 그 과목 수강생만, 나머지는 로그인 사용자 모두 볼 수 있다
 - 준비를 시작한 공고는 마감(`expired`)·숨김(`hidden`)이 되어도 본인에게 상세·서류·플래너가 계속 보인다. 피드에는 나오지 않는다
 - 그 밖의 숨김·과목 비공개 공고는 `404 NOT_FOUND`다(v0.2 그대로)
+- 준비를 시작한 공고는 병합(merged)되거나 수강을 끝낸 과목의 공지여도 본인에게 보인다. 공개 범위 안의 마감 공고(마감일이 지났거나 expired)는 준비하지 않아도 상세가 열린다(피드 include_expired로 카드가 보인다).
 
 ### `GET /opportunities`
 
@@ -449,6 +452,13 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `poster_url`은 포스터 공고의 원본 이미지(Storage 서명 URL, 5분), `course_name`은 과목 공지에서 온 공고의 과목명이다
 - `process.extraction`은 추출 실행에서 라벨·상태·소요 시간만 뽑은 것이라 배치 실행이나 남의 포스터도 내려준다. `GET /runs/{id}`의 본인 실행 제한은 그대로 둔다
 - 이 API를 부르면 `opportunity_views`를 upsert한다(`first_viewed_at` 유지, `last_viewed_at` 갱신)
+- 응답 전에 그 공고를 지금 프로필로 다시 판정해 저장한다(evaluated_at = 요청 시각). reason_text는 피드 카드의 summary와 같다.
+- 응답에 uploader_masked는 없다(피드와 같다. 업로더 표시는 공유와 함께 P1). poster_url은 포스터 업로드(W6)부터 채운다.
+- 요건 추출에 실패한 공고의 eligibility는 status undetermined, display_status needs_review, reason_text "원문 확인 필요: 자격 요건을 정리하지 못함"이다. basis_date·evaluated_at은 null이고 missing_fields·clauses·conditions와 process.extraction은 []다. 판정 엔진이 오류를 낸 공고는 reason_text가 "원문 확인 필요: 조건을 판정하지 못함"이고 clauses·conditions가 []다.
+- conditions는 묶음 순서이고, 묶음 안에서는 추출 순서(원문 순서)다. operator·value는 요건 값이고, user_value는 비교에 쓴 내 값(나이는 기준일의 만 나이, 미입력이면 null)이다.
+- documents는 필수 서류가 먼저, 그다음 이름 순이다. attachments에는 학교 다운로드 주소(source_url)가 있는 첨부만 준다.
+- 형식이 틀린 id는 422 VALIDATION_FAILED(details.fields.opportunity_id)다.
+- 상세를 열면 opportunity_views를 upsert한다. first_viewed_at은 그대로 두고 last_viewed_at은 늦은 쪽을 남긴다. 404면 남기지 않는다.
 
 ### `GET /opportunities/{id}/alternatives` (P1)
 
@@ -1045,6 +1055,10 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - `note`: 모델이 고른 이유 한 줄이다. 공고 원문에서 온 내용만 담고 프로필 값은 담지 않는다
 - 토큰 수·비용은 사용자 응답에 넣지 않고 내부 지표로만 쓴다
 - 실패 시 `status: "failed"`, `error: { "code": "LLM_TIMEOUT", "message": "..." }`
+- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다.
+- 앞에서 읽은 곳의 뒷부분을 읽은 호출(시작 위치가 0보다 큼, Vision은 PDF 2쪽부터)은 "이어 읽기"다(예: 첨부 '파일명' 이어 읽기).
+- 도구가 오류를 돌려줬거나 제출이 거절된 호출은 status failed다. tool_calls.status에는 succeeded로 남는다.
+- note는 주소를 지우고 공백을 한 칸으로 줄인 한 줄이고 최대 200자다.
 
 ## 12. 내부 · 운영 API
 
