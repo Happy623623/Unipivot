@@ -1,0 +1,17 @@
+<svg width="720" height="960" viewBox="0 0 720 960" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="720" height="960" rx="24" fill="#EEF2FF"/>
+  <rect x="54" y="54" width="612" height="852" rx="18" fill="white"/>
+  <rect x="96" y="112" width="112" height="34" rx="17" fill="#4F6EF7"/>
+  <text x="152" y="135" text-anchor="middle" fill="white" font-size="16" font-family="sans-serif">공모전</text>
+  <text x="96" y="230" fill="#181A20" font-size="42" font-weight="700" font-family="sans-serif">2026 대학생</text>
+  <text x="96" y="286" fill="#181A20" font-size="42" font-weight="700" font-family="sans-serif">도시 아이디어 공모전</text>
+  <text x="96" y="350" fill="#667085" font-size="20" font-family="sans-serif">도시의 내일을 바꾸는 아이디어를 제안해 주세요.</text>
+  <rect x="96" y="420" width="528" height="180" rx="18" fill="#F7F8FA"/>
+  <text x="128" y="475" fill="#4F6EF7" font-size="18" font-weight="700" font-family="sans-serif">지원 대상</text>
+  <text x="128" y="518" fill="#181A20" font-size="24" font-family="sans-serif">전국 대학생 누구나</text>
+  <text x="128" y="565" fill="#4F6EF7" font-size="18" font-weight="700" font-family="sans-serif">접수 마감</text>
+  <text x="128" y="608" fill="#181A20" font-size="24" font-family="sans-serif">2026. 10. 23.</text>
+  <rect x="96" y="680" width="528" height="74" rx="12" fill="#4F6EF7"/>
+  <text x="360" y="727" text-anchor="middle" fill="white" font-size="24" font-weight="700" font-family="sans-serif">○○도시공사</text>
+  <text x="96" y="834" fill="#667085" font-size="16" font-family="sans-serif">자세한 내용은 공고 원문을 확인해 주세요.</text>
+</svg>
