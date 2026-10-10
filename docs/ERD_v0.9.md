@@ -7,6 +7,8 @@
 > v0.9 보완 (2026-10-09): content_hash 정의, 추출 실패 처리, Vision 첨부, 학교 공지(A안) 설명
 >
 > v0.9 보강(10/9, S1-5): eligibility_results.engine_version, 판정 저장 방식
+>
+> v0.9 보강(10/10, S1-6): 요건 순서, 조회 기록, 마감 공고 공개 범위
 
 ---
 
@@ -580,6 +582,7 @@ erDiagram
 - 프로필 저장과 소득·수급 동의 철회는 같은 요청에서 그 사용자의 활성 공고를 모두 다시 판정하고, 나머지 공고(마감·숨김·안 보임)의 판정은 지운다. 철회한 소득 값이 condition_results·reason_text에 남지 않는다. 판정은 profile_updated_at을 쓰지 않는다.
 - 같은 사용자의 판정과 프로필 저장은 profiles 행을 for no key update로 잠가 한 번에 하나씩 한다.
 - 요건 추출에 실패한 공고(extraction_run_id null)는 판정 행이 없다. 판정 엔진이 오류를 낸 공고는 status undetermined, condition_results [], reason_text "원문 확인 필요: 조건을 판정하지 못함"인 행을 두고 하루에 한 번 다시 시도한다.
+- 요건 순서: 묶음(clause_no) 안에서는 추출이 낸 순서이고, clause_no, created_at 순으로 읽는다. 요건을 저장할 때 한 트랜잭션의 now()에 1마이크로초씩 더해 created_at을 넣는다.
 
 ### 첨부파일
 
@@ -618,6 +621,7 @@ erDiagram
 - 활성 공고 중 포스터는 올린 사람만 볼 수 있다. 과목 공지 공고는 그 과목 수강생(`is_active`)만, 나머지는 로그인 사용자 모두가 본다. 준비를 시작한 공고(`prep_plans`)는 마감·숨김 뒤에도 본인에게 보인다. 요건·서류·첨부는 공고를 볼 수 있으면 같이 본다.
 - RLS 정책과 API 쿼리는 같은 규칙을 쓴다. 백엔드는 테이블 소유자로 연결해 RLS를 받지 않으므로, 피드·상세 쿼리에도 이 규칙을 직접 건다.
 - 포스터 공유(P1)를 켤 때 이 규칙과 피드 API에 공유 여부를 더한다. 업로더 이름은 표시하지 않으므로 마스킹용 `security definer` 함수는 만들지 않는다. `dedupe_key`·`merged_into_id`(병합)와 `opportunity_reports`(신고)는 그대로 둔다.
+- API는 공개 범위 안의 마감 공고(마감일이 지났거나 expired)도 보여 준다(피드 include_expired, 공고 상세). RLS 정책은 활성 공고와 준비한 공고만 허용하지만 프론트는 DB를 직접 읽지 않는다. 준비한 공고는 병합되거나 수강을 끝낸 과목의 공지여도 본인에게 보인다.
 
 ### 캘린더 확장성
 
@@ -637,6 +641,7 @@ erDiagram
 - **알림함**: 알림 행 하나가 푸시 발송(`status`)과 알림함 표시(`read_at`)를 함께 담는다. `scheduled_at`이 지난 행만 알림함에 보이고, 푸시를 끈 사용자도 행은 만들되 발송 배치가 푸시만 건너뛴다. 설정에서 끈 종류는 행을 만들지 않는다.
 - **프로필 정보 필요 알림**: 사용자당 같은 `dedupe_key` 1행이 공고당 1회를 보장한다. 하루 1건 제한은 발송 배치가 건다.
 - **새 공고**: 등록 7일 이내, 판정 eligible, `opportunity_views`에 행이 없는 공고다. 상세 조회 API가 upsert하며 `first_viewed_at`은 유지한다.
+- opportunity_views는 공고 상세를 열 때 upsert한다. first_viewed_at은 처음 연 시각 그대로이고 last_viewed_at은 늦은 쪽을 남긴다. 피드의 새 공고 표시와 홈 요약의 new_eligible은 행이 있는지만 본다.
 - **서류 체크**: 상세의 서류 체크는 `planner_tasks`(prep_plan_id, document_id) 행의 `is_done`을 그대로 쓴다. 준비하기 전에는 행이 없어 체크할 수 없고, 부분 유니크 인덱스가 서류당 할 일 1개를 보장한다.
 - **서류 소요**: `lead_days` 0은 즉시 발급이다. `effort_minutes`는 화면 표시용이라 역산에 쓰지 않는다.
 - **플래너 마감 표시**: 공고 마감일은 `planner_tasks`에 넣지 않고, 조회 때 `prep_plans → opportunities.deadline_at`에서 읽어 함께 내려준다.
