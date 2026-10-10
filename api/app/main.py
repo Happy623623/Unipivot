@@ -8,7 +8,7 @@ from app.config import Settings, get_settings
 from app.db import create_pools
 from app.errors import register_error_handlers
 from app.logging_redact import install_log_redaction
-from app.routers import auth, events, health, me, meta
+from app.routers import auth, events, health, me, meta, opportunities
 
 
 @asynccontextmanager
@@ -39,7 +39,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     register_error_handlers(app)
     app.include_router(health.router)
-    for router in (auth.router, me.router, meta.router, events.router):
+    for router in (auth.router, me.router, meta.router, events.router, opportunities.router):
         app.include_router(router, prefix=settings.api_prefix)
     return app
 

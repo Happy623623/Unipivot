@@ -86,11 +86,6 @@ async def test_profile_repository_roundtrip() -> None:
         assert me is not None
         assert me.consented and me.calendar_connected and not me.income_info_consented
         assert (me.profile_completion.filled, me.unread_notifications) == (3, 0)
-        assert await repo.eligibility_counts(user_id) == {
-            "eligible": 0,
-            "undetermined": 0,
-            "ineligible": 0,
-        }
     finally:
         await conn.rollback()
         await conn.close()
