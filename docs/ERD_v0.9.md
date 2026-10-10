@@ -9,6 +9,8 @@
 > v0.9 보강(10/9, S1-5): eligibility_results.engine_version, 판정 저장 방식
 >
 > v0.9 보강(10/10, S1-6): 요건 순서, 조회 기록, 마감 공고 공개 범위
+>
+> v0.9 보강(10/10, S1-6b): opportunities.review_reasons
 
 ---
 
@@ -265,6 +267,7 @@ erDiagram
         int requirements_version
         numeric extraction_confidence
         boolean needs_review "원문 확인 필요"
+        text_array review_reasons "원문 확인 필요 이유"
         bigint visible_canvas_course_id "null이면 전체 공개"
         uuid uploaded_by FK "포스터 업로더"
         uuid poster_file_id FK
@@ -583,6 +586,7 @@ erDiagram
 - 같은 사용자의 판정과 프로필 저장은 profiles 행을 for no key update로 잠가 한 번에 하나씩 한다.
 - 요건 추출에 실패한 공고(extraction_run_id null)는 판정 행이 없다. 판정 엔진이 오류를 낸 공고는 status undetermined, condition_results [], reason_text "원문 확인 필요: 조건을 판정하지 못함"인 행을 두고 하루에 한 번 다시 시도한다.
 - 요건 순서: 묶음(clause_no) 안에서는 추출이 낸 순서이고, clause_no, created_at 순으로 읽는다. 요건을 저장할 때 한 트랜잭션의 now()에 1마이크로초씩 더해 created_at을 넣는다.
+- review_reasons: 요건 추출이 needs_review를 켠 이유 목록이다. 성공·실패 모두 추출할 때마다 새 값으로 바꾸고, 이유가 없으면 빈 배열이다. 학생에게 보이는 문구라 첨부는 번호 대신 파일 이름으로 쓴다.
 
 ### 첨부파일
 
@@ -726,6 +730,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 3 | `supabase/migrations/20261006000200_erd_v09.sql` | v0.9 마이그레이션 (요건 묶음·basis, 첨부·학과·사용 이벤트, enum 3개 → text + check, FK 인덱스, 전 테이블 RLS) |
 | 4 | `supabase/migrations/…_seed_departments.sql` | 학과 목록(departments) seed. 목록이 비어 있으면 온보딩에서 학과를 저장할 수 없으므로 S1-2 전에 넣는다 |
 | 5 | `supabase/migrations/20261009000000_eligibility_engine_version.sql` | eligibility_results.engine_version 추가 (S1-5) |
+| 6 | `supabase/migrations/20261010000000_opportunity_review_reasons.sql` | opportunities.review_reasons(원문 확인 필요 이유, S1-6b) |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
