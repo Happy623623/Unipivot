@@ -302,9 +302,11 @@ async def _replace_attachments(
 
 
 def _note_missing(extraction: ExtractionResult, saved: SavedNotice) -> ExtractionResult:
-    numbers = ", ".join(str(file.seq) for file in saved.missing)
+    # 학생에게 보이는 문구다(공고 상세 review_reasons). 본문 이미지는 상세의 첨부 목록에 없어서
+    # 번호 대신 파일 이름으로 쓴다
+    names = ", ".join(file.name for file in saved.missing)
     return replace(
         extraction,
         needs_review=True,
-        review_reasons=(*extraction.review_reasons, f"가져오지 못해 읽지 않은 첨부: {numbers}"),
+        review_reasons=(*extraction.review_reasons, f"가져오지 못해 읽지 않은 첨부: {names}"),
     )

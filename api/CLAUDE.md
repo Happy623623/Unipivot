@@ -25,6 +25,7 @@
 - 프로필 값을 바꾸는 코드는 같은 요청에서 OpportunityRepository.refresh_judgments(force=True)를 부른다. 판정을 쓰거나 믿고 읽는 코드는 profiles 행을 for no key update로 잠근 뒤 판정한다(app/repositories/opportunities.py 머리말).
 - 판정 결과가 달라지는 변경(app/eligibility의 규칙·문구·오류 수정)은 ENGINE_VERSION을 1 올린다.
 - 요건 추출 도구의 입력·출력 모양(tool_calls.input·output)을 바꾸면 공고 상세의 처리 과정(app/repositories/opportunities.py의 _DETAIL·_step)도 같이 고친다.
+- 원문 확인 필요 이유(ExtractionResult.review_reasons)는 공고 상세에서 학생에게 보이는 문구다. 첨부는 번호 대신 파일 이름으로 쓴다.
 
 ## 테스트
 

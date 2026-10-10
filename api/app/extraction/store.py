@@ -9,6 +9,8 @@
 - 전에 추출한 적이 있으면(extraction_run_id가 있었으면) requirements_version을 1 올린다.
   판정 결과의 버전이 공고와 다르면 낡은 결과다. 다시 판정은 호출하는 쪽이 한다.
 - extraction_run_id는 지금 요건을 만든 실행이다. null이면 판정하지 않는다.
+- 원문 확인 필요 이유(review_reasons)는 성공·실패 모두 이번 추출의 이유로 바꾼다(없으면 빈 배열).
+  공고 상세가 그대로 보여 준다(F-42).
 """
 
 import hashlib
@@ -71,9 +73,9 @@ async def save_extraction(
                 "update opportunities set apply_start_at = %(apply_start_at)s,"
                 " deadline_at = %(deadline_at)s, eligibility_basis_date = %(basis_date)s,"
                 " easy_summary = %(summary)s, extraction_confidence = %(confidence)s,"
-                " needs_review = %(needs_review)s, extraction_run_id = %(run_id)s,"
-                " content_hash = %(hash)s, requirements_version = %(version)s"
-                " where id = %(id)s",
+                " needs_review = %(needs_review)s, review_reasons = %(reasons)s,"
+                " extraction_run_id = %(run_id)s, content_hash = %(hash)s,"
+                " requirements_version = %(version)s where id = %(id)s",
                 {
                     "apply_start_at": result.apply_start_at,
                     "deadline_at": result.deadline_at,
@@ -81,6 +83,7 @@ async def save_extraction(
                     "summary": result.easy_summary,
                     "confidence": result.confidence,
                     "needs_review": result.needs_review,
+                    "reasons": list(result.review_reasons),
                     "run_id": run_id,
                     "hash": content_hash,
                     "version": version,
@@ -89,10 +92,10 @@ async def save_extraction(
             )
         else:
             await conn.execute(
-                "update opportunities set needs_review = true, extraction_run_id = null,"
-                " extraction_confidence = null, content_hash = %s, requirements_version = %s"
-                " where id = %s",
-                (content_hash, version, opportunity_id),
+                "update opportunities set needs_review = true, review_reasons = %s,"
+                " extraction_run_id = null, extraction_confidence = null, content_hash = %s,"
+                " requirements_version = %s where id = %s",
+                (list(result.review_reasons), content_hash, version, opportunity_id),
             )
         for attachment in result.attachments:
             if attachment.id is None or (attachment.method is None and attachment.error is None):

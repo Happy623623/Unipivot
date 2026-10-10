@@ -173,6 +173,8 @@ class OpportunityDetail(BaseModel):
     apply_start_at: datetime | None  # KST 오프셋(+09:00)
     deadline_at: datetime | None
     needs_review: bool
+    # needs_review를 켠 이유(요건 추출). 처리 과정(F-42)에 보인다. S1-6b 전에 추출한 공고는 비어 있다
+    review_reasons: list[str]
     extraction_confidence: float | None
     uploaded_by_me: bool
     course_name: str | None
