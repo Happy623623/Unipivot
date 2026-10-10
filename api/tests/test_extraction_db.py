@@ -167,6 +167,7 @@ async def test_extract_log_and_store_round_trip() -> None:
         assert saved["deadline_at"] == datetime(2026, 10, 24, 18, 0, tzinfo=KST)
         assert (str(saved["extraction_run_id"]), saved["content_hash"]) == (run.id, digest)
         assert saved["needs_review"] is True  # 신청서.docx를 못 읽었다
+        assert saved["review_reasons"] == ["읽지 못한 첨부가 있음"]  # 이유도 함께 남는다(S1-6b)
         assert saved["extraction_confidence"] == Decimal("0.90")
         attachments = await _rows(
             conn,
@@ -217,6 +218,7 @@ async def test_extract_log_and_store_round_trip() -> None:
             ),
             confidence=Decimal("0.70"),
             needs_review=True,
+            review_reasons=("모호한 요건이 있음",),
         )
         version = await save_extraction(
             conn, opportunity_id, again, run_id=run.id, content_hash="h2"
@@ -224,10 +226,13 @@ async def test_extract_log_and_store_round_trip() -> None:
         assert version == 2
         (saved,) = await _rows(conn, "select * from opportunities where id = %s", opportunity_id)
         assert (saved["requirements_version"], saved["deadline_at"]) == (2, None)
+        assert saved["review_reasons"] == ["모호한 요건이 있음"]  # 이유도 새 값으로 바꾼다
         assert await _counts(conn, opportunity_id) == {"reqs": 1, "docs": 0}
 
         # 실패한 추출: 바뀐 공고를 옛 요건으로 판정하지 않게 요건을 비우고 판정 대상에서 뺀다
-        failed = ExtractionResult(succeeded=False, needs_review=True)
+        failed = ExtractionResult(
+            succeeded=False, needs_review=True, review_reasons=("제출을 받지 못함",)
+        )
         version = await save_extraction(
             conn, opportunity_id, failed, run_id=None, content_hash="h3"
         )
@@ -238,6 +243,7 @@ async def test_extract_log_and_store_round_trip() -> None:
             True,
             None,
         )
+        assert saved["review_reasons"] == ["제출을 받지 못함"]
         assert await _counts(conn, opportunity_id) == {"reqs": 0, "docs": 0}
     finally:
         await conn.rollback()
@@ -262,6 +268,7 @@ async def test_first_failure_leaves_the_notice_unjudged() -> None:
             None,
             True,
         )  # 판정하지 않는다
+        assert saved["review_reasons"] == []  # 이유 없이 만든 결과는 빈 배열로 남는다
         with pytest.raises(LookupError):
             await save_extraction(conn, str(uuid.uuid4()), failed, run_id=None, content_hash="h")
     finally:

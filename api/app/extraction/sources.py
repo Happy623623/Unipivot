@@ -185,14 +185,16 @@ class Library:
             notes.append(f"본문이 길어 앞 {len(self.body):,}자만 읽음")
         if self._page is not None and not self._page.complete:
             notes.append(f"원문 페이지를 {self._page.read:,}/{self._page.size:,}자만 읽음")
-        for seq, item in self.items.items():
+        # 학생에게 보이는 문구다(공고 상세 review_reasons). 첨부는 번호 대신 파일 이름으로 쓴다
+        for item in self.items.values():
+            name = item.input.file_name
             if item.text is not None and not item.text.complete:
-                notes.append(f"첨부 {seq}을 {item.text.read:,}/{item.text.size:,}자만 읽음")
+                notes.append(f"첨부 '{name}' {item.text.read:,}/{item.text.size:,}자만 읽음")
             scanned = item.scanned
             if item.vision_pages and scanned and scanned.needs_vision and scanned.page_count:
                 if len(item.vision_pages) < scanned.page_count:
                     notes.append(
-                        f"첨부 {seq}을 {len(item.vision_pages)}/{scanned.page_count}쪽만 읽음"
+                        f"첨부 '{name}' {len(item.vision_pages)}/{scanned.page_count}쪽만 읽음"
                     )
         return notes
 

@@ -1,4 +1,5 @@
-"""공고 상세의 처리 과정 한 줄(S1-6). DB 없이 _DETAIL이 읽어 오는 steps 행 모양으로 확인한다.
+"""공고 상세의 처리 과정 한 줄과 원문 확인 필요 이유(S1-6·S1-6b). DB 없이 _DETAIL이 읽어 오는
+행 모양으로 확인한다.
 
 실제 에이전트가 남긴 실행 로그로 만든 처리 과정은 test_detail_db.py가 본다.
 """
@@ -8,7 +9,7 @@ from typing import Any
 import pytest
 
 from app.extraction.prompt import FETCH_ORIGINAL, READ_IMAGE, READ_TEXT, SUBMIT
-from app.repositories.opportunities import NOTE_MAX_CHARS, _step
+from app.repositories.opportunities import LINE_MAX_CHARS, REASONS_MAX, _lines, _step
 
 NAMES = {1: "선발요강.hwpx", 2: "스캔 공고문.pdf", 3: "포스터.png"}
 
@@ -88,8 +89,41 @@ def test_note_is_one_plain_line() -> None:
     """고른 이유는 모델이 쓴 글이다. 주소를 지우고 한 줄로 줄이고 길이를 자른다."""
     reason = "요강을 읽음.\n https://hy-verify.example/login 에서 재학 인증 필수\t" + "가" * 500
     note = _step(step(READ_TEXT, attachment_no=1, reason=reason), NAMES).note
-    assert note is not None and len(note) == NOTE_MAX_CHARS and note.endswith("…")
+    assert note is not None and len(note) == LINE_MAX_CHARS and note.endswith("…")
     assert note.startswith("요강을 읽음. 에서 재학 인증 필수 가가")
     assert "http" not in note and "\n" not in note and "\t" not in note
     assert _step(step(READ_TEXT, reason=" www.example.com \n"), NAMES).note is None
     assert _step(step(READ_TEXT, reason="첨부를 읽음"), NAMES).note == "첨부를 읽음"
+
+
+def test_review_reasons_are_plain_lines() -> None:
+    """원문 확인 필요 이유에는 모델이 쓴 글(review_note)이 섞인다. 고른 이유와 같은 규칙으로 정리하고,
+    정리한 뒤 비거나 같은 줄은 뺀다."""
+    reasons = [
+        "읽지 못한 첨부가 있음",
+        "모델이 원문 확인 필요로 표시: 신청서는\nhttps://evil.example/form 에서 받기",
+        "https://only-a-link.example",
+        "읽지 못한 첨부가 있음",
+        "모델이 원문 확인 필요로 표시: " + "나" * 300,
+    ]
+    lines = _lines(reasons)
+    assert lines[:2] == [
+        "읽지 못한 첨부가 있음",
+        "모델이 원문 확인 필요로 표시: 신청서는 에서 받기",
+    ]
+    assert len(lines) == 3 and len(lines[2]) == LINE_MAX_CHARS and lines[2].endswith("…")
+    assert _lines([]) == [] and _lines(None) == []
+
+
+def test_review_reasons_edge_cases() -> None:
+    # 정리한 뒤 같아지는 줄, 문자열이 아닌 값, 보이지 않는 문자만 있는 줄은 하나로 줄이거나 뺀다
+    assert _lines(["모호한 요건이 있음 https://a.example", "모호한  요건이 있음", None, 3]) == [
+        "모호한 요건이 있음"
+    ]
+    assert _lines(["​﻿", "‮"]) == []
+    # 폭 없는 문자로 주소를 끊어 숨겨도 지운다
+    assert _lines(["신청서는 https://ev​il.example/form 에서"]) == ["신청서는 에서"]
+    # 모델이 지어낸 항목 이름처럼 줄이 많아도 10줄까지만 보이고 나머지는 "외 N건"이다
+    many = [f"모양이 틀린 항목{n} 조건을 기타 조건으로 저장" for n in range(13)]
+    lines = _lines(many)
+    assert lines[:10] == many[:10] and lines[10:] == ["외 3건"] and len(lines) == REASONS_MAX + 1

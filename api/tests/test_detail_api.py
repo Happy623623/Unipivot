@@ -32,7 +32,8 @@ DETAIL = OpportunityDetail(
     easy_summary="직전학기 성적이 좋은 학생에게 등록금 일부를 감면해 줘요.",
     apply_start_at=None,
     deadline_at=datetime(2026, 10, 15, 23, 59, tzinfo=KST),
-    needs_review=False,
+    needs_review=True,
+    review_reasons=["읽지 못한 첨부가 있음"],
     extraction_confidence=0.92,
     uploaded_by_me=False,
     course_name=None,
@@ -123,7 +124,8 @@ def test_detail_returns_the_judgment_table(
     assert body["eligibility"]["basis_date"] == "2026-10-15"
     assert body["eligibility"]["conditions"][0]["unknown_reason"] == "missing_profile"
     assert body["process"]["extraction"][0]["chosen_by"] == "agent"
-    assert set(body) == {  # API 명세 v0.4 5장 · web OpportunityDetail
+    assert (body["needs_review"], body["review_reasons"]) == (True, ["읽지 못한 첨부가 있음"])
+    assert set(body) == {  # API 명세 v0.4 5장(S1-6b 보강) · web OpportunityDetail
         "id",
         "title",
         "organizer",
@@ -136,6 +138,7 @@ def test_detail_returns_the_judgment_table(
         "apply_start_at",
         "deadline_at",
         "needs_review",
+        "review_reasons",
         "extraction_confidence",
         "uploaded_by_me",
         "course_name",
