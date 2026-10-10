@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+:root {
+  font-family: var(--font-inter), var(--font-noto-kr), sans-serif;
+  font-synthesis: none;
+  background: #f7f8fa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+button {
+  cursor: pointer;
+}
+
+@keyframes notification-enter {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes opportunity-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.notification-item {
+  animation: notification-enter 360ms ease-out both;
+}
+
+.opportunity-list {
+  animation: opportunity-enter 320ms ease-out both;
+}
+
+.opportunity-card {
+  animation: opportunity-enter 360ms ease-out both;
+}
+
+.opportunity-card:nth-child(2) {
+  animation-delay: 60ms;
+}
+
+.opportunity-card:nth-child(3) {
+  animation-delay: 120ms;
+}
+
+.filter-chip:active {
+  transform: scale(0.96);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

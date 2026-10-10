@@ -5,3 +5,7 @@ node_modules/
 .venv/
 __pycache__/
 .DS_Store
+!.env.local.example
+next-env.d.ts
+*.tsbuildinfo
+supabase/.temp/
