@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from app.repositories.opportunities import FeedPage, FeedQuery, Refresh
 from app.repositories.profiles import Consents
 from app.schemas.me import (
     COMPLETION_FIELDS,
@@ -15,12 +16,17 @@ from app.schemas.me import (
     ProfileCompletion,
 )
 from app.schemas.meta import Department
+from app.schemas.opportunities import FeedCounts, OpportunityItem
 
 
 class FakeProfileRepository:
     def __init__(self) -> None:
         self.profiles: dict[str, dict[str, Any]] = {}
         self.tokens: dict[str, dict[str, str]] = {}
+        self.locks: list[str] = []
+
+    async def lock(self, user_id: str) -> None:
+        self.locks.append(user_id)
 
     async def ensure(self, user_id: str, display_name: str | None) -> None:
         row = self.profiles.setdefault(
@@ -98,9 +104,6 @@ class FakeProfileRepository:
     async def save_google_tokens(self, user_id: str, access_token: str, refresh_token: str) -> None:
         self.tokens[user_id] = {"access_token": access_token, "refresh_token": refresh_token}
 
-    async def eligibility_counts(self, user_id: str) -> dict[str, int]:
-        return {"eligible": 0, "undetermined": 0, "ineligible": 0}
-
 
 class FakeMetaRepository:
     def __init__(self) -> None:
@@ -120,3 +123,42 @@ class FakeMetaRepository:
         self, user_id: str, event: str, opportunity_id: UUID | None = None
     ) -> None:
         self.events.append((user_id, event, opportunity_id))
+
+
+class FakeOpportunityRepository:
+    """피드 API 단위 테스트용. 받은 요청을 남기고 정해 둔 목록·집계를 돌려준다."""
+
+    def __init__(self) -> None:
+        self.refreshes: list[tuple[str, bool, bool]] = []  # (user_id, force, include_expired)
+        self.queries: list[FeedQuery] = []
+        self.items: list[OpportunityItem] = []
+        self.next_cursor: str | None = None
+        self.changed = 0
+        self.counts = FeedCounts(
+            eligible=0,
+            new_eligible=0,
+            undetermined=0,
+            missing_info=0,
+            needs_review=0,
+            ineligible=0,
+            deadline_soon=0,
+        )
+
+    async def refresh_judgments(
+        self,
+        user_id: str,
+        *,
+        now: datetime,
+        force: bool = False,
+        include_expired: bool = False,
+        display_name: str | None = None,
+    ) -> Refresh:
+        self.refreshes.append((user_id, force, include_expired))
+        return Refresh(judged=0, changed=self.changed)
+
+    async def feed_page(self, user_id: str, query: FeedQuery, *, now: datetime) -> FeedPage:
+        self.queries.append(query)
+        return FeedPage(items=list(self.items), next_cursor=self.next_cursor)
+
+    async def feed_counts(self, user_id: str, *, now: datetime) -> FeedCounts:
+        return self.counts

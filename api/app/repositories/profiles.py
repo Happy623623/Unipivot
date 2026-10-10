@@ -1,4 +1,4 @@
-"""profiles·oauth_tokens·lms_connections·notifications·eligibility_results 조회 (ERD v0.9)."""
+"""profiles·oauth_tokens·lms_connections·notifications 조회 (ERD v0.9). 판정 결과는 opportunities.py."""
 
 from dataclasses import dataclass
 from typing import Annotated, Any
@@ -39,6 +39,13 @@ class Consents:
 class ProfileRepository:
     def __init__(self, conn: AsyncConnection) -> None:
         self.conn = conn
+
+    async def lock(self, user_id: str) -> None:
+        """요청이 끝날 때까지 프로필 행을 잠근다. 읽고 비교해 저장하는 사이에 같은 사용자의 다른 요청이
+        끼지 않는다. no key update라서 이 사용자의 다른 행이 profiles를 참조하며 넣는 것은 막지 않는다."""
+        await self.conn.execute(
+            "select 1 from profiles where id = %s for no key update", (user_id,)
+        )
 
     async def ensure(self, user_id: str, display_name: str | None) -> None:
         """로그인 직후 profiles 행을 만든다. 이미 있으면 비어 있는 이름만 채운다."""
@@ -151,18 +158,6 @@ class ProfileRepository:
             " expires_at = excluded.expires_at",
             (user_id, access_token, refresh_token, CALENDAR_SCOPE),
         )
-
-    async def eligibility_counts(self, user_id: str) -> dict[str, int]:
-        rows = await (
-            await self.conn.execute(
-                "select status, count(*) as n from eligibility_results"
-                " where user_id = %s group by status",
-                (user_id,),
-            )
-        ).fetchall()
-        counts = {"eligible": 0, "undetermined": 0, "ineligible": 0}
-        counts.update({row["status"]: row["n"] for row in rows})
-        return counts
 
 
 def get_profile_repo(conn: Annotated[AsyncConnection, Depends(get_conn)]) -> ProfileRepository:

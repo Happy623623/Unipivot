@@ -10,9 +10,10 @@ from fastapi.testclient import TestClient
 from app.config import Settings, get_settings
 from app.main import create_app
 from app.repositories.meta import get_meta_repo
+from app.repositories.opportunities import get_opportunity_repo
 from app.repositories.profiles import get_profile_repo
 from app.runtime import event_loop_factory
-from tests.fakes import FakeMetaRepository, FakeProfileRepository
+from tests.fakes import FakeMetaRepository, FakeOpportunityRepository, FakeProfileRepository
 
 JWT_SECRET = "unit-test-jwt-secret-not-used-anywhere-else"
 USER_ID = "00000000-0000-4000-8000-000000000001"
@@ -59,13 +60,22 @@ def meta() -> FakeMetaRepository:
 
 
 @pytest.fixture
+def feed() -> FakeOpportunityRepository:
+    return FakeOpportunityRepository()
+
+
+@pytest.fixture
 def client(
-    settings: Settings, repo: FakeProfileRepository, meta: FakeMetaRepository
+    settings: Settings,
+    repo: FakeProfileRepository,
+    meta: FakeMetaRepository,
+    feed: FakeOpportunityRepository,
 ) -> Iterator[TestClient]:
     app = create_app(settings)
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_profile_repo] = lambda: repo
     app.dependency_overrides[get_meta_repo] = lambda: meta
+    app.dependency_overrides[get_opportunity_repo] = lambda: feed
     with TestClient(app) as test_client:
         yield test_client
 
