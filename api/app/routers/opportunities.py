@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from dataclasses import replace
 from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Query
 
@@ -13,6 +14,7 @@ from app.schemas.opportunities import (
     ELIGIBILITY_STATUSES,
     SOURCE_TYPES,
     FeedResponse,
+    OpportunityDetail,
 )
 
 router = APIRouter(prefix="/opportunities", tags=["공고"])
@@ -83,3 +85,18 @@ async def read_feed(
     page = await repo.feed_page(user.id, query, now=now)
     counts = await repo.feed_counts(user.id, now=now)
     return FeedResponse(items=page.items, next_cursor=page.next_cursor, counts=counts)
+
+
+@router.get("/{opportunity_id}", response_model=OpportunityDetail)
+async def read_opportunity(
+    opportunity_id: UUID, user: CurrentUserDep, repo: OpportunityRepoDep, now: NowDep
+) -> OpportunityDetail:
+    """공고 상세(S1-6). 그 자리에서 판정하고 조회 기록(opportunity_views)을 남긴다.
+
+    공개 범위 안의 활성·마감 공고와 내가 준비한 공고(숨김·병합이 되어도)가 보인다.
+    그 밖은 404 NOT_FOUND다.
+    """
+    detail = await repo.detail(user.id, str(opportunity_id), now=now, display_name=user.name)
+    if detail is None:
+        raise ApiError(404, "NOT_FOUND", "공고를 찾을 수 없어요.")
+    return detail
