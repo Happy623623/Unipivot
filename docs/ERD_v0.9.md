@@ -11,6 +11,8 @@
 > v0.9 보강(10/10, S1-6): 요건 순서, 조회 기록, 마감 공고 공개 범위
 >
 > v0.9 보강(10/10, S1-6b): opportunities.review_reasons
+>
+> v0.9 보강(10/10): 학과 목록 seed(ERICA 48개)
 
 ---
 
@@ -604,6 +606,7 @@ erDiagram
 
 - 프로필 학과는 `departments.name`만 쓸 수 있다. 학과 이름이 바뀌면 `on update cascade`로 프로필도 따라간다. 폐지된 학과는 `is_active = false`로 목록에서만 숨긴다. 통폐합 이력은 MVP에서 다루지 않는다.
 - 학과를 지우거나 이름을 바꾸는 마이그레이션은 profiles.department FK(on delete set null, on update cascade)로 프로필이 바뀌므로 같은 파일에서 delete from eligibility_results를 함께 실행한다. 판정은 다음 피드 요청에서 다시 계산된다.
+- 학과 목록은 supabase/migrations/20261010000100_seed_departments.sql로 넣는다. 한양대학교 대학/학과 소개의 ERICA 단과대학 10곳, 학과·학부 48개(2026-10 확인)이고 전공·융합전공은 넣지 않는다. 계열은 교육부 학과 분류의 대계열(공학·자연·의약·인문·사회·예체능)이고 LIONS자율전공학부만 '자율전공'이다. 학과 목록을 바꾸는 마이그레이션은 같은 파일에서 eligibility_results를 비운다.
 
 ### 소득·수급 동의
 
@@ -731,6 +734,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 4 | `supabase/migrations/…_seed_departments.sql` | 학과 목록(departments) seed. 목록이 비어 있으면 온보딩에서 학과를 저장할 수 없으므로 S1-2 전에 넣는다 |
 | 5 | `supabase/migrations/20261009000000_eligibility_engine_version.sql` | eligibility_results.engine_version 추가 (S1-5) |
 | 6 | `supabase/migrations/20261010000000_opportunity_review_reasons.sql` | opportunities.review_reasons(원문 확인 필요 이유, S1-6b) |
+| 7 | `supabase/migrations/20261010000100_seed_departments.sql` | 학과 목록 seed(ERICA 48개) |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
