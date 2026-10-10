@@ -326,6 +326,7 @@ erDiagram
         jsonb condition_results "조건별 pass/fail/unknown"
         text_array missing_fields "판정 불가 원인"
         int requirements_version "어느 요건 버전으로 판정했는지"
+        int engine_version "판정 엔진 버전"
         text reason_text "탈락 사유"
         timestamptz evaluated_at
     }
@@ -719,6 +720,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 2 | `supabase/migrations/20261006000100_erd_v08.sql` | v0.8 마이그레이션 (알림함 읽음, user_settings, opportunity_views, 동의 기록 등) |
 | 3 | `supabase/migrations/20261006000200_erd_v09.sql` | v0.9 마이그레이션 (요건 묶음·basis, 첨부·학과·사용 이벤트, enum 3개 → text + check, FK 인덱스, 전 테이블 RLS) |
 | 4 | `supabase/migrations/…_seed_departments.sql` | 학과 목록(departments) seed. 목록이 비어 있으면 온보딩에서 학과를 저장할 수 없으므로 S1-2 전에 넣는다 |
+| 5 | `supabase/migrations/20261009000000_eligibility_engine_version.sql` | eligibility_results.engine_version 추가 (S1-5) |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
