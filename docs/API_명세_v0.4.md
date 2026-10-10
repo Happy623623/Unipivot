@@ -4,6 +4,8 @@
 >
 > v0.4 변경: 캘린더 증분 승인, 선택 동의·학과 목록·사용 이벤트 API, 판정 결과 묶음(clause)·모름 사유·기준일, 공고 공개 범위, 포스터 공유·신고·강의자료 번역 우선 하향, LMS GET 제한, 실행 단계의 도구 선택 표시, 에러 코드 추가
 >
+> v0.4 보강(10/9, S1-5): 피드 판정 갱신, counts 기준, cursor 규칙
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -196,6 +198,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - 필수 동의 전에는 PATCH도 `403 CONSENT_REQUIRED`를 돌려준다
 - 둘 중 하나라도 false면 `422 VALIDATION_FAILED`
 - 동의 전에는 `/me/profile` 수정과 공고·플래너 API가 `403 CONSENT_REQUIRED`를 돌려준다
+- POST /me/consents에서 갖고 있던 소득 동의를 빼도 소득 3항목을 지우고 판정을 다시 계산한다.
 
 ### `GET /me/profile` · `PATCH /me/profile`
 
@@ -226,6 +229,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `is_international`을 추가한다(boolean, null이면 미입력)
 - 소득 3항목은 선택 동의 전이면 `403 CONSENT_REQUIRED`(`details.consent = "income_info"`)
 - 거주지역(`region_sido`, `region_sigungu`)은 주민등록 주소 기준이다. 입력 화면에 그렇게 적는다
+- 보낸 항목 중 값이 실제로 바뀐 것만 저장하고, 바뀐 값이 있으면 그 사용자의 활성 공고를 모두 다시 판정한다. rejudged.changed는 판정이 있던 공고 중 라벨(display_status)이 바뀐 수이고, eligible·undetermined·ineligible은 GET /opportunities의 counts와 같은 기준이다.
 
 에러: `VALIDATION_FAILED`(422, 예: `gpa_last_semester > gpa_scale`)
 
@@ -345,6 +349,14 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `recommend_reason`(F-24, P1)은 MVP 초기엔 `null`이어도 된다
 - `eligibility.display_status`: `eligible` \| `missing_info` \| `needs_review` \| `ineligible`. 화면 라벨(지원 가능·정보 필요·원문 확인 필요·지원 어려움)에 1:1로 대응한다
 - `easy_summary`는 카드 설명 한 줄, `is_new`는 등록 7일 이내이고 아직 상세를 열지 않은 지원 가능 공고다
+- 응답 전에 그 사용자의 낡은 판정을 다시 계산한다(기준은 ERD 5장).
+- 요건 추출에 실패한 공고의 eligibility는 status undetermined, display_status needs_review, summary "원문 확인 필요: 자격 요건을 정리하지 못함", missing_fields []다. 판정 엔진이 오류를 낸 공고는 summary가 "원문 확인 필요: 조건을 판정하지 못함"이다.
+- counts는 eligibility·category·source_type·include_expired와 상관없이 지금 보이는 활성 공고(마감 전) 전체 기준이다.
+- sort=recent는 등록 최신순이다. 두 정렬 모두 값이 없는 공고가 맨 뒤이고, 값이 같으면 id 순이다.
+- include_expired=true면 마감이 지났거나 expired인 공고도 준다.
+- cursor는 같은 정렬·필터로 다음 페이지를 부를 때만 쓴다. 정렬·필터를 바꾸면 처음부터 다시 부른다. 다르거나 망가진 cursor는 422 VALIDATION_FAILED(details.fields.cursor)다.
+- 알 수 없는 eligibility·category·source_type 값은 422 VALIDATION_FAILED이고 details.fields에 파라미터별로 한 번에 담는다. eligibility에 all이 섞이면 거르지 않는다.
+- 판정한 뒤 같은 요청 안에서 들어온 공고는 다음 요청부터 보인다.
 
 ### `GET /opportunities/{id}`
 

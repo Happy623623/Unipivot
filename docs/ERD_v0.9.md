@@ -5,6 +5,8 @@
 > v0.9 변경: 요건 묶음(clause_no)·비교 기준(basis), 판정 기준일·변경 감지·요건 버전, 첨부·학과·사용 이벤트 테이블, 소득 선택 동의 제약, 알림 dedupe_key, 플래너·파일·캘린더 제약, enum 3개 → text + check, FK 인덱스, 전 테이블 RLS
 >
 > v0.9 보완 (2026-10-09): content_hash 정의, 추출 실패 처리, Vision 첨부, 학교 공지(A안) 설명
+>
+> v0.9 보강(10/9, S1-5): eligibility_results.engine_version, 판정 저장 방식
 
 ---
 
@@ -572,6 +574,11 @@ erDiagram
 - `missing_fields`에는 결과가 "모름"인 묶음에서 `missing_profile`인 조건의 항목만 넣는다. 이미 충족한 묶음의 빈 항목은 넣지 않는다.
 - 판정 기준일은 `opportunities.eligibility_basis_date`를 쓴다. null이면 마감일의 KST 날짜, 마감일도 없으면 판정한 날이다.
 - 다시 추출: 본문 + 첨부 추출 텍스트의 sha256(`content_hash`)이 바뀌면 그 공고의 요건을 지우고 다시 넣는다. `requirements_version`을 1 올리고 그 공고의 판정을 모두 다시 계산한다. 판정 결과의 `requirements_version`이 공고와 다르면 낡은 결과다. 추출에 실패하면(받은 제출 없음) 요건·서류를 지우고 extraction_run_id를 비운다. extraction_run_id가 null인 공고는 판정하지 않는다.
+- 판정 저장(S1-5): 사용자가 피드를 읽을 때 그 목록에 나올 공고의 낡은 판정만 다시 계산한다. 낡은 판정은 결과가 없거나, requirements_version 또는 engine_version이 공고·코드와 다르거나, 판정 기준일이 판정한 날(기준일·마감일이 모두 없음)인데 날이 바뀐 것이다.
+- engine_version은 판정한 엔진 버전(app/eligibility의 ENGINE_VERSION)이다. 판정 규칙·문구를 바꾸거나 판정 오류를 고치면 올린다.
+- 프로필 저장과 소득·수급 동의 철회는 같은 요청에서 그 사용자의 활성 공고를 모두 다시 판정하고, 나머지 공고(마감·숨김·안 보임)의 판정은 지운다. 철회한 소득 값이 condition_results·reason_text에 남지 않는다. 판정은 profile_updated_at을 쓰지 않는다.
+- 같은 사용자의 판정과 프로필 저장은 profiles 행을 for no key update로 잠가 한 번에 하나씩 한다.
+- 요건 추출에 실패한 공고(extraction_run_id null)는 판정 행이 없다. 판정 엔진이 오류를 낸 공고는 status undetermined, condition_results [], reason_text "원문 확인 필요: 조건을 판정하지 못함"인 행을 두고 하루에 한 번 다시 시도한다.
 
 ### 첨부파일
 
@@ -588,6 +595,7 @@ erDiagram
 ### 학과
 
 - 프로필 학과는 `departments.name`만 쓸 수 있다. 학과 이름이 바뀌면 `on update cascade`로 프로필도 따라간다. 폐지된 학과는 `is_active = false`로 목록에서만 숨긴다. 통폐합 이력은 MVP에서 다루지 않는다.
+- 학과를 지우거나 이름을 바꾸는 마이그레이션은 profiles.department FK(on delete set null, on update cascade)로 프로필이 바뀌므로 같은 파일에서 delete from eligibility_results를 함께 실행한다. 판정은 다음 피드 요청에서 다시 계산된다.
 
 ### 소득·수급 동의
 
@@ -779,7 +787,11 @@ where e.user_id = :uid
   and (o.visible_canvas_course_id is null or exists (
         select 1 from lms_courses c
         where c.user_id = e.user_id and c.canvas_course_id = o.visible_canvas_course_id));
+```
 
+API(GET /opportunities의 counts)는 이 기준에 v0.9 공개 범위(포스터는 올린 본인만, 과목 공지 공고는 is_active인 수강 과목만)를 더하고, 요건 추출에 실패한 공고를 확인 필요(needs_review)로 센다.
+
+```sql
 -- 과목 카드 새 자료 수
 select c.id, count(m.id) as new_materials
 from lms_courses c
