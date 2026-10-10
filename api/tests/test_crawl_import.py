@@ -296,7 +296,8 @@ async def test_campus_and_missing_file_rules(tmp_path: Path) -> None:
         )
         assert result.status == "new"
         assert result.extraction.needs_review
-        assert "가져오지 못해 읽지 않은 첨부: 2" in result.extraction.review_reasons
+        # 학생에게 보이는 이유라 번호 대신 파일 이름으로 쓴다(S1-6b)
+        assert "가져오지 못해 읽지 않은 첨부: 2. 신청서.hwp" in result.extraction.review_reasons
         rows = await _rows(
             conn,
             "select seq, file_name, extract_error, extracted_at is not null as done,"
@@ -312,9 +313,14 @@ async def test_campus_and_missing_file_rules(tmp_path: Path) -> None:
             "no_hash": True,
         }
         (row,) = await _rows(
-            conn, "select needs_review from opportunities where id = %s", result.opportunity_id
+            conn,
+            "select needs_review, review_reasons from opportunities where id = %s",
+            result.opportunity_id,
         )
         assert row["needs_review"] is True
+        assert (
+            "가져오지 못해 읽지 않은 첨부: 2. 신청서.hwp" in row["review_reasons"]
+        )  # 상세에 보일 이유
         # 그 뒤 평소처럼(플래그 없이) 가져와도 내용이 같으면 오류가 아니다
         again = await import_notice(conn, log_conn, source_id, load_folder(partial), agent())
         assert again.status == "unchanged"
@@ -496,6 +502,10 @@ async def test_failed_extraction_is_reported_until_forced(tmp_path: Path) -> Non
         )
         assert (failed.status, failed.unjudged, failed.message) == ("new", True, RETRY_HINT)
         assert not failed.extraction.succeeded
+        (row,) = await _rows(
+            conn, "select review_reasons from opportunities where id = %s", failed.opportunity_id
+        )
+        assert "제출을 받지 못함" in row["review_reasons"]  # 실패한 추출도 이유가 남는다
         again = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
         assert (again.status, again.unjudged) == ("unchanged", True)
         assert again.message == f"내용이 같아 다시 추출하지 않음. {RETRY_HINT}"
@@ -508,6 +518,10 @@ async def test_failed_extraction_is_reported_until_forced(tmp_path: Path) -> Non
             options(force=True),
         )
         assert (forced.status, forced.unjudged) == ("updated", False)
+        (row,) = await _rows(
+            conn, "select review_reasons from opportunities where id = %s", forced.opportunity_id
+        )
+        assert "제출을 받지 못함" not in row["review_reasons"]  # 다시 추출하면 이유도 새 값이다
     finally:
         await cleanup(conn, log_conn)
 

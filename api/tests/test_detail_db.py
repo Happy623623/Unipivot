@@ -510,6 +510,74 @@ async def test_detail_keeps_the_extraction_order() -> None:
         await conn.close()
 
 
+async def test_detail_shows_review_reasons() -> None:
+    """원문 확인 필요 이유(S1-6b): 추출할 때마다 새 값으로 바뀌고, 실패한 추출도 이유가 보인다.
+
+    저장은 받은 그대로 하고, 상세는 모델이 쓴 글을 한 줄로 정리해 보인다.
+    """
+    conn = await connect()
+    try:
+        me = await make_user(conn)
+        opportunity = await one(
+            conn,
+            "insert into opportunities (source_type, title) values ('school_notice', '이유 장학')"
+            " returning id, now() as now",
+        )
+        run = await one(
+            conn,
+            "insert into agent_runs (trigger_type, status) values ('batch_crawl', 'succeeded')"
+            " returning id",
+        )
+        assert opportunity is not None and run is not None
+        opportunity_id, now, run_id = str(opportunity["id"]), opportunity["now"], str(run["id"])
+        repo = OpportunityRepository(conn)
+
+        async def save(result: ExtractionResult, digest: str) -> Any:
+            await save_extraction(conn, opportunity_id, result, run_id=run_id, content_hash=digest)
+            stored = await one(
+                conn, "select review_reasons from opportunities where id = %s", opportunity_id
+            )
+            detail = await repo.detail(me, opportunity_id, now=now)
+            assert stored is not None and detail is not None
+            return stored["review_reasons"], detail
+
+        # 새 공고는 이유가 없다(빈 배열)
+        fresh = await repo.detail(me, opportunity_id, now=now)
+        assert fresh is not None and (fresh.needs_review, fresh.review_reasons) == (False, [])
+
+        raw = (
+            "읽지 못한 첨부가 있음",
+            "모델이 원문 확인 필요로 표시: 신청서는\nhttps://evil.example/form 에서 받기",
+        )
+        flagged = ExtractionResult(
+            succeeded=True, confidence=Decimal("0.9"), needs_review=True, review_reasons=raw
+        )
+        stored, detail = await save(flagged, "h1")
+        assert stored == list(raw)  # 저장은 그대로
+        assert detail.needs_review and detail.review_reasons == [
+            "읽지 못한 첨부가 있음",
+            "모델이 원문 확인 필요로 표시: 신청서는 에서 받기",
+        ]
+
+        # 다시 추출해서 이유가 없어지면 비운다
+        clean = ExtractionResult(succeeded=True, confidence=Decimal("0.9"))
+        stored, detail = await save(clean, "h2")
+        assert stored == [] and (detail.needs_review, detail.review_reasons) == (False, [])
+
+        # 추출에 실패해도 이유는 남는다. 처리 과정은 비어 있다(실행이 공고에 이어지지 않음)
+        failed = ExtractionResult(
+            succeeded=False, needs_review=True, review_reasons=("제출을 받지 못함",)
+        )
+        stored, detail = await save(failed, "h3")
+        assert stored == ["제출을 받지 못함"]
+        assert (detail.needs_review, detail.review_reasons) == (True, ["제출을 받지 못함"])
+        assert detail.eligibility.reason_text == UNJUDGED_SUMMARY
+        assert detail.process.extraction == []
+    finally:
+        await conn.rollback()
+        await conn.close()
+
+
 async def test_detail_process_from_an_extraction_run() -> None:
     """요건 추출 에이전트가 실제로 남긴 실행 로그로 처리 과정을 만든다(LLM만 가짜).
 
@@ -595,6 +663,8 @@ async def test_detail_process_from_an_extraction_run() -> None:
             ("선발요강.hwpx", "succeeded")
         ]
         assert [c.field for c in detail.eligibility.conditions] == ["gpa_last_semester"]
+        # 다 읽었고 고친 제출도 아니라 원문 확인 필요 이유가 없다
+        assert (detail.needs_review, detail.review_reasons) == (False, [])
     finally:
         await conn.rollback()
         await conn.close()

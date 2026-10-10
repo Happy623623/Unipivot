@@ -82,8 +82,11 @@ UNJUDGED_SUMMARY = "원문 확인 필요: 자격 요건을 정리하지 못함" 
 ENGINE_ERROR_SUMMARY = "원문 확인 필요: 조건을 판정하지 못함"  # 판정 엔진이 오류를 낸 공고
 # 처리 과정에서 모델이 고른 도구(요건 추출 에이전트). 그 밖의 단계는 정해진 순서(pipeline)다
 _AGENT_TOOLS = frozenset({READ_TEXT, READ_IMAGE, FETCH_ORIGINAL, SUBMIT})
-NOTE_MAX_CHARS = 200  # 처리 과정의 "고른 이유" 한 줄 길이
+LINE_MAX_CHARS = 200  # 화면에 보이는 모델 글 한 줄(고른 이유, 원문 확인 필요 이유) 길이
+REASONS_MAX = 10  # 원문 확인 필요 이유는 10줄까지 보이고 나머지는 "외 N건"으로 줄인다
 _LINK = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)  # 쉬운 설명(validate.py)과 같은 규칙
+# 폭 없는 문자와 글자 방향 제어 문자. 빈 줄처럼 보이는 줄이나 주소 숨기기를 막는다
+_INVISIBLE = re.compile("[​-‏‪-‮⁠-⁤⁦-⁩﻿]")
 _PAGES = re.compile(r"(\d+)")  # Vision이 읽은 쪽 "4–6/8"의 첫 쪽
 
 Sort = Literal["deadline", "recent"]
@@ -164,9 +167,9 @@ _PREP_JOIN = " left join prep_plans p on p.user_id = %(uid)s and p.opportunity_i
 _DETAIL = (
     "select o.id, o.title, o.organizer, o.category::text as category,"
     " o.source_type::text as source_type, o.status::text as status, o.original_url,"
-    " o.easy_summary, o.apply_start_at, o.deadline_at, o.needs_review, o.extraction_confidence,"
-    " o.eligibility_basis_date, o.requirements_version, o.extraction_run_id,"
-    " coalesce(o.uploaded_by = %(uid)s, false) as uploaded_by_me,"
+    " o.easy_summary, o.apply_start_at, o.deadline_at, o.needs_review, o.review_reasons,"
+    " o.extraction_confidence, o.eligibility_basis_date, o.requirements_version,"
+    " o.extraction_run_id, coalesce(o.uploaded_by = %(uid)s, false) as uploaded_by_me,"
     # 과목 이름은 수강 중인지 따지지 않고 읽는다. 준비한 과목 공지는 수강을 끝낸 뒤에도 보인다
     " (select lc.name from lms_courses lc where lc.user_id = %(uid)s"
     " and lc.canvas_course_id = o.visible_canvas_course_id) as course_name,"
@@ -463,6 +466,7 @@ class OpportunityRepository:
             apply_start_at=apply_start.astimezone(KST) if apply_start else None,
             deadline_at=deadline.astimezone(KST) if deadline else None,
             needs_review=bool(row["needs_review"]),
+            review_reasons=_lines(row["review_reasons"]),
             extraction_confidence=float(confidence) if confidence is not None else None,
             uploaded_by_me=row["uploaded_by_me"],
             course_name=row["course_name"],
@@ -738,7 +742,7 @@ def _step(step: dict[str, Any], names: dict[int, str]) -> ProcessStep:
         status="failed" if failed else step["status"],
         latency_ms=step["latency_ms"],
         chosen_by="agent" if tool in _AGENT_TOOLS else "pipeline",
-        note=_note(step.get("reason")),
+        note=_line(step.get("reason")),
     )
 
 
@@ -760,18 +764,29 @@ def _continued(step: dict[str, Any]) -> bool:
     return start_page is not None and start_page > 1
 
 
-def _note(reason: Any) -> str | None:
-    """모델이 고른 이유를 화면용 한 줄로: 주소를 지우고 공백·줄바꿈을 한 칸으로 줄여 NOTE_MAX_CHARS자까지.
+def _line(text: Any) -> str | None:
+    """모델이 쓴 글(고른 이유, 원문 확인 필요 이유)을 화면용 한 줄로: 보이지 않는 문자(폭 없는 문자,
+    글자 방향 제어)와 주소를 지우고 공백·줄바꿈을 한 칸으로 줄여 LINE_MAX_CHARS자까지. 남는 글이
+    없으면 None이다.
 
-    이유는 공고 글을 읽은 모델이 쓴 글이라, 공고 속 지시문이 링크를 끼워 넣지 못하게 쉬운 설명과
-    같은 규칙으로 정리한다(app/extraction/validate.py).
+    공고 글을 읽은 모델이 쓴 글이라, 공고 속 지시문이 링크를 끼워 넣지 못하게 쉬운 설명과 같은 규칙으로
+    정리한다(app/extraction/validate.py). 저장된 값을 읽을 때 정리해서 예전 행에도 같이 적용된다.
+    화면은 이 글을 일반 텍스트로 보여 준다(자동 링크·마크다운 없이).
     """
-    if not isinstance(reason, str):
+    if not isinstance(text, str):
         return None
-    line = " ".join(_LINK.sub("", reason).split())
-    if len(line) > NOTE_MAX_CHARS:
-        line = line[: NOTE_MAX_CHARS - 1].rstrip() + "…"
+    line = " ".join(_LINK.sub("", _INVISIBLE.sub("", text)).split())
+    if len(line) > LINE_MAX_CHARS:
+        line = line[: LINE_MAX_CHARS - 1].rstrip() + "…"
     return line or None
+
+
+def _lines(texts: Sequence[Any] | None) -> list[str]:
+    """여러 줄을 _line으로 정리한다. 빈 줄과 같은 줄은 빼고, REASONS_MAX줄이 넘으면 "외 N건"으로 줄인다."""
+    lines = list(dict.fromkeys(line for text in texts or () if (line := _line(text))))
+    if len(lines) > REASONS_MAX:
+        return [*lines[:REASONS_MAX], f"외 {len(lines) - REASONS_MAX}건"]
+    return lines
 
 
 def _attachment(item: dict[str, Any]) -> AttachmentItem:

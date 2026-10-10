@@ -310,6 +310,31 @@ async def test_scanned_pdf_is_read_with_vision() -> None:
     assert attachment.method == "vision" and attachment.text == transcription
 
 
+async def test_partly_read_scan_needs_review() -> None:
+    """스캔본을 앞 몇 쪽만 읽으면 남은 쪽에 요건이 있을 수 있다. 이유에는 파일 이름을 쓴다."""
+    notice = NoticeInput(
+        title="지역 장학",
+        body="첨부 공고문을 확인하세요.",
+        attachments=(AttachmentInput(1, "공고문(스캔).pdf", samples.pdf([None, None, None])),),
+    )
+    evidence = "경기도 안산시에 주민등록을 둔 자"
+    llm = ScriptedLlm(
+        call(READ_IMAGE, attachment_no=1, reason="스캔본이라 Vision으로 읽음"),
+        f"1. 지원 자격 | {evidence}",
+        call(
+            SUBMIT,
+            **submission(
+                req(1, "region", "in", ["경기도 안산시"], evidence, basis="resident_registration")
+            ),
+        ),
+    )
+    result, log = await run(llm, notice, limits=Limits(vision_max_pages=2))
+
+    assert log.tools[0].output["pages"] == "1–2/3"
+    assert result.succeeded and result.needs_review
+    assert "첨부 '공고문(스캔).pdf' 2/3쪽만 읽음" in result.review_reasons
+
+
 async def test_unreadable_attachment_marks_review() -> None:
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -437,7 +462,8 @@ async def test_partly_read_attachment_needs_review() -> None:
     result, _ = await run(llm, notice, limits=Limits(max_read_chars=500))
 
     output = llm.requests[1].turns[-1].results[0].content["output"]  # type: ignore[union-attr]
-    expected = f"첨부 1을 {output['next_offset']:,}/{output['chars']:,}자만 읽음"
+    # 학생에게 보이는 이유라 첨부는 파일 이름으로 쓴다
+    expected = f"첨부 '요강.hwpx' {output['next_offset']:,}/{output['chars']:,}자만 읽음"
     assert expected in result.review_reasons and result.needs_review
 
 
