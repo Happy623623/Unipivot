@@ -16,7 +16,7 @@ from app.schemas.me import (
     ProfileCompletion,
 )
 from app.schemas.meta import Department
-from app.schemas.opportunities import FeedCounts, OpportunityItem
+from app.schemas.opportunities import FeedCounts, OpportunityDetail, OpportunityItem
 
 
 class FakeProfileRepository:
@@ -134,6 +134,8 @@ class FakeOpportunityRepository:
         self.items: list[OpportunityItem] = []
         self.next_cursor: str | None = None
         self.changed = 0
+        self.details: dict[str, OpportunityDetail] = {}  # 공고 id → 상세. 없으면 404
+        self.detail_calls: list[tuple[str, str, str | None]] = []  # (user_id, 공고 id, 이름)
         self.counts = FeedCounts(
             eligible=0,
             new_eligible=0,
@@ -162,3 +164,14 @@ class FakeOpportunityRepository:
 
     async def feed_counts(self, user_id: str, *, now: datetime) -> FeedCounts:
         return self.counts
+
+    async def detail(
+        self,
+        user_id: str,
+        opportunity_id: str,
+        *,
+        now: datetime,
+        display_name: str | None = None,
+    ) -> OpportunityDetail | None:
+        self.detail_calls.append((user_id, opportunity_id, display_name))
+        return self.details.get(opportunity_id)

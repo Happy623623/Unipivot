@@ -118,10 +118,13 @@ async def _replace_children(
     conn: AsyncConnection, opportunity_id: str, result: ExtractionResult
 ) -> None:
     await conn.execute("delete from requirements where opportunity_id = %s", (opportunity_id,))
-    for requirement in result.requirements:
+    # 요건은 clause_no, created_at 순으로 읽는다(판정, 상세 판정표). 한 트랜잭션의 now()는 모두 같아
+    # 그대로 두면 묶음 안 순서가 id(무작위)로 정해진다. 1마이크로초씩 늘려 제출한 순서를 남긴다
+    for index, requirement in enumerate(result.requirements):
         await conn.execute(
             "insert into requirements (opportunity_id, clause_no, field, operator, value, basis,"
-            " evidence_text, is_ambiguous) values (%s, %s, %s, %s::req_operator, %s, %s, %s, %s)",
+            " evidence_text, is_ambiguous, created_at) values (%s, %s, %s, %s::req_operator, %s,"
+            " %s, %s, %s, now() + %s * interval '1 microsecond')",
             (
                 opportunity_id,
                 requirement.clause_no,
@@ -131,6 +134,7 @@ async def _replace_children(
                 requirement.basis,
                 requirement.evidence_text,
                 requirement.is_ambiguous,
+                index,
             ),
         )
     await conn.execute(
