@@ -505,7 +505,7 @@ async def test_failed_extraction_is_reported_until_forced(tmp_path: Path) -> Non
         (row,) = await _rows(
             conn, "select review_reasons from opportunities where id = %s", failed.opportunity_id
         )
-        assert "제출을 받지 못함" in row["review_reasons"]  # 실패한 추출도 이유가 남는다
+        assert "자격 요건을 정리하지 못함" in row["review_reasons"]  # 실패한 추출도 이유가 남는다
         again = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
         assert (again.status, again.unjudged) == ("unchanged", True)
         assert again.message == f"내용이 같아 다시 추출하지 않음. {RETRY_HINT}"
@@ -521,7 +521,8 @@ async def test_failed_extraction_is_reported_until_forced(tmp_path: Path) -> Non
         (row,) = await _rows(
             conn, "select review_reasons from opportunities where id = %s", forced.opportunity_id
         )
-        assert "제출을 받지 못함" not in row["review_reasons"]  # 다시 추출하면 이유도 새 값이다
+        # 다시 추출하면 이유도 새 값이다
+        assert "자격 요건을 정리하지 못함" not in row["review_reasons"]
     finally:
         await cleanup(conn, log_conn)
 

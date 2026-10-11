@@ -56,9 +56,9 @@ def system_prompt(departments: Sequence[Department], limits: Limits) -> str:
 1. 본문만으로 자격 요건·제출 서류·신청 기간을 알 수 있으면 바로 제출한다.
 2. 본문에 "첨부 참조"처럼 요건이 첨부에 있을 수 있으면 그 첨부를 읽는다. 공고문·요강·안내문을 먼저 읽고, 신청서·서약서·동의서 같은 양식은 읽지 않아도 된다.
 3. 글자가 있는 첨부(PDF·HWP·HWPX)는 {READ_TEXT}, 이미지와 글자 없는 PDF는 {READ_IMAGE}로 읽는다. 본문이 잘렸거나 비었을 때만 {FETCH_ORIGINAL}을 쓴다.
-4. 읽기 도구는 모두 합쳐 {limits.max_reads}번까지다. 도구마다 reason에 고른 이유를 한 줄로 적는다. 학생에게 처리 과정으로 보여준다.
+4. 읽기 도구는 모두 합쳐 {limits.max_reads}번까지다. 도구마다 reason에 고른 이유를 쉬운 말 한 줄로 적는다(도구 이름은 쓰지 않는다). 학생에게 처리 과정으로 보여준다.
    결과에 next_offset(Vision은 next_start_page)이 있으면 뒷부분이 남았다는 뜻이다. 요건이 더 있을 수 있으면 이어 읽는다.
-5. 읽지 못한 첨부에 요건이 있을 것 같으면 needs_review를 true로 하고 review_note에 이유를 적는다.
+5. 자격 요건이 여기서 읽을 수 없는 곳(읽지 못한 첨부, QR 코드, 다른 사이트)에 있다고 적혀 있거나 그럴 것 같으면 needs_review를 true로 하고 review_note에 무엇을 확인하지 못했는지 적는다. 예) "세부 자격이 포스터의 QR 코드 안내에 있어 확인하지 못함"
 6. 제출이 거절되면 돌려받은 문제를 고쳐 한 번 더 제출한다.
 
 ## 요건 규칙
@@ -73,7 +73,7 @@ def system_prompt(departments: Sequence[Department], limits: Limits) -> str:
 - 평점은 만점이 4.5가 아니면 scale을 적는다. 학점 글자는 4.5 만점 값으로 쓴다(A0 4.0, B+ 3.5, B0 3.0). "B학점(80점)"처럼 100점 기준이 함께 있으면 {{"value": 80, "scale": 100}}으로 쓴다.
 - 나이는 만 나이다. 병역 기간만큼 상한을 늘린다는 문구가 있으면 between 값에 "military_extension": true를 넣고, 늘리는 최대 개월이 있으면 {{"max_months": 36}}처럼 쓴다.
 - 이수 학기는 마친 학기 수다. "8학기 이내 재학"은 semesters_completed lte 7, "N학기 이상 이수"는 gte N이다. 현재 학기를 세는지 애매하면 is_ambiguous를 true로 둔다.
-- 학적: "재학생"은 enrollment_status eq "enrolled", "휴학생 포함"은 in ["enrolled", "on_leave"], "졸업유예자 제외"는 not_in ["deferred_graduation"]이다.
+- 학적: "재학생"은 enrollment_status eq "enrolled", "휴학생 포함"은 in ["enrolled", "on_leave"], "졸업유예자 제외"는 not_in ["deferred_graduation"]이다. graduated는 이미 졸업한 사람이다. 졸업예정자만 되거나 졸업예정자를 빼는 조건, 대학원 과정(석사·박사)만 되는 조건은 학적 값에 없으니 other로 둔다. "졸업예정자 포함"처럼 대상을 넓히기만 하는 말은 조건으로 만들지 않는다.
 - 소득: 학자금 지원구간은 income_bracket(0–10), 기준 중위소득 %는 median_income_pct, 기초생활수급·차상위는 welfare_status다. 서로 바꿔 계산하지 않는다. 여러 소득 기준이 "또는"이면 같은 묶음에 넣는다.
 
 ## 항목(field)·연산자·값
@@ -94,6 +94,7 @@ value_json은 값을 JSON으로 쓴 문자열이다.
 - apply_start·deadline: 신청 기간(KST). 시각이 있으면 YYYY-MM-DDTHH:MM, 없으면 YYYY-MM-DD로 쓴다. 연도가 없으면 게시일 뒤에 오는 가장 가까운 날짜로 정한다(12월 공지의 "1. 16."은 다음 해). 적혀 있지 않으면 넣지 않는다.
 - eligibility_basis_date: "2026. 10. 1. 기준 만 34세 이하"처럼 자격 기준일이 적혀 있을 때만 YYYY-MM-DD로 쓴다.
 - easy_summary: 학생에게 보여줄 쉬운 설명 2–3문장(누가, 무엇을, 언제까지). 링크는 넣지 않는다.
+- review_note: 학생에게 원문 확인이 필요한 이유로 그대로 보인다. 쉬운 말로 한 문장만 쓰고, 도구 이름이나 영어 항목 이름은 쓰지 않는다.
 - confidence: 요건을 빠짐없이 정확히 뽑았다고 보는 정도(0–1)."""
 
 
@@ -254,7 +255,10 @@ SUBMIT_SPEC = ToolSpec(
             "easy_summary": {"type": "string"},
             "confidence": {"type": "number", "description": "0–1"},
             "needs_review": {"type": "boolean", "description": "원문 확인이 필요하면 true"},
-            "review_note": {"type": "string", "description": "needs_review가 true인 이유"},
+            "review_note": {
+                "type": "string",
+                "description": "needs_review가 true인 이유. 학생에게 그대로 보인다(쉬운 말 한 문장)",
+            },
         },
         "required": ["requirements", "documents", "confidence", "needs_review"],
     },

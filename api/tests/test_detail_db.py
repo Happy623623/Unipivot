@@ -547,7 +547,7 @@ async def test_detail_shows_review_reasons() -> None:
 
         raw = (
             "읽지 못한 첨부가 있음",
-            "모델이 원문 확인 필요로 표시: 신청서는\nhttps://evil.example/form 에서 받기",
+            "AI 메모: 신청서는\nhttps://evil.example/form 에서 받기",
         )
         flagged = ExtractionResult(
             succeeded=True, confidence=Decimal("0.9"), needs_review=True, review_reasons=raw
@@ -556,7 +556,7 @@ async def test_detail_shows_review_reasons() -> None:
         assert stored == list(raw)  # 저장은 그대로
         assert detail.needs_review and detail.review_reasons == [
             "읽지 못한 첨부가 있음",
-            "모델이 원문 확인 필요로 표시: 신청서는 에서 받기",
+            "AI 메모: 신청서는 에서 받기",
         ]
 
         # 다시 추출해서 이유가 없어지면 비운다
@@ -566,11 +566,11 @@ async def test_detail_shows_review_reasons() -> None:
 
         # 추출에 실패해도 이유는 남는다. 처리 과정은 비어 있다(실행이 공고에 이어지지 않음)
         failed = ExtractionResult(
-            succeeded=False, needs_review=True, review_reasons=("제출을 받지 못함",)
+            succeeded=False, needs_review=True, review_reasons=("자격 요건을 정리하지 못함",)
         )
         stored, detail = await save(failed, "h3")
-        assert stored == ["제출을 받지 못함"]
-        assert (detail.needs_review, detail.review_reasons) == (True, ["제출을 받지 못함"])
+        assert stored == ["자격 요건을 정리하지 못함"]
+        assert (detail.needs_review, detail.review_reasons) == (True, ["자격 요건을 정리하지 못함"])
         assert detail.eligibility.reason_text == UNJUDGED_SUMMARY
         assert detail.process.extraction == []
     finally:
@@ -665,6 +665,64 @@ async def test_detail_process_from_an_extraction_run() -> None:
         assert [c.field for c in detail.eligibility.conditions] == ["gpa_last_semester"]
         # 다 읽었고 고친 제출도 아니라 원문 확인 필요 이유가 없다
         assert (detail.needs_review, detail.review_reasons) == (False, [])
+    finally:
+        await conn.rollback()
+        await conn.close()
+        await log_conn.execute("delete from agent_runs where id = any(%s::uuid[])", (run_ids,))
+        await log_conn.close()
+
+
+async def test_detail_shows_a_forced_submission_as_pipeline() -> None:
+    """읽기 상한에 닿아 코드가 시킨 제출은 모델이 고른 단계가 아니라 pipeline으로 보인다.
+    원문 확인 필요 이유는 상한 이름 대신 학생이 알아들을 말로 보인다(LLM만 가짜, 실제 실행 로그)."""
+    conn, log_conn = await connect(), await connect(autocommit=True)
+    run_ids: list[str] = []
+    try:
+        me = await make_user(conn)
+        opportunity = await one(
+            conn,
+            "insert into opportunities (source_type, title) values ('school_notice', '○○장학')"
+            " returning id, now() as now",
+        )
+        assert opportunity is not None
+        opportunity_id, now = str(opportunity["id"]), opportunity["now"]
+        guide = samples.hwpx(hp("가. 직전 학기 평점평균 3.0 이상"))
+        notice = NoticeInput(
+            title="○○장학",
+            body="자세한 내용은 첨부를 참조하세요.",
+            attachments=(AttachmentInput(1, "선발요강.hwpx", guide, "https://example.ac.kr/f/1"),),
+        )
+        requirement = {
+            "clause_no": 1,
+            "field": "gpa_last_semester",
+            "operator": "gte",
+            "value_json": "3.0",
+            "evidence_text": "직전 학기 평점평균 3.0 이상",
+            "is_ambiguous": False,
+        }
+        llm = ScriptedLlm(
+            call(READ_TEXT, attachment_no=1, reason="요건이 선발요강에 있어서 읽음"),
+            call(READ_TEXT, attachment_no=1, reason="한 번 더 확인"),  # 상한(1번)에 닿아 막힌다
+            call(SUBMIT, requirements=[requirement], confidence=0.9, needs_review=False),
+        )
+        agent = ExtractionAgent(llm, model="gemini-3.8-flash", limits=Limits(max_reads=1))
+        async with agent_run(log_conn, trigger="batch_crawl") as run:
+            run_ids.append(run.id)
+            result = await agent.run(notice, run)
+        assert llm.requests[2].force_tool == SUBMIT  # 제출만 부를 수 있게 한 요청
+        digest = content_hash(notice.body, notice.attachments)
+        await save_extraction(conn, opportunity_id, result, run_id=run.id, content_hash=digest)
+
+        detail = await OpportunityRepository(conn).detail(me, opportunity_id, now=now)
+        assert detail is not None
+        assert [(s.tool, s.status, s.chosen_by) for s in detail.process.extraction] == [
+            (READ_TEXT, "succeeded", "agent"),
+            (SUBMIT, "succeeded", "pipeline"),
+        ]
+        assert (detail.needs_review, detail.review_reasons) == (
+            True,
+            ["읽기 횟수 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함"],
+        )
     finally:
         await conn.rollback()
         await conn.close()

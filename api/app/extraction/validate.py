@@ -1,7 +1,9 @@
 """submit_requirements 검증: 스키마 → 판정 엔진 모양 검사 → 근거 대조 (PRD 6장).
 
 첫 제출에 문제가 있으면 문제 목록을 모델에 돌려주고 한 번 더 받는다. 마지막 제출은 고쳐서 받고,
-고친 내용(fixes)은 원문 확인 필요 사유가 된다.
+고친 내용(fixes)은 원문 확인 필요 사유가 된다. 사유는 공고 상세에서 학생에게 보이므로 항목 키 이름
+(deadline 등) 없이 쉬운 말로 쓴다. 모델에 돌려주는 문제 목록은 그대로 키 이름을 쓴다.
+0부터 센 묶음 번호는 모두 1씩 올리면 잃는 것이 없어서 사유로 남기지 않는다.
 - 모양이 틀린 조건은 other + 모호, 근거가 읽은 원문에 없는 조건은 모호로 저장한다
 - 묶음 번호가 틀린 조건은 1번 묶음에 모호 조건으로 넣는다. 따로 묶음을 만들면 "또는"이었던 조건이
   "그리고"가 되어 지원 가능한 학생이 지원 어려움이 될 수 있어서다(모호 조건은 묶음을 불충족으로 만들지 않는다)
@@ -35,6 +37,14 @@ _DEADLINE_AFTER_POSTED = timedelta(
 )  # 게시일보다 이만큼 뒤의 마감은 연도를 잘못 읽은 것으로 본다
 _BASIS_BEFORE_POSTED = timedelta(days=3 * 366)
 _BASIS_AFTER_POSTED = timedelta(days=400)
+# 원문 확인 필요 이유. 에이전트도 신뢰도가 낮을 때 같은 문구를 써서 한 줄로 합쳐진다
+LOW_CONFIDENCE = "AI가 정리한 조건을 확신하지 못함"
+# 고친 내용에 쓰는 날짜 이름
+_DATE_NAMES = {
+    "apply_start": "신청 시작일",
+    "deadline": "마감일",
+    "eligibility_basis_date": "자격 기준일",
+}
 
 
 class Evidence:
@@ -118,14 +128,15 @@ def check_submission(
         return None, notes.problems  # 요건을 알 수 없다. 빈 목록으로 저장하면 모두 지원 가능이 된다
     shift = _zero_based(raw_requirements)
     if shift:
-        notes.add("clause_no는 1부터 쓴다", "0부터 센 묶음 번호를 1부터로 고침")
+        # 번호를 모두 1씩 올리면 묶음이 그대로라 잃는 것이 없다. 원문 확인 필요 이유로 남기지 않는다
+        notes.add("clause_no는 1부터 쓴다")
     requirements = [
         _requirement(no, item, shift, context, notes) for no, item in enumerate(raw_requirements, 1)
     ]
 
     raw_documents = _listish(args.get("documents", []))
     if raw_documents is None:
-        notes.add("documents는 목록이어야 한다", "읽을 수 없는 서류 목록을 버림")
+        notes.add("documents는 목록이어야 한다", "제출 서류 목록을 읽지 못해 뺌")
         raw_documents = []
     documents = [
         document
@@ -139,7 +150,7 @@ def check_submission(
     if apply_start and deadline and apply_start > deadline:
         notes.add(
             "apply_start가 deadline보다 늦다. 두 날짜를 확인해라",
-            "마감보다 늦은 신청 시작일을 버림",
+            "신청 시작일이 마감일보다 늦어 뺌",
         )
         apply_start = None
     basis_date = _basis_date(args, context.posted_on, notes)
@@ -193,7 +204,7 @@ def _requirement(
 ) -> RequirementDraft:
     where = f"requirements[{no}]"
     if not isinstance(item, Mapping):
-        notes.add(f"{where}: 객체여야 한다", "읽을 수 없는 조건을 모호한 기타 조건으로 저장")
+        notes.add(f"{where}: 객체여야 한다", "형식이 틀린 조건을 원문 확인 조건으로 바꿈")
         return _as_other(1, None, "")
     evidence = _text(item.get("evidence_text"))
     clause_no = _whole(item.get("clause_no"))
@@ -203,7 +214,7 @@ def _requirement(
     if not clause_ok:
         notes.add(
             f"{where}: clause_no는 1–{_MAX_CLAUSE_NO} 정수여야 한다",
-            "묶음 번호가 틀린 조건을 1번 묶음의 모호한 조건으로 저장",
+            "다른 조건과의 관계(그리고·또는)를 알 수 없는 조건이 있음",
         )
         clause_no = 1
 
@@ -245,20 +256,23 @@ def _requirement(
             ) or _other_problem(field, value)
     if problem:
         label = FIELD_LABELS.get(field, str(field)) if isinstance(field, str) else str(field)
-        notes.add(f"{where}({label}): {problem}", f"모양이 틀린 {label} 조건을 기타 조건으로 저장")
+        # 학생에게 보이는 사유에는 한글 항목 이름만 쓴다. 모델이 지어낸 항목 이름(영어)은 넣지 않는다
+        known = FIELD_LABELS.get(field) if isinstance(field, str) else None
+        what = "기타 조건" if field == "other" else f"{known} 조건" if known else "조건"
+        notes.add(f"{where}({label}): {problem}", f"형식이 틀린 {what}을 원문 확인 조건으로 바꿈")
         return _as_other(clause_no, evidence, str(item.get("value_json", "")))
 
     if not evidence:
         notes.add(
             f"{where}: evidence_text가 비었다. 근거 문장을 원문에서 그대로 복사해라",
-            "근거 문장이 없는 조건을 모호한 조건으로 저장",
+            "근거 문장이 없는 조건이 있음",
         )
         ambiguous = True
     elif not context.evidence.contains(evidence):
         notes.add(
             f"{where}: 근거 문장이 읽은 원문에 없다. 고치거나 요약하지 말고 원문 그대로 복사해라:"
             f" {evidence!r}",
-            "근거 문장을 원문에서 찾지 못한 조건을 모호한 조건으로 저장",
+            "근거 문장을 원문에서 찾지 못한 조건이 있음",
         )
         ambiguous = True
     if field == "department" and not _known_departments(value, basis, context.departments):
@@ -330,7 +344,7 @@ def _document(no: int, item: Any, context: Context, notes: _Notes) -> DocumentDr
     where = f"documents[{no}]"
     name = _text(item.get("name")) if isinstance(item, Mapping) else None
     if not isinstance(item, Mapping) or not name:
-        notes.add(f"{where}: name이 있어야 한다", "이름 없는 서류를 버림")
+        notes.add(f"{where}: name이 있어야 한다", "이름 없는 제출 서류를 뺌")
         return None
     required = item.get("is_required", True)
     if not isinstance(required, bool):
@@ -344,7 +358,7 @@ def _document(no: int, item: Any, context: Context, notes: _Notes) -> DocumentDr
         if attachment is None:
             notes.add(
                 f"{where}: form_attachment_no {form_no!r}는 첨부 목록에 없다",
-                "없는 첨부를 가리킨 서류 양식 링크를 버림",
+                "서류 양식 링크를 찾지 못해 뺌",
             )
         else:
             form_url = attachment.source_url
@@ -368,13 +382,13 @@ def _moment(
     except ValueError:
         notes.add(
             f"{key}는 YYYY-MM-DD 또는 YYYY-MM-DDTHH:MM이어야 한다: {raw!r}",
-            f"읽을 수 없는 {key}를 버림",
+            f"{_DATE_NAMES[key]}을 읽지 못해 뺌",
         )
         return None
     if moment.tzinfo is not None and moment.utcoffset() != timedelta(hours=9):
         notes.add(
             f"{key}에 시간대를 붙이지 말고 KST 시각으로 써라: {raw!r}",
-            f"{key}의 시간대를 떼고 KST로 읽음",
+            f"{_DATE_NAMES[key]}의 시간대를 한국 시간으로 고침",
         )
     return moment.replace(tzinfo=KST)
 
@@ -389,13 +403,13 @@ def _check_deadline(
     if day < posted_on:
         notes.add(
             f"deadline({day})이 게시일({posted_on})보다 앞선다. 연도를 확인해라",
-            "게시일보다 앞선 마감을 버림",
+            "마감일이 게시일보다 빨라 뺌",
         )
         return None
     if day > posted_on + _DEADLINE_AFTER_POSTED:
         notes.add(
             f"deadline({day})이 게시일({posted_on})보다 1년 넘게 뒤다. 연도를 확인해라",
-            "게시일보다 1년 넘게 뒤인 마감을 버림",
+            "마감일이 게시일보다 1년 넘게 뒤라 뺌",
         )
         return None
     return deadline
@@ -409,14 +423,14 @@ def _basis_date(args: Mapping[str, Any], posted_on: date | None, notes: _Notes) 
     try:
         day = date.fromisoformat(raw[:10])
     except ValueError:
-        notes.add(f"{key}는 YYYY-MM-DD여야 한다: {raw!r}", f"읽을 수 없는 {key}를 버림")
+        notes.add(f"{key}는 YYYY-MM-DD여야 한다: {raw!r}", f"{_DATE_NAMES[key]}을 읽지 못해 뺌")
         return None
     if posted_on and not (
         posted_on - _BASIS_BEFORE_POSTED <= day <= posted_on + _BASIS_AFTER_POSTED
     ):
         notes.add(
             f"{key}({day})가 게시일({posted_on})과 너무 멀다. 연도를 확인해라",
-            "게시일과 동떨어진 판정 기준일을 버림",
+            "자격 기준일이 게시일과 너무 떨어져 있어 뺌",
         )
         return None
     return day
@@ -430,7 +444,7 @@ def _confidence(raw: Any, notes: _Notes) -> Decimal:
         if not Decimal(0) <= value <= Decimal(1):
             raise ValueError
     except (TypeError, ValueError, InvalidOperation):
-        notes.add(f"confidence는 0–1 사이 숫자여야 한다: {raw!r}", "신뢰도를 읽을 수 없음")
+        notes.add(f"confidence는 0–1 사이 숫자여야 한다: {raw!r}", LOW_CONFIDENCE)
         return Decimal("0.50")
     return value.quantize(Decimal("0.01"))
 
