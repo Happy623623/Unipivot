@@ -727,17 +727,16 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 스키마 기준은 이 문서가 아니라 `supabase/migrations`의 SQL 파일이다. 이 장에는 DDL 본문을 두지 않는다.
 컬럼·제약을 확인할 때는 아래 파일을 보고, 바꿀 때는 기존 파일을 고치지 않고 새 마이그레이션을 더한다.
 
-적용 순서는 **v07 → v08 → v09 → seed**다.
+적용 순서는 파일 이름(시각) 순이다: v07 → v08 → v09 → 판정 엔진 버전 → 원문 확인 이유 → 학과 seed. 새 마이그레이션은 이름 순으로 맨 뒤에 온다.
 
 | 순서 | 파일 | 내용 |
 | --- | --- | --- |
 | 1 | `supabase/migrations/20261006000000_erd_v07.sql` | v0.7 DDL 전체 (enum, 테이블, 인덱스) |
 | 2 | `supabase/migrations/20261006000100_erd_v08.sql` | v0.8 마이그레이션 (알림함 읽음, user_settings, opportunity_views, 동의 기록 등) |
 | 3 | `supabase/migrations/20261006000200_erd_v09.sql` | v0.9 마이그레이션 (요건 묶음·basis, 첨부·학과·사용 이벤트, enum 3개 → text + check, FK 인덱스, 전 테이블 RLS) |
-| 4 | `supabase/migrations/…_seed_departments.sql` | 학과 목록(departments) seed. 목록이 비어 있으면 온보딩에서 학과를 저장할 수 없으므로 S1-2 전에 넣는다 |
-| 5 | `supabase/migrations/20261009000000_eligibility_engine_version.sql` | eligibility_results.engine_version 추가 (S1-5) |
-| 6 | `supabase/migrations/20261010000000_opportunity_review_reasons.sql` | opportunities.review_reasons(원문 확인 필요 이유, S1-6b) |
-| 7 | `supabase/migrations/20261010000100_seed_departments.sql` | 학과 목록 seed(ERICA 48개) |
+| 4 | `supabase/migrations/20261009000000_eligibility_engine_version.sql` | eligibility_results.engine_version 추가 (S1-5) |
+| 5 | `supabase/migrations/20261010000000_opportunity_review_reasons.sql` | opportunities.review_reasons(원문 확인 필요 이유, S1-6b) |
+| 6 | `supabase/migrations/20261010000100_seed_departments.sql` | 학과 목록 seed(ERICA 48개) |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
