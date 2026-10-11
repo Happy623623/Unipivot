@@ -218,7 +218,7 @@ async def test_extract_log_and_store_round_trip() -> None:
             ),
             confidence=Decimal("0.70"),
             needs_review=True,
-            review_reasons=("모호한 요건이 있음",),
+            review_reasons=("자동으로 판정할 수 없는 조건이 있음",),
         )
         version = await save_extraction(
             conn, opportunity_id, again, run_id=run.id, content_hash="h2"
@@ -226,12 +226,12 @@ async def test_extract_log_and_store_round_trip() -> None:
         assert version == 2
         (saved,) = await _rows(conn, "select * from opportunities where id = %s", opportunity_id)
         assert (saved["requirements_version"], saved["deadline_at"]) == (2, None)
-        assert saved["review_reasons"] == ["모호한 요건이 있음"]  # 이유도 새 값으로 바꾼다
+        assert saved["review_reasons"] == ["자동으로 판정할 수 없는 조건이 있음"]  # 이유도 새 값
         assert await _counts(conn, opportunity_id) == {"reqs": 1, "docs": 0}
 
         # 실패한 추출: 바뀐 공고를 옛 요건으로 판정하지 않게 요건을 비우고 판정 대상에서 뺀다
         failed = ExtractionResult(
-            succeeded=False, needs_review=True, review_reasons=("제출을 받지 못함",)
+            succeeded=False, needs_review=True, review_reasons=("자격 요건을 정리하지 못함",)
         )
         version = await save_extraction(
             conn, opportunity_id, failed, run_id=None, content_hash="h3"
@@ -243,7 +243,7 @@ async def test_extract_log_and_store_round_trip() -> None:
             True,
             None,
         )
-        assert saved["review_reasons"] == ["제출을 받지 못함"]
+        assert saved["review_reasons"] == ["자격 요건을 정리하지 못함"]
         assert await _counts(conn, opportunity_id) == {"reqs": 0, "docs": 0}
     finally:
         await conn.rollback()

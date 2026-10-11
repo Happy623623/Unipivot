@@ -13,6 +13,8 @@
 > v0.9 보강(10/10, S1-6b): opportunities.review_reasons
 >
 > v0.9 보강(10/10): 학과 목록 seed(ERICA 48개)
+>
+> v0.9 보강(10/11, S1-4 후속): tool_calls.output의 forced(스키마 변경 없음)
 
 ---
 
@@ -642,6 +644,7 @@ erDiagram
 - 강의자료 요약·번역은 `files.sha256`으로 **본인 파일끼리만** 재사용한다. 다른 사용자의 결과는 저작권 문제로 재사용하지 않는다
 - 강의자료 분량 상한은 쪽수가 아니라 `materials.text_tokens`(추출 텍스트 토큰)로 판정한다. 요약은 구간별로 쪼개 전체를 처리하고, 번역은 `material_sections` 단위로 사용자가 요청한 구간만 한다. `over_limit`과 `translation_requested_at`은 유료화 수요를 보여주는 근거 데이터다
 - `agent_runs`에 토큰·비용 합계를 두고 `llm_calls`에 호출별 상세를 둔다. 지표 집계는 `agent_runs`만 보면 된다
+- 요건 추출 제출(submit_requirements)의 output은 {accepted, problems}이고, 읽기·토큰 상한에 닿아 코드가 시킨 제출이면 forced: true가 더해진다.
 
 ### 알림함 · 설정 · 조회 기록
 

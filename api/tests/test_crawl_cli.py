@@ -254,7 +254,7 @@ async def test_import_command(
         assert "    폴더에만 있는 파일(안 씀): 메모.txt" in out
         assert "    새 공고 · 요건 1개 · 서류 1개 · 마감 2026-10-24 18:00 · 신뢰도 0.90 · $" in out
         assert "    원문 확인 필요: 읽지 못한 첨부가 있음" in out  # 3. 동의서.docx
-        assert "    원문 확인 필요: 첨부를 읽지 않고 요건 없음으로 판단" in out  # 2 근로
+        assert "    원문 확인 필요: 첨부를 읽지 않고 자격 제한이 없다고 봄" in out  # 2 근로
         assert "    건너뜀: 서울캠퍼스 공지라 건너뜀" in out
         assert "새 공고 2 · 다시 추출 0 · 그대로 0 · 건너뜀 1 · 오류 0 · 판정 안 됨 0" in out
 

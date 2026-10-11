@@ -92,14 +92,14 @@ def test_other_time_zones_are_read_as_kst_wall_time() -> None:
     submission, problems = check(final=True, deadline="2026-10-24T18:00Z")
     assert "시간대를 붙이지 말고" in problems[0]
     assert submission.deadline_at == datetime(2026, 10, 24, 18, 0, tzinfo=KST)
-    assert submission.fixes == ("deadline의 시간대를 떼고 KST로 읽음",)
+    assert submission.fixes == ("마감일의 시간대를 한국 시간으로 고침",)
 
 
 @pytest.mark.parametrize(
     ("deadline", "fix"),
     [
-        ("2026-01-16", "게시일보다 앞선 마감을 버림"),  # 12월 말 공지의 "1. 16."을 올해로 읽음
-        ("2027-12-31", "게시일보다 1년 넘게 뒤인 마감을 버림"),
+        ("2026-01-16", "마감일이 게시일보다 빨라 뺌"),  # 12월 말 공지의 "1. 16."을 올해로 읽음
+        ("2027-12-31", "마감일이 게시일보다 1년 넘게 뒤라 뺌"),
     ],
 )
 def test_deadline_with_a_wrong_year_is_dropped(deadline: str, fix: str) -> None:
@@ -170,10 +170,10 @@ def test_final_submission_is_fixed_instead_of_rejected() -> None:
     assert [(d.name, d.form_url) for d in submission.documents] == [("신청서", None)]
     assert (submission.deadline_at, submission.confidence) == (None, Decimal("0.50"))
     assert set(submission.fixes) >= {
-        "모양이 틀린 직전학기 평점 조건을 기타 조건으로 저장",
-        "근거 문장이 없는 조건을 모호한 조건으로 저장",
-        "읽을 수 없는 deadline를 버림",
-        "이름 없는 서류를 버림",
+        "형식이 틀린 직전학기 평점 조건을 원문 확인 조건으로 바꿈",
+        "근거 문장이 없는 조건이 있음",
+        "마감일을 읽지 못해 뺌",
+        "이름 없는 제출 서류를 뺌",
     }
 
 
@@ -200,7 +200,8 @@ def test_zero_based_clause_numbers_keep_their_groups() -> None:
         (1, False),
         (2, False),
     ]
-    assert submission.fixes == ("0부터 센 묶음 번호를 1부터로 고침",)
+    # 번호만 1씩 올린 것이라 잃는 것이 없다. 원문 확인 필요 이유로 남기지 않는다
+    assert submission.fixes == ()
 
 
 def test_broken_clause_number_joins_clause_one_as_ambiguous() -> None:
@@ -210,7 +211,7 @@ def test_broken_clause_number_joins_clause_one_as_ambiguous() -> None:
         (1, "gpa_last_semester", False),
         (1, "gpa_last_semester", True),
     ]
-    assert "묶음 번호가 틀린 조건을 1번 묶음의 모호한 조건으로 저장" in submission.fixes
+    assert "다른 조건과의 관계(그리고·또는)를 알 수 없는 조건이 있음" in submission.fixes
 
 
 def test_other_and_unknown_fields_are_coerced_on_the_final_submission() -> None:
@@ -227,6 +228,52 @@ def test_other_and_unknown_fields_are_coerced_on_the_final_submission() -> None:
         ("other", {"text": "직전 학기 평점평균 3.0 이상"}, True),
         ("other", {"text": "직전 학기 평점평균 3.0 이상"}, True),
     ]
+
+
+@pytest.mark.parametrize(
+    ("args", "fix"),
+    [
+        ({"deadline": "10월 24일"}, "마감일을 읽지 못해 뺌"),
+        ({"apply_start": "다음 주"}, "신청 시작일을 읽지 못해 뺌"),
+        (
+            {"apply_start": "2026-10-25", "deadline": "2026-10-24"},
+            "신청 시작일이 마감일보다 늦어 뺌",
+        ),
+        ({"apply_start": "2026-10-13T09:00Z"}, "신청 시작일의 시간대를 한국 시간으로 고침"),
+        ({"eligibility_basis_date": "올해 1월 1일"}, "자격 기준일을 읽지 못해 뺌"),
+        ({"eligibility_basis_date": "2016-01-01"}, "자격 기준일이 게시일과 너무 떨어져 있어 뺌"),
+        ({"documents": "신청서"}, "제출 서류 목록을 읽지 못해 뺌"),
+        ({"documents": [{"is_required": True}]}, "이름 없는 제출 서류를 뺌"),
+        (
+            {"documents": [{"name": "신청서", "form_attachment_no": 7}]},
+            "서류 양식 링크를 찾지 못해 뺌",
+        ),
+        ({"requirements": ["평점 3.0"]}, "형식이 틀린 조건을 원문 확인 조건으로 바꿈"),
+        # 모델이 지어낸 항목 이름(영어)은 학생에게 보이는 문구에 넣지 않는다
+        (
+            {"requirements": [{**GPA, "field": "nationality"}]},
+            "형식이 틀린 조건을 원문 확인 조건으로 바꿈",
+        ),
+        (
+            {"requirements": [{**GPA, "value_json": "3.0 이상"}]},
+            "형식이 틀린 직전학기 평점 조건을 원문 확인 조건으로 바꿈",
+        ),
+        (
+            {"requirements": [{**GPA, "field": "other", "operator": "eq", "value_json": '"봉사"'}]},
+            "형식이 틀린 기타 조건을 원문 확인 조건으로 바꿈",
+        ),
+        (
+            {"requirements": [{**GPA, "evidence_text": "평점 3.0 이상인 학생"}]},
+            "근거 문장을 원문에서 찾지 못한 조건이 있음",
+        ),
+        ({"confidence": 1.5}, "AI가 정리한 조건을 확신하지 못함"),
+    ],
+)
+def test_fixes_are_plain_words(args: dict[str, Any], fix: str) -> None:
+    """고친 내용은 공고 상세에서 원문 확인 필요 이유로 보인다. 항목 키 이름 없이 쉬운 말로 쓴다."""
+    submission, problems = check(final=True, **args)
+    assert problems  # 모델에 돌려주는 문제는 키 이름을 쓴 그대로다
+    assert submission.fixes == (fix,)
 
 
 def test_links_are_removed_from_the_summary() -> None:
