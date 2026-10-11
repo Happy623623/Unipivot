@@ -9,6 +9,8 @@ const useMocks = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 const errorMessages: Record<string, string> = {
   auth: "로그인을 마치지 못했어요. 다시 시도해 주세요.",
   missing_code: "로그인 정보가 없어요. 처음부터 다시 시도해 주세요.",
+  session: "로그인이 만료됐어요. 다시 로그인해 주세요.",
+  other_account: "캘린더를 연결할 때 다른 Google 계정을 골랐어요. 처음 쓰던 계정으로 다시 로그인한 뒤 연결해 주세요.",
 };
 
 function GoogleMark() {

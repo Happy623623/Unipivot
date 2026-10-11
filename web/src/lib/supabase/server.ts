@@ -23,3 +23,21 @@ export async function createServerSupabase() {
     },
   );
 }
+
+// 쿠키를 읽기만 하는 클라이언트. 확인용 호출(getUser)이 세션·PKCE 쿠키를 바꾸거나 지우지 않게 한다
+// (세션이 끊겨 있으면 auth-js가 저장소를 비우면서 코드 교환에 쓸 PKCE 값까지 지운다)
+export async function createReadOnlyServerSupabase() {
+  const cookieStore = await cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll() {},
+      },
+    },
+  );
+}

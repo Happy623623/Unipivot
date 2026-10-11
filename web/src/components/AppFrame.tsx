@@ -1,12 +1,13 @@
 "use client";
 
-import { createContext, Fragment, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   getMe,
   getNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  recordEvent,
 } from "@/api/client";
 import AppShell from "@/components/AppShell";
 import StatusPreview from "@/dev/StatusPreview";
@@ -14,7 +15,8 @@ import { pathnameToRoute, useAppNavigate } from "@/lib/routes";
 import useAsyncData from "@/lib/useAsyncData";
 import type { AppNotification, Me } from "@/types/api";
 
-// Make의 App.tsx가 하던 일: 내 정보·알림 불러오기, 동의 전이면 온보딩으로 보내기, 상태 미리보기
+// Make의 App.tsx가 하던 일: 내 정보·알림 불러오기, 동의 전이면 온보딩으로 보내기, 상태 미리보기.
+// 동의를 마친 사용자가 앱을 열면 app_open을 한 번 기록한다(서버가 KST 하루 1건만 남긴다)
 const MeContext = createContext<Me | null>(null);
 export const useMe = () => useContext(MeContext);
 
@@ -28,6 +30,7 @@ export default function AppFrame({ children }: { children: ReactNode }) {
   const [notificationsOverride, setNotificationsOverride] = useState<AppNotification[] | null>(null);
   const [unreadOverride, setUnreadOverride] = useState<number | null>(null);
   const meRequest = useAsyncData(getMe, [revision]);
+  const openRecorded = useRef(false);
   const notificationsRequest = useAsyncData(getNotifications, [revision]);
 
   useEffect(() => {
@@ -38,6 +41,12 @@ export default function AppFrame({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (meRequest.data && !meRequest.data.consented) router.replace("/onboarding");
   }, [meRequest.data, router]);
+
+  useEffect(() => {
+    if (!meRequest.data?.consented || openRecorded.current) return;
+    openRecorded.current = true;
+    recordEvent("app_open");
+  }, [meRequest.data]);
 
   return (
     <MeContext.Provider value={meRequest.data}>

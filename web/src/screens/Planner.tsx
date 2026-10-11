@@ -15,6 +15,7 @@ import PlannerDayPanel from "@/components/PlannerDayPanel";
 import Skeleton from "@/components/Skeleton";
 import useAsyncData from "@/lib/useAsyncData";
 import type { PlannerResponse, PlannerTask } from "@/types/api";
+import type { Route } from "@/types/route";
 
 function monthRange(year: number, month: number) {
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -34,7 +35,7 @@ function PlannerSkeleton() {
   );
 }
 
-export default function Planner() {
+export default function Planner({ navigate }: { navigate: (route: Route) => void }) {
   const [view, setView] = useState({
     year: Number(MOCK_TODAY.slice(0, 4)),
     month: Number(MOCK_TODAY.slice(5, 7)),
@@ -42,7 +43,6 @@ export default function Planner() {
   const [selectedDate, setSelectedDate] = useState(MOCK_TODAY);
   const [plannerOverride, setPlannerOverride] =
     useState<PlannerResponse | null>(null);
-  const [calendarOverride, setCalendarOverride] = useState<boolean | null>(null);
   const range = monthRange(view.year, view.month);
   const request = useAsyncData(
     () => Promise.all([getPlanner(range.from, range.to), getMe()]),
@@ -64,8 +64,7 @@ export default function Planner() {
 
   const planner = plannerOverride ?? request.data[0];
   const me = request.data[1];
-  const calendarConnected =
-    calendarOverride ?? me.calendar_connected;
+  const calendarConnected = me.calendar_connected;
   const selectedTasks = planner.items.filter(
     (task) => task.due_date === selectedDate,
   );
@@ -117,29 +116,22 @@ export default function Planner() {
           }}
         />
       </section>
-      <section
-        className={`flex items-center justify-between gap-4 rounded-[14px] border p-[18px] ${
-          calendarConnected
-            ? "border-[#e5e7eb] bg-white"
-            : "border-[#e5e7eb] bg-[#fef2f2]"
-        }`}
-      >
+      {/* 캘린더 연결은 설정 한 곳에서 한다(Google 화면을 거쳐 설정으로 돌아온다) */}
+      <section className="flex items-center justify-between gap-4 rounded-[14px] border border-[#e5e7eb] bg-white p-[18px]">
         <div>
           <p className="text-[14px] font-semibold">
             <b className="mr-3 text-[#4f6ef7]">G</b>
-            {calendarConnected
-              ? "Google Calendar 연결됨"
-              : "Google Calendar 연결 만료"}
+            {calendarConnected ? "Google Calendar 연결됨" : "Google Calendar 연결 안 됨"}
           </p>
           <p className="ml-7 mt-1 text-[12px] text-[#667085]">
             {calendarConnected
               ? "준비 중인 공고 마감일과 LMS 과제 마감일을 Google Calendar에 등록해요."
-              : "다시 로그인해서 연결해 주세요"}
+              : "설정에서 연결하면 준비 일정과 마감일을 Google Calendar에 넣을 수 있어요."}
           </p>
         </div>
         {!calendarConnected && (
-          <Button secondary onClick={() => setCalendarOverride(true)}>
-            다시 연결
+          <Button secondary onClick={() => navigate({ name: "settings" })}>
+            설정에서 연결
           </Button>
         )}
       </section>

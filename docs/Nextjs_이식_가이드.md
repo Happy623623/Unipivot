@@ -47,10 +47,13 @@ unipivot-web/
 ```bash
 mkdir unipivot-web && cd unipivot-web
 npm init -y
+npm pkg delete type   # npm 11의 npm init은 "type": "commonjs"를 넣는다. 레포의 web/package.json처럼 지운다
 npm install next@16 react@19 react-dom@19 @supabase/ssr @supabase/supabase-js
 npm install -D typescript@5 @types/react@19 @types/react-dom@19 @types/node@22 tailwindcss@4 @tailwindcss/postcss@4 postcss
 npm pkg set scripts.dev="next dev" scripts.build="next build" scripts.start="next start" scripts.typecheck="tsc --noEmit"
 ```
+
+레포에서는 루트 .gitignore가 node_modules/, .next/, .env*(예시 파일 제외), next-env.d.ts, *.tsbuildinfo를 막는다.
 
 ### 2. 설정 파일
 
@@ -527,69 +530,16 @@ npm run build      # 타입 검사 포함
 
 ## W4: 목데이터를 실제 API로 바꾸기
 
-`src/api/client.ts`의 함수 이름과 반환 타입은 그대로 두고, 함수 안만 `apiFetch`로 바꾼다. 화면은 손대지 않는다. 비동기 작업(포스터 추출, 준비하기)은 `waitForRun`으로 실행 상태를 확인한다.
+`src/api/client.ts`의 함수 이름과 반환 타입은 그대로 두고, 함수 안만 `apiFetch`로 바꾼다. 화면은 손대지 않는다. 비동기 작업(포스터 추출, 준비하기)은 `waitForRun`으로 실행 상태를 확인한다. 계정 함수는 src/api/accountClient.ts, LMS 함수는 src/api/lmsClient.ts에 두고 client.ts가 다시 내보낸다. 목 구현은 src/api/mockClient.ts에 모은다.
 
-#### `src/api/http.ts`
-
-```ts
-import { createBrowserSupabase } from "@/lib/supabase/client";
-import type { Run } from "@/types/api";
-
-// W4에 목데이터를 실제 FastAPI 호출로 바꿀 때 쓰는 공통 함수 (API 명세 1·2·13장)
-export class ApiError extends Error {
-  constructor(
-    public code: string,
-    message: string,
-    public status: number,
-    public details?: unknown,
-  ) {
-    super(message);
-  }
-}
-
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const { data } = await createBrowserSupabase().auth.getSession();
-  const token = data.session?.access_token;
-  const response = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init.headers,
-    },
-  });
-  if (response.status === 401 && typeof window !== "undefined") window.location.assign("/login");
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new ApiError(
-      body?.error?.code ?? "UNKNOWN",
-      body?.error?.message ?? "요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.",
-      response.status,
-      body?.error?.details,
-    );
-  }
-  return (response.status === 204 ? undefined : await response.json()) as T;
-}
-
-// 202로 받은 run_id를 1.5초 간격으로 최대 60초까지 확인한다 (API 2장)
-export async function waitForRun<R>(runId: string, onProgress?: (run: Run<R>) => void): Promise<Run<R>> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < 60_000) {
-    const run = await apiFetch<Run<R>>(`/runs/${runId}`);
-    onProgress?.(run);
-    if (run.status === "succeeded" || run.status === "failed") return run;
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
-  }
-  throw new ApiError("RUN_TIMEOUT", "백그라운드에서 계속 처리하고 있어요. 끝나면 알림으로 알려드릴게요.", 0);
-}
-```
+실제 호출 코드는 web/src/api/http.ts에 있다(apiFetch, errorMessage, fieldErrors, consentRequired, waitForRun). 10/11 계정API연결에서 바꾼 레포 파일이 기준이다.
 
 | 목 함수 | 실제 API | 비고 |
 | --- | --- | --- |
-| `getMe` | `GET /me` | `consented`, `unread_notifications` 포함 |
-| `getProfile` · `saveProfile` | `GET` · `PATCH /me/profile` | 저장하면 서버가 재판정 |
-| `saveConsents` | `POST /me/consents` | 온보딩 동의 |
-| `getSettings` · `saveSettings` | `GET` · `PATCH /me/settings` | P1 |
+| `getMe` | `GET /me` | `consented`, `unread_notifications` 포함 · 실제 API 연결(10/11) |
+| `getProfile` · `saveProfile` | `GET` · `PATCH /me/profile` | 저장하면 서버가 재판정 · 실제 API 연결(10/11) |
+| `saveConsents` | `POST /me/consents` | 온보딩 동의 · 실제 API 연결(10/11) |
+| `getSettings` · `saveSettings` | `GET` · `PATCH /me/settings` | P1. API 전까지 실제 모드는 설정에서 알림 구역을 숨긴다 |
 | `getFeed` | `GET /opportunities` | 홈 목록은 `eligibility=eligible,undetermined`, 지원 어려움 묶음을 펼칠 때 `eligibility=ineligible`, 정렬 `deadline`·`recent` |
 | `getOpportunity` | `GET /opportunities/{id}` | 서버가 조회 기록을 남긴다 |
 | `reportOpportunity` | `POST /opportunities/{id}/reports` | |
@@ -598,13 +548,16 @@ export async function waitForRun<R>(runId: string, onProgress?: (run: Run<R>) =>
 | `getPlanner` · 직접 추가·수정·삭제 | `GET` · `POST` · `PATCH` · `DELETE /planner/tasks` | |
 | `extractPoster` | `POST /files` → `POST /posters/extract` → `waitForRun` | |
 | `registerPosterOpportunity` | `POST /posters/confirm` | 중복이면 `merged: true` |
-| `getLmsConnection` · `connectLms` · `disconnectLms` | `GET` · `POST` · `DELETE /lms/connection` | |
+| `getLmsConnection` · `connectLms` · `disconnectLms` | `GET` · `POST` · `DELETE /lms/connection` | API 전까지 실제 모드는 '연결되지 않음', 연결 창은 준비 중 안내 |
 | `getCourses` · `getCourse` | `GET /lms/courses` · `GET /lms/courses/{id}` | |
 | `getLmsUpdates` | `GET /lms/updates` | |
 | `getMaterial` | `GET /materials/{file_id}` | 8장 필드 이름 대조 필요 |
-| `getNotifications` · 읽음 처리 | `GET /notifications` · `POST /notifications/read` | |
-| `reconnectCalendar` | `/login`으로 다시 로그인 | Google 토큰은 로그인 때만 받는다 |
-| `deleteAccount` | `DELETE /me` | |
+| `getNotifications` · 읽음 처리 | `GET /notifications` · `POST /notifications/read` | API 전까지 실제 모드는 빈 목록 |
+| `reconnectCalendar` | Google 화면으로 이동(증분 승인, `connectGoogleCalendar("/settings")`) → 콜백이 `POST /auth/google/tokens` | 돌아오면 `/settings?calendar=connected`·`error`. 실제 API 연결(10/11) |
+| `deleteAccount` | `DELETE /me` | API 전까지 실제 모드는 탈퇴 창에서 준비 중 안내 |
+| `updateIncomeConsent` | `PATCH /me/consents` | 실제 API 연결(10/11) |
+| `getDepartments` | `GET /meta/departments` | 응답의 `items`. 실제 API 연결(10/11) |
+| `recordEvent` (새로) | `POST /events` | 기다리지 않고 실패도 무시한다. 목 모드는 보내지 않는다. 실제 API 연결(10/11) |
 
 ## Claude Code로 옮길 때
 

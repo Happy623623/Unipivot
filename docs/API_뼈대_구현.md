@@ -191,6 +191,8 @@ def get_settings() -> Settings:
 
 #### `api/app/errors.py`
 
+> 10/11 계정API연결에서 UnhandledErrorMiddleware를 더했다. 최신 코드는 레포 파일이 기준이다.
+
 ```python
 """API 명세 13장 에러 형식: {"error": {"code", "message", "details"}}."""
 
@@ -1359,6 +1361,8 @@ async def record_event(body: EventRequest, user: CurrentUserDep, meta: MetaRepoD
 ```
 
 #### `api/app/main.py`
+
+> 10/11 계정API연결에서 UnhandledErrorMiddleware를 더했다. 최신 코드는 레포 파일이 기준이다.
 
 ```python
 from collections.abc import AsyncIterator

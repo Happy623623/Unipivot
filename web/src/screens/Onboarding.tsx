@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { getDepartments, getMe, getProfile, saveConsents, saveProfile, updateIncomeConsent } from "@/api/client";
+import {
+  consentRequired,
+  errorMessage,
+  fieldErrors,
+  getDepartments,
+  getMe,
+  getProfile,
+  LMS_CONNECT_READY,
+  saveConsents,
+  saveProfile,
+  updateIncomeConsent,
+} from "@/api/client";
 import ConsentStep, { type ConsentChoice } from "@/components/onboarding/ConsentStep";
 import IncomeConsentStep from "@/components/onboarding/IncomeConsentStep";
 import LmsInviteStep from "@/components/onboarding/LmsInviteStep";
@@ -10,6 +21,7 @@ import {
   fromFormValues,
   toFormValues,
   validateProfile,
+  withoutIncome,
   type ProfileErrors,
   type ProfileFormValues,
 } from "@/lib/profileFields";
@@ -17,6 +29,8 @@ import useAsyncData from "@/lib/useAsyncData";
 
 // 동의 문구를 바꾸면 버전도 바꾼다 (profiles.consent_version에 남는다)
 const CONSENT_VERSION = "2026-10-07";
+const CONSENT_FAILED = "동의를 저장하지 못했어요. 잠시 후 다시 눌러 주세요.";
+const PROFILE_FAILED = "프로필을 저장하지 못했어요. 입력한 값은 그대로 있으니 다시 눌러 주세요.";
 
 type Stage =
   | { kind: "consent" }
@@ -59,7 +73,8 @@ export default function Onboarding({ onDone }: OnboardingProps) {
   }
 
   const [me, profile] = request.data;
-  const finish = () => (me.lms?.status === "active" ? onDone() : setStage({ kind: "lms" }));
+  // LMS 연결이 준비되지 않았으면(실제 모드, LMS API 전) 마지막 LMS 단계를 건너뛴다
+  const finish = () => (me.lms?.status === "active" || !LMS_CONNECT_READY ? onDone() : setStage({ kind: "lms" }));
   // 소득 단계는 선택 동의를 했을 때만 입력받고, 안 했으면 동의를 한 번 더 묻는다
   const openStep = (index: number) => {
     setErrors({});
@@ -76,8 +91,8 @@ export default function Onboarding({ onDone }: OnboardingProps) {
       const result = await saveConsents(CONSENT_VERSION, choice.incomeInfo);
       setIncomeConsented(result.income_info_agreed_at !== null);
       setStage({ kind: "profile", index: 0 });
-    } catch {
-      setError("동의를 저장하지 못했어요. 잠시 후 다시 눌러 주세요.");
+    } catch (caught) {
+      setError(errorMessage(caught, CONSENT_FAILED));
     } finally {
       setSaving(false);
     }
@@ -90,8 +105,9 @@ export default function Onboarding({ onDone }: OnboardingProps) {
       await updateIncomeConsent(true);
       setIncomeConsented(true);
       setStage({ kind: "profile", index });
-    } catch {
-      setError("동의를 저장하지 못했어요. 잠시 후 다시 눌러 주세요.");
+    } catch (caught) {
+      if (consentRequired(caught) === "terms_privacy") setStage({ kind: "consent" });
+      setError(errorMessage(caught, CONSENT_FAILED));
     } finally {
       setSaving(false);
     }
@@ -105,10 +121,23 @@ export default function Onboarding({ onDone }: OnboardingProps) {
     setSaving(true);
     setError(null);
     try {
-      await saveProfile(fromFormValues(values, profile));
+      const next = fromFormValues(values, profile);
+      // 소득 3항목은 선택 동의를 했을 때만 보낸다 (설정의 ProfileForm과 같다)
+      await saveProfile(incomeConsented ? next : withoutIncome(next));
       openStep(index + 1);
-    } catch {
-      setError("프로필을 저장하지 못했어요. 입력한 값은 그대로 있으니 다시 눌러 주세요.");
+    } catch (caught) {
+      // 동의가 빠졌으면 그 동의를 다시 묻는다(API 13장). 항목 오류는 입력란 아래에 보여 준다
+      const consent = consentRequired(caught);
+      const onIncomeStep = steps[index].id === "income";
+      setErrors(fieldErrors(caught) as ProfileErrors);
+      setError(errorMessage(caught, PROFILE_FAILED));
+      if (consent === "terms_privacy") setStage({ kind: "consent" });
+      if (consent === "income_info") {
+        // 다른 곳에서 소득 동의를 철회했다. 소득 단계면 동의부터 다시 묻고, 아니면 소득 값은 빼고 다시 저장하게 한다
+        setIncomeConsented(false);
+        if (onIncomeStep) setStage({ kind: "income_consent", index });
+        else setError("소득·수급 정보 동의가 꺼져 있어요. 소득 정보는 빼고 저장하니 다시 눌러 주세요.");
+      }
     } finally {
       setSaving(false);
     }

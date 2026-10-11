@@ -11,16 +11,24 @@ export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
  * 시작하지 못하면 화면에 띄울 오류 문구를 돌려준다. 목 모드에서는 부르지 않는다.
  */
 export async function connectGoogleCalendar(next: string): Promise<string | null> {
+  const supabase = createBrowserSupabase();
   const redirectTo = new URL("/auth/callback", window.location.origin);
   redirectTo.searchParams.set("connect", "calendar");
   redirectTo.searchParams.set("next", next);
-  const { error } = await createBrowserSupabase().auth.signInWithOAuth({
+  // 로그인한 계정을 Google 계정 선택에 미리 고른다. 다른 계정을 고르면 콜백이 막는다
+  const email = (await supabase.auth.getSession()).data.session?.user.email;
+  const { error } = await supabase.auth.signInWithOAuth({
     provider: "google",
     options: {
       redirectTo: redirectTo.toString(),
       scopes: CALENDAR_SCOPE,
       // refresh token을 받으려면 offline + consent. 이미 받은 범위는 유지한다
-      queryParams: { access_type: "offline", prompt: "consent", include_granted_scopes: "true" },
+      queryParams: {
+        access_type: "offline",
+        prompt: "consent",
+        include_granted_scopes: "true",
+        ...(email ? { login_hint: email } : {}),
+      },
     },
   });
   return error ? "Google 캘린더 연결을 시작하지 못했어요. 잠시 후 다시 시도해 주세요." : null;

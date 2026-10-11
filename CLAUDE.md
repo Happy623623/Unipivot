@@ -6,7 +6,7 @@
 
 - `web/` Next.js 16 + Tailwind 4 화면. 규칙은 `web/CLAUDE.md`
 - `api/` FastAPI(Python 3.12, uv) API와 에이전트. 규칙은 `api/CLAUDE.md`
-- `supabase/migrations/` DB 마이그레이션. 스키마 기준은 이 폴더의 SQL이고, 적용 순서는 v07 → v08 → v09 → seed다(`docs/ERD_v0.9.md` 7장)
+- `supabase/migrations/` DB 마이그레이션. 스키마 기준은 이 폴더의 SQL이고, 적용 순서는 파일 이름(시각) 순이다(`docs/ERD_v0.9.md` 7장)
 - `docs/` 기준 문서
 
 ## 기준 문서 (충돌하면 위가 이긴다)

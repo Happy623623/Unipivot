@@ -46,6 +46,7 @@ export default function ProfileFieldInput({ field, value, error, onChange }: Pro
             min={field.min}
             max={field.max}
             step={field.step}
+            maxLength={field.maxLength}
             placeholder={field.placeholder}
             onChange={(event) => onChange(event.target.value)}
             aria-invalid={Boolean(error)}
