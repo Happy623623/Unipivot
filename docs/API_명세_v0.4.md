@@ -10,6 +10,8 @@
 >
 > v0.4 보강(10/10, S1-6b): 공고 상세 review_reasons
 >
+> v0.4 보강(10/11, S1-4 후속): 강제 제출은 pipeline, 원문 확인 이유 문구
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -462,7 +464,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - documents는 필수 서류가 먼저, 그다음 이름 순이다. attachments에는 학교 다운로드 주소(source_url)가 있는 첨부만 준다.
 - 형식이 틀린 id는 422 VALIDATION_FAILED(details.fields.opportunity_id)다.
 - 상세를 열면 opportunity_views를 upsert한다. first_viewed_at은 그대로 두고 last_viewed_at은 늦은 쪽을 남긴다. 404면 남기지 않는다.
-- review_reasons(string[]): needs_review를 켠 이유(요건 추출·공지 가져오기)다. 주소를 지우고 공백을 한 칸으로 줄인 한 줄(최대 200자)씩이고, 10줄이 넘으면 앞 10줄 뒤에 '외 N건'이 온다. 첨부는 파일 이름으로 쓴다. 이유가 없거나 S1-6b 전에 추출한 공고는 []다. 화면은 처리 과정(F-42)에 일반 텍스트로 보여 준다(자동 링크·마크다운 없이).
+- review_reasons(string[]): needs_review를 켠 이유(요건 추출·공지 가져오기)다. 주소를 지우고 공백을 한 칸으로 줄인 한 줄(최대 200자)씩이고, 10줄이 넘으면 앞 10줄 뒤에 '외 N건'이 온다. 첨부는 파일 이름으로 쓴다. 이유가 없거나 S1-6b 전에 추출한 공고는 []다. 화면은 처리 과정(F-42)에 일반 텍스트로 보여 준다(자동 링크·마크다운 없이). 문구는 학생이 읽는 쉬운 말이다(상한·항목 키 이름 없음). 모델이 쓴 이유는 'AI 메모: '로 시작한다.
 
 ### `GET /opportunities/{id}/alternatives` (P1)
 
@@ -1055,7 +1057,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 ```
 
 - `steps`가 처리 과정 표시(F-42)의 데이터. `label`은 백엔드가 도구 이름 → 사용자용 문구로 바꿔서 준다
-- `chosen_by`: `agent`(모델이 고른 도구) 또는 `pipeline`(정해진 순서). 처리 과정 화면에서 모델이 고른 단계를 구분해 표시한다
+- `chosen_by`: agent: 요건 추출 에이전트(모델)가 고른 도구. pipeline: 정해진 순서로 도는 단계, 또는 읽기·토큰 상한에 닿아 코드가 시킨 제출(실행 로그 tool_calls.output.forced = true).
 - `note`: 모델이 고른 이유 한 줄이다. 공고 원문에서 온 내용만 담고 프로필 값은 담지 않는다
 - 토큰 수·비용은 사용자 응답에 넣지 않고 내부 지표로만 쓴다
 - 실패 시 `status: "failed"`, `error: { "code": "LLM_TIMEOUT", "message": "..." }`

@@ -28,6 +28,7 @@ def step(tool: str, **values: Any) -> dict[str, Any]:
         "pages": None,
         "error": False,
         "accepted": None,
+        "forced": None,
     }
     return {**row, **values}
 
@@ -75,6 +76,9 @@ def step(tool: str, **values: Any) -> dict[str, Any]:
         (step(FETCH_ORIGINAL, offset=4000), "공고 원문 페이지 이어 읽기", "succeeded"),
         (step(SUBMIT, accepted=False), "지원 자격 정리", "failed"),  # 거절된 제출
         (step(SUBMIT, accepted=True), "지원 자격 정리", "succeeded"),
+        # 상한에 닿아 코드가 시킨 제출. 이름과 상태는 같고 정해진 단계(pipeline)로 보인다
+        (step(SUBMIT, accepted=True, forced=True), "지원 자격 정리", "succeeded"),
+        (step(SUBMIT, accepted=False, forced=True), "지원 자격 정리", "failed"),
         (step("extract_from_image"), "extract_from_image", "succeeded"),
         (step("extract_from_image", status="failed"), "extract_from_image", "failed"),
     ],
@@ -82,7 +86,8 @@ def step(tool: str, **values: Any) -> dict[str, Any]:
 def test_step_label_and_status(row: dict[str, Any], label: str, status: str) -> None:
     result = _step(row, NAMES)
     assert (result.label, result.status) == (label, status)
-    assert result.chosen_by == ("pipeline" if row["tool"] == "extract_from_image" else "agent")
+    pipeline = row["tool"] == "extract_from_image" or row["forced"] is True
+    assert result.chosen_by == ("pipeline" if pipeline else "agent")
 
 
 def test_note_is_one_plain_line() -> None:
@@ -101,15 +106,15 @@ def test_review_reasons_are_plain_lines() -> None:
     정리한 뒤 비거나 같은 줄은 뺀다."""
     reasons = [
         "읽지 못한 첨부가 있음",
-        "모델이 원문 확인 필요로 표시: 신청서는\nhttps://evil.example/form 에서 받기",
+        "AI 메모: 신청서는\nhttps://evil.example/form 에서 받기",
         "https://only-a-link.example",
         "읽지 못한 첨부가 있음",
-        "모델이 원문 확인 필요로 표시: " + "나" * 300,
+        "AI 메모: " + "나" * 300,
     ]
     lines = _lines(reasons)
     assert lines[:2] == [
         "읽지 못한 첨부가 있음",
-        "모델이 원문 확인 필요로 표시: 신청서는 에서 받기",
+        "AI 메모: 신청서는 에서 받기",
     ]
     assert len(lines) == 3 and len(lines[2]) == LINE_MAX_CHARS and lines[2].endswith("…")
     assert _lines([]) == [] and _lines(None) == []
@@ -117,13 +122,13 @@ def test_review_reasons_are_plain_lines() -> None:
 
 def test_review_reasons_edge_cases() -> None:
     # 정리한 뒤 같아지는 줄, 문자열이 아닌 값, 보이지 않는 문자만 있는 줄은 하나로 줄이거나 뺀다
-    assert _lines(["모호한 요건이 있음 https://a.example", "모호한  요건이 있음", None, 3]) == [
-        "모호한 요건이 있음"
-    ]
+    assert _lines(
+        ["읽지 못한 첨부가 있음 https://a.example", "읽지 못한  첨부가 있음", None, 3]
+    ) == ["읽지 못한 첨부가 있음"]
     assert _lines(["​﻿", "‮"]) == []
     # 폭 없는 문자로 주소를 끊어 숨겨도 지운다
     assert _lines(["신청서는 https://ev​il.example/form 에서"]) == ["신청서는 에서"]
-    # 모델이 지어낸 항목 이름처럼 줄이 많아도 10줄까지만 보이고 나머지는 "외 N건"이다
-    many = [f"모양이 틀린 항목{n} 조건을 기타 조건으로 저장" for n in range(13)]
+    # 일부만 읽은 첨부가 많아 줄이 많아도 10줄까지만 보이고 나머지는 "외 N건"이다
+    many = [f"첨부 '안내{n}.pdf' 4/9쪽만 읽음" for n in range(13)]
     lines = _lines(many)
     assert lines[:10] == many[:10] and lines[10:] == ["외 3건"] and len(lines) == REASONS_MAX + 1

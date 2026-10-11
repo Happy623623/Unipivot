@@ -80,7 +80,8 @@ NEW_DAYS = 7  # 새 공고: 등록 7일 이내이고 상세를 아직 열지 않
 SOON_DAYS = 3  # 마감 임박: D-3~D-day
 UNJUDGED_SUMMARY = "원문 확인 필요: 자격 요건을 정리하지 못함"  # 요건 추출에 실패한 공고
 ENGINE_ERROR_SUMMARY = "원문 확인 필요: 조건을 판정하지 못함"  # 판정 엔진이 오류를 낸 공고
-# 처리 과정에서 모델이 고른 도구(요건 추출 에이전트). 그 밖의 단계는 정해진 순서(pipeline)다
+# 처리 과정에서 모델이 고른 도구(요건 추출 에이전트). 그 밖의 단계와 상한에 닿아 코드가 시킨 제출은
+# 정해진 순서(pipeline)다
 _AGENT_TOOLS = frozenset({READ_TEXT, READ_IMAGE, FETCH_ORIGINAL, SUBMIT})
 LINE_MAX_CHARS = 200  # 화면에 보이는 모델 글 한 줄(고른 이유, 원문 확인 필요 이유) 길이
 REASONS_MAX = 10  # 원문 확인 필요 이유는 10줄까지 보이고 나머지는 "외 N건"으로 줄인다
@@ -196,13 +197,15 @@ _DETAIL = (
     " 'error', a.extract_error) order by a.seq, a.id)"
     " from opportunity_attachments a where a.opportunity_id = o.id), '[]'::jsonb) as attachments,"
     # 처리 과정은 추출 실행의 도구 호출이다. 고른 이유, 읽은 곳(첨부 번호, 실제로 읽기 시작한 위치.
-    # 오류면 요청한 위치), 오류였는지, 제출을 받았는지만 꺼낸다. 읽은 글자는 꺼내지 않는다
+    # 오류면 요청한 위치), 오류였는지, 제출을 받았는지, 상한에 닿아 코드가 시킨 제출인지만 꺼낸다.
+    # 읽은 글자는 꺼내지 않는다
     " coalesce((select jsonb_agg(jsonb_build_object('seq', s.seq, 'tool', s.tool_name,"
     " 'status', s.status, 'latency_ms', s.latency_ms, 'reason', s.input->>'reason',"
     " 'attachment_no', s.input->'attachment_no',"
     " 'offset', coalesce(s.output->'offset', s.input->'offset'),"
     " 'start_page', s.input->'start_page', 'pages', s.output->'pages',"
-    " 'error', s.output->>'error' is not null, 'accepted', s.output->'accepted')"
+    " 'error', s.output->>'error' is not null, 'accepted', s.output->'accepted',"
+    " 'forced', s.output->'forced')"
     " order by s.seq, s.id)"
     " from tool_calls s where s.run_id = o.extraction_run_id), '[]'::jsonb) as steps"
     " from opportunities o"
@@ -720,7 +723,8 @@ def _step(step: dict[str, Any], names: dict[int, str]) -> ProcessStep:
 
     도구가 오류를 돌려준 호출(없는 첨부 번호 등)과 거절된 제출은 실행 로그에 succeeded로 남는다
     (에이전트는 오류를 모델에 돌려주고 계속 간다). 화면에는 실패로 보인다. 첨부 번호·위치는
-    에이전트와 같은 규칙(whole)으로 읽는다.
+    에이전트와 같은 규칙(whole)으로 읽는다. 읽기·토큰 상한에 닿아 코드가 시킨 제출(forced)은
+    모델이 고른 단계가 아니라서 pipeline으로 보인다.
     """
     tool: str = step["tool"]
     again = "이어 " if _continued(step) else ""
@@ -735,13 +739,14 @@ def _step(step: dict[str, Any], names: dict[int, str]) -> ProcessStep:
     else:
         label = "지원 자격 정리" if tool == SUBMIT else tool
     failed = step.get("error") is True or (tool == SUBMIT and step.get("accepted") is False)
+    chosen = tool in _AGENT_TOOLS and step.get("forced") is not True
     return ProcessStep(
         seq=step["seq"],
         tool=tool,
         label=label,
         status="failed" if failed else step["status"],
         latency_ms=step["latency_ms"],
-        chosen_by="agent" if tool in _AGENT_TOOLS else "pipeline",
+        chosen_by="agent" if chosen else "pipeline",
         note=_line(step.get("reason")),
     )
 

@@ -14,7 +14,15 @@ from app.attachments import UnreadableAttachment
 from app.crawl import FetchError
 from app.eligibility import KST, Department
 from app.extraction import AttachmentInput, ExtractionAgent, Limits, NoticeInput
-from app.extraction.prompt import FETCH_ORIGINAL, FORCED, NUDGE, READ_IMAGE, READ_TEXT, SUBMIT
+from app.extraction.prompt import (
+    FETCH_ORIGINAL,
+    FORCED,
+    NUDGE,
+    READ_IMAGE,
+    READ_TEXT,
+    SUBMIT,
+    SUBMIT_SPEC,
+)
 from app.llm import ModelTurn, ToolResultTurn, UserTurn
 from tests import samples
 from tests.llm_fakes import MemoryRunLog, ScriptedLlm, call, calls
@@ -217,8 +225,12 @@ async def test_second_failure_is_stored_as_ambiguous() -> None:
     assert region.value == {"text": "본교 재학생(휴학생 제외)"}
     assert result.succeeded and result.needs_review
     assert result.confidence == Decimal("0.50")  # 코드가 고쳐 넣은 제출
-    assert "근거 문장을 원문에서 찾지 못한 조건을 모호한 조건으로 저장" in result.review_reasons
-    assert "모양이 틀린 거주지역 조건을 기타 조건으로 저장" in result.review_reasons
+    # 학생에게 보이는 이유라 쉬운 말로 쓴다
+    assert result.review_reasons == (
+        "근거 문장을 원문에서 찾지 못한 조건이 있음",
+        "형식이 틀린 거주지역 조건을 원문 확인 조건으로 바꿈",
+        "자동으로 판정할 수 없는 조건이 있음",
+    )
 
 
 async def test_read_cap_forces_submission_and_needs_review() -> None:
@@ -243,7 +255,9 @@ async def test_read_cap_forces_submission_and_needs_review() -> None:
         SUBMIT,
     ]  # 막힌 호출은 실행하지 않는다
     assert result.succeeded and result.needs_review
-    assert "읽기 도구 상한(2번)에 닿음" in result.review_reasons
+    assert "읽기 횟수 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함" in result.review_reasons
+    # 코드가 시킨 제출이라 실행 로그에 남긴다. 처리 과정에서 정해진 단계로 보인다
+    assert log.tools[-1].output == {"accepted": True, "problems": [], "forced": True}
 
 
 async def test_token_cap_forces_submission() -> None:
@@ -252,12 +266,112 @@ async def test_token_cap_forces_submission() -> None:
     llm = ScriptedLlm(
         call(READ_TEXT, attachment_no=1, reason="요강 확인"), call(SUBMIT, **submission(GPA))
     )
-    result, _ = await run(llm, notice, limits=Limits(max_tokens=1000))
+    result, log = await run(llm, notice, limits=Limits(max_tokens=1000))
 
     assert llm.requests[1].force_tool == SUBMIT
     note = llm.requests[1].turns[-1].results[0].content["note"]  # type: ignore[union-attr]
     assert note == FORCED
-    assert "토큰 상한(1,000)에 닿음" in result.review_reasons
+    assert "처리 분량 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함" in result.review_reasons
+    assert [tool.output.get("forced") for tool in log.tools] == [None, True]
+
+
+async def test_submission_beside_a_capped_read_is_not_forced() -> None:
+    """상한에 닿은 읽기와 같은 답에 모델이 스스로 낸 제출은 모델이 고른 것이다(forced 없음)."""
+    attachment = AttachmentInput(1, "요강.hwpx", samples.hwpx(hp("직전 학기 평점평균 3.0 이상")))
+    notice = NoticeInput(title="장학", body=BODY, attachments=(attachment,))
+    llm = ScriptedLlm(
+        call(READ_TEXT, attachment_no=1, reason="요강 확인"),
+        calls((READ_TEXT, {"attachment_no": 1, "reason": "다시 확인"}), (SUBMIT, submission(GPA))),
+    )
+    result, log = await run(llm, notice, limits=Limits(max_reads=1))
+
+    assert llm.requests[1].force_tool is None
+    assert [tool.name for tool in log.tools] == [READ_TEXT, SUBMIT]
+    assert log.tools[-1].output == {"accepted": True, "problems": []}
+    assert result.succeeded
+    assert "읽기 횟수 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함" in result.review_reasons
+
+
+async def test_rejected_forced_submission_and_its_retry_are_both_forced() -> None:
+    """상한에 닿은 뒤에는 제출이 거절돼도 다시 제출만 부를 수 있다. 두 제출 모두 코드가 시킨 것이다."""
+    attachment = AttachmentInput(1, "요강.hwpx", samples.hwpx(hp("직전 학기 평점평균 3.0 이상")))
+    notice = NoticeInput(title="장학", body=BODY, attachments=(attachment,))
+    unfound = {**GPA, "evidence_text": "평점 3.0 이상인 학생"}  # 원문에 없는 근거라 거절된다
+    llm = ScriptedLlm(
+        call(READ_TEXT, attachment_no=1, reason="요강 확인"),
+        call(READ_TEXT, attachment_no=1, reason="다시 확인"),
+        call(SUBMIT, **submission(unfound)),
+        call(SUBMIT, **submission(GPA)),
+    )
+    result, log = await run(llm, notice, limits=Limits(max_reads=1))
+
+    assert [request.force_tool for request in llm.requests] == [None, None, SUBMIT, SUBMIT]
+    assert [(tool.output["accepted"], tool.output.get("forced")) for tool in log.tools[1:]] == [
+        (False, True),
+        (True, True),
+    ]
+    assert result.succeeded and not result.requirements[0].is_ambiguous
+
+
+async def test_forced_request_answered_in_text_is_still_forced() -> None:
+    """상한에 닿은 뒤 모델이 글로 답하면 한 번 더 제출하라고 한다. 그 제출도 코드가 시킨 것이다."""
+    attachment = AttachmentInput(1, "요강.hwpx", samples.hwpx(hp("직전 학기 평점평균 3.0 이상")))
+    notice = NoticeInput(title="장학", body=BODY, attachments=(attachment,))
+    llm = ScriptedLlm(
+        call(READ_TEXT, attachment_no=1, reason="요강 확인"),
+        call(READ_TEXT, attachment_no=1, reason="다시 확인"),
+        "요건은 평점 3.0 이상입니다.",
+        call(SUBMIT, **submission(GPA)),
+    )
+    result, log = await run(llm, notice, limits=Limits(max_reads=1))
+
+    assert llm.requests[3].turns[-1] == UserTurn(NUDGE)
+    assert llm.requests[3].force_tool == SUBMIT
+    assert log.tools[-1].output == {"accepted": True, "problems": [], "forced": True}
+    assert result.succeeded
+
+
+@pytest.mark.parametrize(
+    ("extra", "reasons"),
+    [
+        # 모델이 쓴 이유는 AI가 쓴 글임을 밝혀 보인다(공고 상세가 한 줄로 정리한다)
+        (
+            {
+                "needs_review": True,
+                "review_note": "세부 자격이 포스터의 QR 코드 안내에 있어 확인하지 못함",
+            },
+            ("AI 메모: 세부 자격이 포스터의 QR 코드 안내에 있어 확인하지 못함",),
+        ),
+        ({"needs_review": True}, ("AI가 원문 확인이 필요하다고 표시함",)),
+        ({"needs_review": True, "review_note": "  "}, ("AI가 원문 확인이 필요하다고 표시함",)),
+        ({"confidence": 0.4}, ("AI가 정리한 조건을 확신하지 못함",)),
+        # 신뢰도를 읽지 못해 코드가 0.50으로 고친 제출도 같은 한 줄이다
+        ({"confidence": "높음"}, ("AI가 정리한 조건을 확신하지 못함",)),
+    ],
+)
+async def test_review_reasons_are_plain_words(
+    extra: dict[str, Any], reasons: tuple[str, ...]
+) -> None:
+    answer = call(SUBMIT, **submission(GPA, **extra))
+    result, _ = await run(ScriptedLlm(answer, answer))
+    assert result.succeeded and result.needs_review
+    assert result.review_reasons == reasons
+
+
+async def test_prompt_asks_for_unreadable_sources_and_plain_notes() -> None:
+    """자격이 읽을 수 없는 곳(QR 코드 등)에 있으면 이유를 쓰게 하고, 그 이유는 학생에게 보인다."""
+    llm = ScriptedLlm(call(SUBMIT, **submission(GPA)))
+    await run(llm)
+    system = llm.requests[0].system
+    assert system is not None
+    assert "(읽지 못한 첨부, QR 코드, 다른 사이트)" in system
+    assert "review_note에 무엇을 확인하지 못했는지 적는다" in system
+    assert "review_note: 학생에게 원문 확인이 필요한 이유로 그대로 보인다" in system
+    assert "대학원 과정(석사·박사)만 되는 조건은 학적 값에 없으니 other로 둔다" in system
+    assert '"졸업예정자 포함"처럼 대상을 넓히기만 하는 말은 조건으로 만들지 않는다' in system
+    assert "reason에 고른 이유를 쉬운 말 한 줄로 적는다(도구 이름은 쓰지 않는다)" in system
+    note = SUBMIT_SPEC.parameters["properties"]["review_note"]["description"]
+    assert "학생에게 그대로 보인다" in note
 
 
 async def test_no_submission_is_a_failed_extraction() -> None:
@@ -266,7 +380,7 @@ async def test_no_submission_is_a_failed_extraction() -> None:
 
     assert llm.requests[1].turns[-1] == UserTurn(NUDGE)  # 한 번은 제출하라고 다시 말한다
     assert not result.succeeded and result.needs_review
-    assert result.requirements == () and "제출을 받지 못함" in result.review_reasons
+    assert result.requirements == () and result.review_reasons == ("자격 요건을 정리하지 못함",)
     assert log.tools == []
 
 
@@ -425,7 +539,7 @@ async def test_no_requirements_with_unread_attachment_needs_review() -> None:
     result, _ = await run(ScriptedLlm(call(SUBMIT, **submission())), notice)
 
     assert result.succeeded and result.requirements == ()
-    assert result.review_reasons == ("첨부를 읽지 않고 요건 없음으로 판단",)
+    assert result.review_reasons == ("첨부를 읽지 않고 자격 제한이 없다고 봄",)
 
 
 async def test_calls_after_an_accepted_submission_are_skipped() -> None:
