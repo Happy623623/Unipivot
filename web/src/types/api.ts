@@ -1,5 +1,9 @@
-// API 명세 v0.3과 1:1로 맞춘 타입. 필드 이름을 바꾸지 않는다.
+// API 명세와 1:1로 맞춘 타입. 필드 이름을 바꾸지 않는다. LMS·강의자료 타입은 lms.ts에 두고 여기서 다시 내보낸다.
+// 내 정보·프로필·동의·학과·사용 기록은 v0.4에 맞췄다. 공고 피드·상세는 아직 v0.3 모양이다
+// (TODO(api): 공고 화면을 실제 API에 붙일 때 명세 부록 "프론트 반영 목록"대로 맞춘다)
 // 일시는 ISO 8601 문자열(+09:00), 날짜만은 "YYYY-MM-DD".
+
+export * from "@/types/lms";
 
 export type Category = "scholarship" | "school_program" | "youth_policy" | "contest" | "activity" | "research" | "exam" | "etc";
 export type SourceType = "school_notice" | "youth_policy" | "contest" | "poster" | "lms_announcement";
@@ -45,6 +49,12 @@ export interface Profile {
   is_international: boolean | null;
 }
 
+// PATCH /me/profile: 저장한 프로필과 다시 판정한 결과 수 (counts와 같은 기준)
+export interface ProfileUpdateResponse {
+  profile: Profile;
+  rejudged: { changed: number; eligible: number; undetermined: number; ineligible: number };
+}
+
 // POST /me/consents
 export interface ConsentResult {
   terms_agreed_at: string;
@@ -64,6 +74,9 @@ export interface Department {
   college: string;
   field_group: string;
 }
+
+// POST /events: 화면에서만 알 수 있는 사용 기록 (나머지 이벤트는 서버가 기록한다)
+export type ClientEvent = "app_open" | "profile_prompt_shown" | "lms_guide_opened";
 
 // GET /me/settings
 export interface Settings {
@@ -216,67 +229,6 @@ export interface PlannerTask {
 }
 export interface PlannerMarker { kind: "deadline"; date: string; title: string; opportunity_id: string; category: Category; }
 export interface PlannerResponse { items: PlannerTask[]; markers: PlannerMarker[]; }
-
-// GET /lms/connection
-export interface LmsConnection {
-  status: "active" | "error" | "disconnected";
-  token_last4: string;
-  last_synced_at: string | null;
-  last_error: string | null;
-}
-
-// GET /lms/courses
-export interface Course {
-  id: string;
-  canvas_course_id: number;
-  name: string;
-  short_name: string;
-  has_syllabus: boolean;
-  portal_syllabus_url: string;
-  open_assignments: number;
-  new_materials: number;
-  next_due: { kind: "assignment" | "syllabus"; title: string; due_at: string } | null;
-}
-
-// GET /lms/courses/{id}
-export type SubmissionState = "unsubmitted" | "submitted" | "graded" | "pending_review";
-export type AnnouncementCategory = "schedule_change" | "material" | "opportunity" | "general";
-export interface CourseDetail {
-  course: { id: string; short_name: string; html_url: string; has_syllabus: boolean; portal_syllabus_url: string }; // html_url: 과목 홈 (API v0.3 보완)
-  assignments: { id: string; title: string; due_at: string | null; submission_state: SubmissionState; html_url: string }[];
-  module_items: { id: string; module_name: string; title: string; html_url: string; is_new: boolean; uploaded_file_id: string | null }[];
-  announcements: { id: string; title: string; summary: string | null; category: AnnouncementCategory | null; posted_at: string; opportunity_id: string | null }[];
-  syllabus_items: { id: string; item_type: "midterm" | "final" | "presentation" | "assignment" | "etc"; title: string; starts_at: string | null; is_confirmed: boolean }[];
-  materials: { file_id: string; original_name: string | null; status: RunStatus }[];
-}
-
-// GET /materials/{file_id}: 강의자료 요약·구간 번역 (TODO(api): API 명세 8장 응답과 필드 이름 대조)
-export interface MaterialDetail {
-  file_id: string;
-  original_name: string | null;
-  total_pages: number;
-  page_start: number;
-  page_end: number;
-  over_limit: boolean;
-  overall_summary: string | null;
-  status: RunStatus;
-  sections: {
-    id: string;
-    seq: number;
-    title: string;
-    page_start: number;
-    page_end: number;
-    summary: string | null;
-    translation_status: RunStatus | null; // null이면 번역 요청 전
-    translation_url: string | null;
-  }[];
-}
-
-// GET /lms/updates
-export type LmsUpdate =
-  | { type: "module_item"; id: string; course: { id: string; short_name: string }; module_name: string; title: string; html_url: string; first_seen_at: string; uploaded_file_id: string | null }
-  | { type: "announcement"; id: string; course: { id: string; short_name: string }; title: string; summary: string | null; posted_at: string; category: AnnouncementCategory | null; attachment_count: number; opportunity_id: string | null; planner_task_id: string | null }
-  | { type: "assignment"; id: string; course: { id: string; short_name: string }; title: string; due_at: string; submission_state: SubmissionState };
 
 // GET /notifications
 export interface AppNotification {

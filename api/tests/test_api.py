@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.crypto import decrypt
+from app.main import create_app
 from tests.conftest import USER_ID, make_token
 from tests.fakes import FakeMetaRepository, FakeProfileRepository
 
@@ -17,6 +18,32 @@ def consent(client: TestClient, auth: dict[str, str], **extra: bool) -> None:
 
 def test_health(client: TestClient) -> None:
     assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_unexpected_error_keeps_cors(settings: Settings) -> None:
+    """처리하지 못한 예외도 13장 형식의 500이고, 브라우저가 읽을 수 있게 CORS 헤더가 붙는다."""
+    app = create_app(settings)
+
+    @app.get("/api/v1/boom")
+    async def boom() -> None:
+        raise RuntimeError("boom")
+
+    origin = {"Origin": "http://localhost:3000"}
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        res = test_client.get("/api/v1/boom", headers=origin)
+        assert res.status_code == 500
+        assert res.json() == {
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "잠시 후 다시 시도해 주세요.",
+                "details": {},
+            }
+        }
+        assert res.headers["access-control-allow-origin"] == "http://localhost:3000"
+        # 다른 오류 응답도 그대로 CORS 헤더가 붙는다
+        res = test_client.get("/api/v1/me", headers=origin)
+        assert res.status_code == 401
+        assert res.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
 def test_me_requires_login(client: TestClient) -> None:

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
 from app.db import create_pools
-from app.errors import register_error_handlers
+from app.errors import UnhandledErrorMiddleware, register_error_handlers
 from app.logging_redact import install_log_redaction
 from app.routers import auth, events, health, me, meta, opportunities
 
@@ -30,6 +30,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(title="UNIPIVOT API", version="0.2.0", lifespan=lifespan)
     app.state.settings = settings
+    # 나중에 추가한 미들웨어가 바깥이다. 예외로 생긴 500에도 CORS 헤더가 붙게 CORS를 바깥에 둔다
+    app.add_middleware(UnhandledErrorMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { connectLms } from "@/api/client";
+import { connectLms, LMS_CONNECT_READY } from "@/api/client";
 import Button from "@/components/Button";
 import Modal from "@/components/Modal";
 import type { LmsConnection } from "@/types/api";
@@ -43,6 +43,18 @@ export default function LmsConnectModal({
       setToken("");
     }
   };
+
+  // TODO(api): LMS 연결 API(9장)가 생기면 이 안내를 지운다. 그 전에는 토큰을 받지 않는다
+  if (!LMS_CONNECT_READY) {
+    return (
+      <Modal open={open} title="LearningX 연결" onClose={close}>
+        <p className="text-[14px] leading-6 text-[#344054]">
+          LearningX 연결은 아직 준비 중이에요. 준비되면 이 화면에서 과제와 새 강의자료를 바로 볼 수 있어요.
+        </p>
+        <div className="mt-6 flex justify-end"><Button onClick={close}>확인</Button></div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal open={open} title="LearningX 연결" onClose={close}>

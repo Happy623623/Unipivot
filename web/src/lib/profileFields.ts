@@ -13,7 +13,8 @@ export interface ProfileFieldConfig {
   allowEmpty?: boolean; // select에 "선택 안 함"을 둘지 (기본 true)
   min?: number;
   max?: number;
-  step?: number;
+  step?: number; // 1이면 정수만 받는다 (서버 int 항목)
+  maxLength?: number; // 글자 수 상한 (서버 max_length와 같게)
   unit?: string;
   placeholder?: string;
   hint?: string;
@@ -136,7 +137,7 @@ export function buildProfileSteps(departments: Department[]): ProfileStepConfig[
           options: SIDO.map((sido) => ({ value: sido, label: sido })),
           hint: "주민등록 주소 기준이에요.",
         },
-        { key: "region_sigungu", label: "거주 시·군·구", kind: "text", placeholder: "예: 안산시 단원구" },
+        { key: "region_sigungu", label: "거주 시·군·구", kind: "text", maxLength: 40, placeholder: "예: 안산시 단원구" },
       ],
     },
     {
@@ -214,6 +215,7 @@ export function validateProfile(values: ProfileFormValues, fields: ProfileFieldC
     if (raw === "" || field.kind !== "number") continue;
     const value = Number(raw);
     if (Number.isNaN(value)) errors[field.key] = "숫자로 입력해 주세요.";
+    else if (field.step === 1 && !Number.isInteger(value)) errors[field.key] = "소수점 없이 입력해 주세요.";
     else if (field.min !== undefined && value < field.min) errors[field.key] = `${field.min} 이상으로 입력해 주세요.`;
     else if (field.max !== undefined && value > field.max) errors[field.key] = `${field.max} 이하로 입력해 주세요.`;
   }

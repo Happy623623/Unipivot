@@ -202,7 +202,7 @@ export default function OpportunityPreparation({
             />
             마감일을 Google Calendar에도 넣기
           </label>
-          {!calendarConnected && <p className="mt-2 text-[12px] text-[#c53030]">캘린더를 다시 연결해야 해요</p>}
+          {!calendarConnected && <p className="mt-2 text-[12px] text-[#667085]">설정에서 Google Calendar를 연결하면 함께 넣을 수 있어요</p>}
           <div className="mt-4 flex justify-end">
             <Button onClick={finishPreparation} disabled={finishing}>
               {finishing ? "완료 중" : "완료"}

@@ -12,6 +12,8 @@
 >
 > v0.4 보강(10/11, S1-4 후속): 강제 제출은 pipeline, 원문 확인 이유 문구
 >
+> v0.4 보강(10/11, 계정 화면 실제 연결): 캘린더 연결 콜백의 취소·다른 계정·Google 토큰 처리, 프론트 전용 오류 코드
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -141,6 +143,10 @@ sequenceDiagram
    - 돌아올 화면은 redirectTo의 `next`로 넘긴다
 
    콜백에서 받은 provider 토큰을 이 API로 보낸다.
+   - 연결을 시작할 때 login_hint로 지금 로그인한 계정을 넘긴다
+   - Google 화면에서 취소하면 code 없이 돌아온다. 콜백은 로그인을 그대로 두고 next?calendar=error로 보낸다. 코드 교환이 실패해도 같다
+   - 코드 교환 전 사용자와 교환 뒤 사용자가 다르면(다른 Google 계정을 고름) 토큰을 저장하지 않고, 바뀐 세션을 그 기기에서 지운 뒤 /login?error=other_account로 보낸다
+   - Google 토큰(provider_token·provider_refresh_token)은 코드 교환 직후 세션에만 실려 온다. 콜백은 이 API를 부른 뒤 세션을 한 번 새로 받아 브라우저 쿠키에 Google 토큰을 남기지 않는다. 새로 받지 못하면 그 기기에서 로그아웃한다. 로그인 콜백도 같다
 3. **끊김**: refresh가 실패하면(만료·취소) 서버는 저장한 토큰을 지운다. 그 뒤 캘린더가 필요한 API는 `409 CALENDAR_NOT_CONNECTED`(`details.reason`: `not_connected` · `expired`)를 돌려주고, 프론트는 2번 연결 흐름으로 보낸다.
 
 S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 권한을 묻지 않는다. 연결 후 이벤트를 만들 수 있다. access token이 만료된 뒤 refresh로 다시 만들 수 있다.
@@ -1110,6 +1116,8 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `DB_UNAVAILABLE` | 503 | DB 연결 실패 | 잠시 후 재시도 |
 | `INTERNAL_ERROR` | 500 | 처리하지 못한 예외 | 에러 화면 |
 
+프론트만 쓰는 코드(서버는 주지 않는다, web/src/api/http.ts): NETWORK_ERROR(응답을 받지 못함), CONFIG_MISSING(API 주소 없음), NOT_READY(아직 API가 없는 기능), CALENDAR_CONNECT_FAILED(Google 화면을 열지 못함), RUN_TIMEOUT(실행 확인 시간 초과). 처리하지 못한 예외의 500 INTERNAL_ERROR에도 CORS 헤더가 붙어 브라우저가 문구를 읽을 수 있다.
+
 ## 14. 결정이 필요한 것
 
 - [ ] 강의자료 토큰 상한 (P1 축소판) — 실제 강의자료로 측정
@@ -1135,3 +1143,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `PrepareResult` | `calendar_error` 추가 |
 | `MaterialDetail` | `sections`와 번역 필드 삭제 (P1 축소판) |
 | 화면 | 판정표를 묶음으로 표시, 판정 기준일 표시. 로그인 화면의 "캘린더 권한을 함께 요청해요" 문구 삭제. 준비하기 결과 화면에 캘린더 연결 버튼. 온보딩에 학과 목록 선택·유학생 여부·소득 선택 동의 추가. 포스터 등록의 공개 안내, 카드·상세의 업로더 표시와 신고 버튼 숨김. 설정의 HY-in 숨김과 캘린더 연결 추가. 과목 상세 자료 탭의 구간 번역 숨김 |
+
+> 10/11 반영: 설정의 HY-in 숨김과 캘린더 연결.
