@@ -1,9 +1,6 @@
+import { MockApiError, rejectAfter, respond } from "@/api/mockClient";
 import { getDevScenario } from "@/dev/scenarios";
 import {
-  courseDetails,
-  courses,
-  lmsUpdates,
-  materials,
   mockNow,
   mockToday,
   opportunities,
@@ -11,14 +8,6 @@ import {
   duplicatePosterExtractResult,
   posterExtractResult,
 } from "@/mocks";
-import {
-  connectStoredLms,
-  getStoredLmsConnection,
-  getStoredMe,
-  getStoredProfile,
-  getStoredSettings,
-  hasStoredConsent,
-} from "@/mocks/accountStore";
 import {
   getStoredOpportunity,
   getStoredPlanner,
@@ -31,26 +20,24 @@ import {
   updateStoredManualTask,
 } from "@/mocks/store";
 import type {
-  AppNotification,
   Category,
-  Course,
-  CourseDetail,
   DisplayStatus,
   FeedCounts,
   FeedResponse,
-  LmsConnection,
-  LmsUpdate,
-  MaterialDetail,
-  Me,
   OpportunityDetail,
   PlannerResponse,
   PlannerTask,
   PosterExtractResult,
   PrepareResult,
-  Profile,
   ReportReason,
-  Settings,
 } from "@/types/api";
+
+// 화면이 쓰는 데이터 함수는 모두 이 파일에서 가져간다 (web/CLAUDE.md, 스킬 mock-to-api).
+// 계정·LMS 함수는 accountClient.ts·lmsClient.ts에 두고 여기서 다시 내보낸다. 아래 공고·플래너·포스터 함수는 아직 목이다
+export * from "@/api/accountClient";
+export * from "@/api/lmsClient";
+export { ApiError, consentRequired, errorMessage, fieldErrors } from "@/api/http";
+export { MockApiError };
 
 export interface FeedParams {
   eligibility?: DisplayStatus | "all";
@@ -60,38 +47,12 @@ export interface FeedParams {
 
 export const MOCK_TODAY = mockToday;
 export const MOCK_NOW = mockNow;
-const WAIT_MS = 300;
 
 export type PosterPreviewState =
   | { status: "idle"; result: null }
   | { status: "failure"; result: null }
   | { status: "limit"; result: null }
   | { status: "duplicate"; result: PosterExtractResult };
-
-export class MockApiError extends Error {
-  constructor(
-    public code: "poster_read_failed" | "upload_limit" | "lms_invalid",
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function respond<T>(value: T): Promise<T> {
-  return new Promise((resolve) => {
-    setTimeout(() => resolve(clone(value)), WAIT_MS);
-  });
-}
-
-function rejectAfter(error: Error): Promise<never> {
-  return new Promise((_, reject) => {
-    setTimeout(() => reject(error), WAIT_MS);
-  });
-}
 
 function getCounts(items: FeedResponse["items"]): FeedCounts {
   return {
@@ -103,31 +64,6 @@ function getCounts(items: FeedResponse["items"]): FeedCounts {
     ineligible: items.filter((item) => item.eligibility.status === "ineligible").length,
     deadline_soon: items.filter((item) => item.eligibility.status !== "ineligible" && item.d_day !== null && item.d_day >= 0 && item.d_day <= 3).length,
   };
-}
-
-export function getMe(): Promise<Me> {
-  const scenario = getDevScenario();
-  const result = clone(getStoredMe());
-
-  if (scenario === "first_visit" && !hasStoredConsent()) {
-    result.consented = false;
-    result.income_info_consented = false;
-  }
-  if (scenario === "lms_disconnected") {
-    result.lms = { status: "disconnected", last_synced_at: null };
-  }
-  if (scenario === "lms_error" && result.lms) result.lms.status = "error";
-  if (scenario === "calendar_expired") result.calendar_connected = false;
-
-  return respond(result);
-}
-
-export function getProfile(): Promise<Profile> {
-  return respond(getStoredProfile());
-}
-
-export function getSettings(): Promise<Settings> {
-  return respond(getStoredSettings());
 }
 
 export function getFeed(params: FeedParams = {}): Promise<FeedResponse> {
@@ -251,64 +187,3 @@ export function registerPosterOpportunity(
 ): Promise<OpportunityDetail> {
   return respond(registerStoredPoster(draft));
 }
-
-export function getLmsConnection(): Promise<LmsConnection> {
-  const scenario = getDevScenario();
-  const result = clone(getStoredLmsConnection());
-  if (scenario === "lms_disconnected") {
-    result.status = "disconnected";
-    result.last_synced_at = null;
-  }
-  if (scenario === "lms_error") {
-    result.status = "error";
-    result.last_error = "LearningX 인증 정보가 만료됐어요. 다시 연결해 주세요.";
-  }
-  return respond(result);
-}
-
-// TODO(api): LearningX 연결 API가 확정되면 토큰을 서버로만 전달하고 클라이언트에는 저장하지 않는다.
-export function connectLms(token: string): Promise<LmsConnection> {
-  const normalized = token.trim();
-  if (token !== normalized || normalized.length < 8) {
-    return rejectAfter(
-      new MockApiError("lms_invalid", "LearningX 토큰을 확인할 수 없어요."),
-    );
-  }
-  return respond(connectStoredLms(normalized.slice(-4)));
-}
-
-export function getCourses(): Promise<Course[]> {
-  return respond(courses);
-}
-
-export function getCourse(id: string): Promise<CourseDetail> {
-  const course = courseDetails[id];
-  if (!course) return Promise.reject(new Error("과목을 찾을 수 없어요."));
-  return respond(course);
-}
-
-export function getLmsUpdates(): Promise<LmsUpdate[]> {
-  return respond(lmsUpdates);
-}
-
-export function getMaterial(fileId: string): Promise<MaterialDetail> {
-  const material = materials[fileId];
-  if (!material) return Promise.reject(new Error("강의자료를 찾을 수 없어요."));
-  return respond(material);
-}
-
-export {
-  getNotifications,
-  markAllNotificationsRead,
-  markNotificationRead,
-} from "@/api/notificationClient";
-export {
-  deleteAccount,
-  disconnectLms,
-  getDepartments,
-  reconnectCalendar,
-  saveConsents,
-  saveProfile,
-  saveSettings,
-  updateIncomeConsent,
-} from "@/api/settingsClient";

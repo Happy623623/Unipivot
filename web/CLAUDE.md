@@ -7,15 +7,17 @@ Figma Make 시안을 옮긴 코드다. 아래 화면·데이터 규칙을 지키
 ## 구조
 
 - `src/app/` 라우트. `(app)`은 사이드바가 있는 화면(`AppFrame`), `(auth)`는 로그인·온보딩, `auth/callback`은 로그인 콜백
-- `src/screens/` 화면, `src/components/` 공통 조각. 페이지 파일은 화면에 `navigate`만 넘긴다
+- `src/screens/` 화면, `src/components/` 공통 조각. 페이지 파일은 화면에 `navigate`와 주소에서 읽은 값만 넘긴다
 - `src/lib/routes.ts` Route ↔ URL 변환, `src/components/AppFrame.tsx` 내 정보·알림·동의 확인
-- `src/api/client.ts` 화면이 쓰는 데이터 함수, `src/api/http.ts` 실제 API 호출(`apiFetch`, `waitForRun`)
+- `src/api/client.ts` 화면이 쓰는 데이터 함수. 계정 함수는 `accountClient.ts`, LMS 함수는 `lmsClient.ts`에 두고 client.ts가 다시 내보낸다
+- `src/api/http.ts` 실제 API 호출과 오류 도구(`apiFetch`, `errorMessage`, `fieldErrors`, `waitForRun`), `src/api/mockClient.ts` 목 모드 구현
 - `src/mocks/` 목데이터, `src/dev/` 상태 미리보기(목 모드에서만 보인다)
-- `src/types/api.ts` API 명세와 1:1인 타입
+- `src/types/api.ts` API 명세와 1:1인 타입. LMS·강의자료 타입은 `lms.ts`에 두고 api.ts가 다시 내보낸다
 
 ## 데이터
 
 - 화면은 `src/api/client.ts` 함수로만 데이터를 받는다. 함수 이름·인자·반환 타입은 그대로 두고 안쪽만 목에서 `apiFetch`로 바꾼다(스킬 `mock-to-api`).
+- 오류 문구는 `errorMessage(error, 화면 문구)`로 만들고, 422 항목 오류는 `fieldErrors`로 입력란 아래에 보여 준다. 실제 모드에서 아직 API가 없는 계정·LMS 기능은 목데이터 대신 빈 값이나 `NOT_READY` 오류를 준다(알림 설정 P1만 목 값).
 - 타입 필드 이름은 API 명세와 같아야 한다. 없는 값이 필요하면 만들지 말고 그 자리에 `// TODO(api):`를 남긴다.
 - `NEXT_PUBLIC_USE_MOCKS=true`면 목데이터와 상태 미리보기를 쓴다. 목 상태는 메모리에만 있어 새로고침하면 초기화된다.
 - Supabase는 로그인과 세션 토큰에만 쓴다. 데이터는 DB를 직접 읽지 않고 FastAPI로만 받는다.

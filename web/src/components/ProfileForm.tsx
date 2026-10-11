@@ -17,6 +17,8 @@ interface ProfileFormProps {
   departments: Department[]; // GET /meta/departments
   incomeConsented: boolean; // GET /me의 income_info_consented
   saving?: boolean;
+  serverErrors?: ProfileErrors; // 저장할 때 서버가 준 항목별 오류 (422 VALIDATION_FAILED)
+  error?: string | null; // 저장 실패 문구
   submitLabel?: string;
   onCancel?: () => void;
   onSave: (profile: Profile) => void;
@@ -28,6 +30,8 @@ export default function ProfileForm({
   departments,
   incomeConsented,
   saving = false,
+  serverErrors,
+  error,
   submitLabel = "저장",
   onCancel,
   onSave,
@@ -39,6 +43,7 @@ export default function ProfileForm({
   const editableFields = steps.flatMap((step) => (step.id === "income" && !incomeConsented ? [] : step.fields));
 
   useEffect(() => setValues(toFormValues(profile)), [profile]);
+  useEffect(() => setErrors(serverErrors ?? {}), [serverErrors]);
 
   return (
     <form
@@ -79,6 +84,7 @@ export default function ProfileForm({
           </section>
         ))}
       </div>
+      {error && <p role="alert" className="mt-4 text-[13px] text-[#c53030]">{error}</p>}
       <div className="mt-6 flex justify-end gap-2">
         {onCancel && <Button secondary onClick={onCancel}>취소</Button>}
         <Button type="submit" disabled={saving}>
