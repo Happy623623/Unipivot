@@ -1,6 +1,6 @@
 import Badge from "@/components/Badge";
 import { formatDday } from "@/lib/format";
-import { MOCK_TODAY } from "@/api/client";
+import { todayKst } from "@/api/client";
 import type { CourseDetail, SubmissionState } from "@/types/api";
 import type { Tone } from "@/types/route";
 
@@ -38,7 +38,7 @@ export default function CourseAssignments({
               <p className="text-[14px] font-semibold">{assignment.title}</p>
               <p className="mt-1 text-[12px] text-[#667085]">
                 {assignment.due_at
-                  ? `마감 ${formatDday(assignment.due_at, MOCK_TODAY)}`
+                  ? `마감 ${formatDday(assignment.due_at, todayKst())}`
                   : "마감일 없음"}
               </p>
             </div>

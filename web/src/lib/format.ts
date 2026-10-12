@@ -7,7 +7,8 @@ function parseDate(value: string | Date): Date {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00+09:00`) : new Date(value);
 }
 
-function getKstDateKey(value: string | Date): string {
+// KST 날짜 "YYYY-MM-DD"
+export function getKstDateKey(value: string | Date): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: KST_TIME_ZONE,
     year: "numeric",
@@ -50,9 +51,12 @@ export function getDdayValue(
 }
 
 export function formatDday(deadlineAt: string | null, now: string | Date = new Date()): string {
-  const days = getDdayValue(deadlineAt, now);
-  if (days === null) return "상시";
+  return formatDdayValue(getDdayValue(deadlineAt, now));
+}
 
+// 서버가 계산한 d_day(마감일 - 오늘, KST)를 그대로 표시한다. null은 마감일 없음
+export function formatDdayValue(days: number | null): string {
+  if (days === null) return "상시";
   if (days === 0) return "D-day";
   return days > 0 ? `D-${days}` : `D+${Math.abs(days)}`;
 }
@@ -83,7 +87,7 @@ export function getSourceLabel(sourceType: SourceType): string {
     school_notice: "교내 공지",
     youth_policy: "청년정책",
     contest: "공모전",
-    poster: "공유 포스터",
+    poster: "포스터", // 공유는 P1이라 올린 사람에게만 보인다
     lms_announcement: "과목 공지",
   };
   return labels[sourceType];

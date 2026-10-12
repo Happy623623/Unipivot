@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { MOCK_NOW } from "@/api/client";
+import { nowIso } from "@/api/client";
 import { useAppShell } from "@/components/AppShell";
 import { formatRelativeTime } from "@/lib/format";
 import type { AppNotification, NotificationType } from "@/types/api";
@@ -155,7 +155,7 @@ export default function Header({ title, subtitle, action }: HeaderProps) {
                   <span className="flex items-start justify-between gap-3">
                     <b className="text-[14px] font-semibold">{notification.title}</b>
                     <span className="shrink-0 text-[11px] text-[#a0a4ab]">
-                      {formatRelativeTime(notification.scheduled_at, MOCK_NOW)}
+                      {formatRelativeTime(notification.scheduled_at, nowIso())}
                     </span>
                   </span>
                   {notification.body && (
