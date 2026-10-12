@@ -3,8 +3,8 @@ import {
   getCourses,
   getLmsConnection,
   getLmsUpdates,
-  MOCK_NOW,
-  MOCK_TODAY,
+  nowIso,
+  todayKst,
 } from "@/api/client";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
@@ -57,14 +57,14 @@ function UpdateItem({
       : update.type === "announcement"
         ? `${update.course.short_name} 공지`
         : `${update.course.short_name} ${
-            isDeadlineSoon(update.due_at, MOCK_TODAY) ? "과제 마감 임박" : "새 과제"
+            isDeadlineSoon(update.due_at, todayKst()) ? "과제 마감 임박" : "새 과제"
           }`;
   const note =
     update.type === "module_item"
       ? update.title
       : update.type === "announcement"
         ? update.summary
-        : `${update.title} · ${formatDday(update.due_at, MOCK_TODAY)}`;
+        : `${update.title} · ${formatDday(update.due_at, todayKst())}`;
   const color =
     update.type === "assignment"
       ? "text-[#c53030]"
@@ -143,7 +143,7 @@ export default function Academics({ navigate }: AcademicsProps) {
         <section className="flex items-center gap-3 rounded-[14px] bg-[#eef2ff] p-[18px]">
           <Badge tone="green">LearningX 연결됨</Badge>
           <p className="text-[13px] font-medium text-[#344054]">
-            마지막 동기화: {connection.last_synced_at ? formatRelativeTime(connection.last_synced_at, MOCK_NOW) : "아직 없음"} · 토큰 끝 4자리 {connection.token_last4}
+            마지막 동기화: {connection.last_synced_at ? formatRelativeTime(connection.last_synced_at, nowIso()) : "아직 없음"} · 토큰 끝 4자리 {connection.token_last4}
           </p>
         </section>
       )}
@@ -163,7 +163,7 @@ export default function Academics({ navigate }: AcademicsProps) {
             <p className="mt-3 text-[12px] font-medium text-[#667085]">다음 일정</p>
             <p className="mt-2 text-[14px] font-semibold">
               {course.next_due
-                ? `${course.next_due.title} · ${formatDday(course.next_due.due_at, MOCK_TODAY)}`
+                ? `${course.next_due.title} · ${formatDday(course.next_due.due_at, todayKst())}`
                 : "예정된 일정 없음"}
             </p>
             <span className="mt-3 block text-[12px] font-semibold text-[#4f6ef7]">

@@ -1,6 +1,7 @@
 import { getDevScenario } from "@/dev/scenarios";
-import { courseDetails, courses, lmsUpdates, materials } from "@/mocks";
+import { courseDetails, courses, lmsUpdates, materials, opportunities } from "@/mocks";
 import { mockDepartments, mockNow } from "@/mocks/account";
+import { rejudgeStoredOpportunity } from "@/mocks/rejudge";
 import {
   getStoredNotifications,
   readAllStoredNotifications,
@@ -23,15 +24,20 @@ import {
 } from "@/mocks/accountStore";
 import type {
   AppNotification,
+  Category,
   ConsentResult,
   Course,
   CourseDetail,
   Department,
+  FeedCounts,
+  FeedResponse,
   IncomeConsentResult,
   LmsConnection,
   LmsUpdate,
   MaterialDetail,
   Me,
+  OpportunityDetail,
+  OpportunityItem,
   Profile,
   Settings,
 } from "@/types/api";
@@ -131,6 +137,42 @@ export function markNotificationRead(id: string): Promise<AppNotification[]> {
 
 export function markAllNotificationsRead(): Promise<AppNotification[]> {
   return respond(readAllStoredNotifications(mockNow));
+}
+
+// 공고 피드·상세 (client.ts)
+
+// 홈 요약 카드 숫자. 실제 API처럼 카테고리 필터와 상관없이 전체 공고 기준이다
+function feedCounts(items: OpportunityItem[]): FeedCounts {
+  return {
+    eligible: items.filter((item) => item.eligibility.status === "eligible").length,
+    new_eligible: items.filter((item) => item.eligibility.status === "eligible" && item.is_new).length,
+    undetermined: items.filter((item) => item.eligibility.status === "undetermined").length,
+    missing_info: items.filter((item) => item.eligibility.display_status === "missing_info").length,
+    needs_review: items.filter((item) => item.eligibility.display_status === "needs_review").length,
+    ineligible: items.filter((item) => item.eligibility.status === "ineligible").length,
+    deadline_soon: items.filter((item) => item.eligibility.status !== "ineligible" && item.d_day !== null && item.d_day >= 0 && item.d_day <= 3).length,
+  };
+}
+
+export function getFeed(categories: Category[] | null, sort: "deadline" | "recent"): Promise<FeedResponse> {
+  if (getDevScenario() === "empty_feed") {
+    return respond({ items: [], next_cursor: null, counts: feedCounts([]) });
+  }
+  const items = opportunities.filter((item) => !categories || categories.includes(item.category));
+  items.sort((a, b) =>
+    sort === "deadline"
+      ? (a.d_day ?? Number.MAX_SAFE_INTEGER) - (b.d_day ?? Number.MAX_SAFE_INTEGER)
+      : // 실제 API는 등록 최신순이다. 목데이터에는 등록 시각이 없어 새 공고만 앞으로 보낸다
+        Number(b.is_new) - Number(a.is_new),
+  );
+  return respond({ items, next_cursor: null, counts: feedCounts(opportunities) });
+}
+
+// 정보 입력으로 프로필(목 저장소)이 채워졌으면 그 자리에서 다시 판정한 것처럼 바꿔서 준다
+export function getOpportunity(id: string): Promise<OpportunityDetail> {
+  const detail = rejudgeStoredOpportunity(id, getStoredProfile());
+  if (!detail) return Promise.reject(new Error("공고를 찾을 수 없어요."));
+  return respond(detail);
 }
 
 // LMS (lmsClient.ts)

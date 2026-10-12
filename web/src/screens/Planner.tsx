@@ -4,7 +4,7 @@ import {
   deleteManualPlannerTask,
   getMe,
   getPlanner,
-  MOCK_TODAY,
+  todayKst,
   setPlannerTaskDone,
   updateManualPlannerTask,
 } from "@/api/client";
@@ -36,11 +36,11 @@ function PlannerSkeleton() {
 }
 
 export default function Planner({ navigate }: { navigate: (route: Route) => void }) {
-  const [view, setView] = useState({
-    year: Number(MOCK_TODAY.slice(0, 4)),
-    month: Number(MOCK_TODAY.slice(5, 7)),
-  });
-  const [selectedDate, setSelectedDate] = useState(MOCK_TODAY);
+  const [view, setView] = useState(() => ({
+    year: Number(todayKst().slice(0, 4)),
+    month: Number(todayKst().slice(5, 7)),
+  }));
+  const [selectedDate, setSelectedDate] = useState(todayKst);
   const [plannerOverride, setPlannerOverride] =
     useState<PlannerResponse | null>(null);
   const range = monthRange(view.year, view.month);

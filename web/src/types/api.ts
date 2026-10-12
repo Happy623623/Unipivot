@@ -1,6 +1,6 @@
 // API 명세와 1:1로 맞춘 타입. 필드 이름을 바꾸지 않는다. LMS·강의자료 타입은 lms.ts에 두고 여기서 다시 내보낸다.
-// 내 정보·프로필·동의·학과·사용 기록은 v0.4에 맞췄다. 공고 피드·상세는 아직 v0.3 모양이다
-// (TODO(api): 공고 화면을 실제 API에 붙일 때 명세 부록 "프론트 반영 목록"대로 맞춘다)
+// 내 정보·프로필·동의·학과·사용 기록·공고 피드·상세는 v0.4에 맞췄다.
+// 준비하기·플래너·포스터는 아직 v0.3 모양이다(TODO(api): 그 화면을 실제 API에 붙일 때 명세 부록대로 맞춘다)
 // 일시는 ISO 8601 문자열(+09:00), 날짜만은 "YYYY-MM-DD".
 
 export * from "@/types/lms";
@@ -90,7 +90,7 @@ export interface FeedEligibility {
   status: EligibilityStatus;
   display_status: DisplayStatus;
   summary: string;                       // 카드의 상태 사유 한 줄
-  missing_fields: string[];
+  missing_fields: string[];              // 정보 입력창(F-03)에 띄울 요건 항목
 }
 export interface OpportunityItem {
   id: string;
@@ -99,16 +99,17 @@ export interface OpportunityItem {
   category: Category;
   source_type: SourceType;
   deadline_at: string | null;
-  d_day: number | null;
+  d_day: number | null;                  // 마감일(KST) - 오늘(KST). 마감일이 없으면 null(상시)
   easy_summary: string | null;
   eligibility: FeedEligibility;
   recommend_reason: string | null;       // P1
   needs_review: boolean;
-  uploader_masked: string | null;        // 포스터 공고만, 예: "김*지"
+  uploaded_by_me: boolean;               // 내가 올린 포스터. 업로더 이름은 보여주지 않는다
   course_name: string | null;            // 과목 공지에서 온 공고만
   prepared: boolean;
   is_new: boolean;
 }
+// 홈 요약 카드. 카테고리·판정 필터와 상관없이 지금 보이는 활성 공고 전체 기준이다
 export interface FeedCounts {
   eligible: number; new_eligible: number;
   undetermined: number; missing_info: number; needs_review: number;
@@ -117,18 +118,45 @@ export interface FeedCounts {
 export interface FeedResponse { items: OpportunityItem[]; next_cursor: string | null; counts: FeedCounts; }
 
 // GET /opportunities/{id}
+export type Outcome = "pass" | "fail" | "unknown";
+export type UnknownReason = "missing_profile" | "ambiguous" | "unsupported_field" | "basis_mismatch";
+export type OpportunityStatus = "active" | "hidden" | "merged" | "expired";
 export interface Condition {
   requirement_id: string;
-  field: string;
-  label: string;                         // "직전학기 취득학점"
+  clause_no: number;                     // 같은 번호끼리 한 묶음("다음 중 하나")
+  field: string;                         // 요건 항목. 나이(age)·거주지역(region)은 프로필 항목 이름과 다르다
+  label: string;                         // "직전학기 이수학점"
   operator: string;
   value: unknown;
   user_value: unknown;
-  condition_text: string;                // "직전학기 12학점 이상"
-  user_value_text: string | null;        // "18학점", 미입력이면 null
-  outcome: "pass" | "fail" | "unknown";
+  condition_text: string;                // "12학점 이상" (label은 빼고)
+  user_value_text: string | null;        // "10학점", 미입력이면 null
+  outcome: Outcome;
+  unknown_reason: UnknownReason | null;  // 결과가 충족·불충족이면 null
   evidence_text: string | null;          // 근거 원문 문장
   is_ambiguous: boolean;
+}
+export interface Clause {
+  clause_no: number;
+  outcome: Outcome;
+  condition_count: number;               // 2 이상이면 "다음 중 하나" 상자로 그린다
+}
+export interface DetailEligibility {
+  status: EligibilityStatus;
+  display_status: DisplayStatus;
+  reason_text: string | null;            // 상태 사유 한 줄(피드 카드의 summary와 같다)
+  basis_date: string | null;             // 판정 기준일. 요건 추출에 실패한 공고는 null
+  requirements_version: number;
+  missing_fields: string[];
+  clauses: Clause[];
+  conditions: Condition[];               // 묶음 순서, 묶음 안에서는 원문 순서
+  evaluated_at: string | null;
+}
+export interface AttachmentItem {
+  id: string;
+  file_name: string;
+  source_url: string;                    // 학교 다운로드 주소
+  extract_status: "succeeded" | "failed" | "skipped"; // skipped: 에이전트가 읽지 않음
 }
 export interface DocumentItem {
   id: string;
@@ -142,31 +170,35 @@ export interface DocumentItem {
   task_id: string | null;                // 준비하기 전에는 null
   is_done: boolean | null;
 }
-export interface ProcessStep { seq: number; label: string; status: RunStatus; latency_ms: number | null; }
+// 처리 과정 한 줄 (공고 상세의 process.extraction, GET /runs/{id}의 steps)
+export interface ProcessStep {
+  seq: number;
+  tool: string;
+  label: string;                         // "첨부 '2026-2 장학 안내.hwp' 읽기"
+  status: RunStatus;
+  latency_ms: number | null;
+  chosen_by: "agent" | "pipeline";       // 모델이 고른 도구인지, 정해진 순서인지
+  note: string | null;                   // 모델이 고른 이유 한 줄. 일반 텍스트로만 보여 준다
+}
 export interface OpportunityDetail {
   id: string;
   title: string;
   organizer: string | null;
   category: Category;
   source_type: SourceType;
+  status: OpportunityStatus;             // 준비한 공고가 마감·숨김이 되어도 보인다. 화면 위에 안내를 띄운다
   original_url: string | null;
-  poster_url: string | null;             // 포스터 공고의 원본 이미지
+  poster_url: string | null;             // 포스터 원본 이미지(서명 URL 5분). 포스터 업로드(W6)부터 채운다
   easy_summary: string | null;
   apply_start_at: string | null;
   deadline_at: string | null;
   needs_review: boolean;
+  review_reasons: string[];              // 원문 확인이 필요한 이유. 일반 텍스트로만 보여 준다
   extraction_confidence: number | null;
-  uploader_masked: string | null;
+  uploaded_by_me: boolean;
   course_name: string | null;
-  eligibility: {
-    status: EligibilityStatus;
-    display_status: DisplayStatus;
-    summary: string;                     // 상태 사유 한 줄 (API v0.3 보완)
-    reason_text: string | null;          // 탈락 사유
-    missing_fields: string[];
-    conditions: Condition[];
-    evaluated_at: string;
-  };
+  attachments: AttachmentItem[];
+  eligibility: DetailEligibility;
   documents: DocumentItem[];
   prep: {
     prepared: boolean;
@@ -175,15 +207,15 @@ export interface OpportunityDetail {
     tasks_done: number;
     calendar_events: { id: string; provider: "google" | "ics" }[];
   };
-  process: { extraction: ProcessStep[]; evaluated_at: string; prepare_run_id: string | null };
-  reported_by_me: boolean;
+  process: { extraction: ProcessStep[]; evaluated_at: string | null; prepare_run_id: string | null };
+  reported_by_me: boolean;               // 신고(P1) 전에는 늘 false
 }
 
 // GET /runs/{id}: 포스터 추출·준비하기 진행 표시
 export interface Run<R = unknown> {
   id: string;
   status: RunStatus;
-  steps: { seq: number; tool: string; label: string; status: RunStatus; latency_ms: number | null }[];
+  steps: ProcessStep[];
   result: R | null;
   error: { code: string; message: string } | null;
 }

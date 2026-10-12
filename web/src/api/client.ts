@@ -1,30 +1,24 @@
+import { ApiError, apiFetch, notReady, USE_MOCKS } from "@/api/http";
+import * as mock from "@/api/mockClient";
 import { MockApiError, rejectAfter, respond } from "@/api/mockClient";
 import { getDevScenario } from "@/dev/scenarios";
+import { getKstDateKey } from "@/lib/format";
+import { duplicatePosterExtractResult, mockNow, mockToday, posterExtractResult } from "@/mocks";
+import { registerStoredPoster } from "@/mocks/posterStore";
 import {
-  mockNow,
-  mockToday,
-  opportunities,
-  opportunityDetails,
-  duplicatePosterExtractResult,
-  posterExtractResult,
-} from "@/mocks";
-import {
-  getStoredOpportunity,
   getStoredPlanner,
   addStoredManualTask,
   deleteStoredManualTask,
   prepareStoredOpportunity,
-  registerStoredPoster,
   setStoredPlannerTaskDone,
   setStoredDocumentDone,
   updateStoredManualTask,
 } from "@/mocks/store";
 import type {
   Category,
-  DisplayStatus,
-  FeedCounts,
   FeedResponse,
   OpportunityDetail,
+  OpportunityItem,
   PlannerResponse,
   PlannerTask,
   PosterExtractResult,
@@ -33,20 +27,26 @@ import type {
 } from "@/types/api";
 
 // 화면이 쓰는 데이터 함수는 모두 이 파일에서 가져간다 (web/CLAUDE.md, 스킬 mock-to-api).
-// 계정·LMS 함수는 accountClient.ts·lmsClient.ts에 두고 여기서 다시 내보낸다. 아래 공고·플래너·포스터 함수는 아직 목이다
+// 계정·LMS 함수는 accountClient.ts·lmsClient.ts에 두고 여기서 다시 내보낸다.
+// 공고 피드·상세는 실제 API를 부르고, 아래 준비하기·플래너·포스터 함수는 아직 목이다
 export * from "@/api/accountClient";
 export * from "@/api/lmsClient";
 export { ApiError, consentRequired, errorMessage, fieldErrors } from "@/api/http";
 export { MockApiError };
 
 export interface FeedParams {
-  eligibility?: DisplayStatus | "all";
-  category?: Category | "all";
+  category?: Category | "all"; // "etc"는 기타 칩(연구·시험·기타)
   sort?: "deadline" | "recent";
 }
 
-export const MOCK_TODAY = mockToday;
-export const MOCK_NOW = mockNow;
+// 화면의 오늘(KST "YYYY-MM-DD")과 지금. 목 모드는 목데이터의 기준 시각(2026-10-05)을 쓴다
+export function todayKst(): string {
+  return USE_MOCKS ? mockToday : getKstDateKey(new Date());
+}
+
+export function nowIso(): string {
+  return USE_MOCKS ? mockNow : new Date().toISOString();
+}
 
 export type PosterPreviewState =
   | { status: "idle"; result: null }
@@ -54,50 +54,51 @@ export type PosterPreviewState =
   | { status: "limit"; result: null }
   | { status: "duplicate"; result: PosterExtractResult };
 
-function getCounts(items: FeedResponse["items"]): FeedCounts {
-  return {
-    eligible: items.filter((item) => item.eligibility.status === "eligible").length,
-    new_eligible: items.filter((item) => item.eligibility.status === "eligible" && item.is_new).length,
-    undetermined: items.filter((item) => item.eligibility.status === "undetermined").length,
-    missing_info: items.filter((item) => item.eligibility.display_status === "missing_info").length,
-    needs_review: items.filter((item) => item.eligibility.display_status === "needs_review").length,
-    ineligible: items.filter((item) => item.eligibility.status === "ineligible").length,
-    deadline_soon: items.filter((item) => item.eligibility.status !== "ineligible" && item.d_day !== null && item.d_day >= 0 && item.d_day <= 3).length,
-  };
+// "기타" 칩은 연구·시험·기타 세 카테고리를 함께 고른다
+function feedCategories(category: FeedParams["category"]): Category[] | null {
+  if (!category || category === "all") return null;
+  return category === "etc" ? ["research", "exam", "etc"] : [category];
 }
 
-export function getFeed(params: FeedParams = {}): Promise<FeedResponse> {
-  if (getDevScenario() === "empty_feed") {
-    return respond({ items: [], next_cursor: null, counts: getCounts([]) });
-  }
+const FEED_PAGE_SIZE = 50; // API 최대값
+const FEED_MAX_PAGES = 20; // 1,000개까지 받는다. 더 있으면 next_cursor가 남는다
 
-  let items = [...opportunities];
-  if (params.eligibility && params.eligibility !== "all") {
-    items = items.filter((item) => item.eligibility.display_status === params.eligibility);
+// GET /opportunities. 홈은 판정 결과를 모두 받아 화면에서 묶는다(지원 어려움은 맨 아래 묶음).
+// 다음 쪽(next_cursor)이 없을 때까지 50개씩 이어 받는다. counts는 필터와 상관없는 전체 기준이다
+export async function getFeed(params: FeedParams = {}): Promise<FeedResponse> {
+  const categories = feedCategories(params.category);
+  const sort = params.sort ?? "deadline";
+  if (USE_MOCKS) return mock.getFeed(categories, sort);
+  const query = new URLSearchParams({ sort, limit: String(FEED_PAGE_SIZE) });
+  if (categories) query.set("category", categories.join(","));
+  let page = await apiFetch<FeedResponse>(`/opportunities?${query}`);
+  const items: OpportunityItem[] = [...page.items];
+  for (let pages = 1; page.next_cursor && pages < FEED_MAX_PAGES; pages += 1) {
+    query.set("cursor", page.next_cursor);
+    page = await apiFetch<FeedResponse>(`/opportunities?${query}`);
+    items.push(...page.items);
   }
-  if (params.category && params.category !== "all") {
-    items =
-      params.category === "etc"
-        ? items.filter((item) => ["research", "exam", "etc"].includes(item.category))
-        : items.filter((item) => item.category === params.category);
-  }
+  return { items, next_cursor: page.next_cursor, counts: page.counts };
+}
 
-  items.sort((a, b) => {
-    if (params.sort !== "recent") {
-      return (a.d_day ?? Number.MAX_SAFE_INTEGER) - (b.d_day ?? Number.MAX_SAFE_INTEGER);
+// GET /opportunities/{id}. 서버가 지금 프로필로 다시 판정하고 조회 기록을 남긴다.
+// 형식이 틀린 id(422, 예: 목 모드에서 쓰던 주소)도 없는 공고처럼 알린다
+export async function getOpportunity(id: string): Promise<OpportunityDetail> {
+  if (USE_MOCKS) return mock.getOpportunity(id);
+  try {
+    return await apiFetch<OpportunityDetail>(`/opportunities/${encodeURIComponent(id)}`);
+  } catch (error) {
+    if (error instanceof ApiError && error.code === "VALIDATION_FAILED") {
+      throw new ApiError("NOT_FOUND", "공고를 찾을 수 없어요.", 404);
     }
-    // 실제 API는 sort=recent를 받아 서버가 등록순으로 정렬한다. 목업은 새 공고를 앞으로만 보낸다.
-    return Number(b.is_new) - Number(a.is_new);
-  });
-
-  return respond({ items, next_cursor: null, counts: getCounts(items) });
+    throw error;
+  }
 }
 
-export function getOpportunity(id: string): Promise<OpportunityDetail> {
-  const detail = getStoredOpportunity(id) ?? opportunityDetails[id];
-  if (!detail) return Promise.reject(new Error("공고를 찾을 수 없어요."));
-  return respond(detail);
-}
+// 준비하기·서류 체크를 받을지. TODO(api): POST /opportunities/{id}/prepare·PATCH /planner/tasks가 생기면
+// 아래 함수를 바꾸고 지운다. 그 전까지 실제 모드는 "준비 일정 만들기"를 누르면 준비 중이라고 알린다
+export const PREPARE_READY = USE_MOCKS;
+export const PREPARE_NOT_READY = "준비 일정 만들기는 아직 준비 중이에요. 지금은 필요 서류와 마감일을 이 화면에서 확인해 주세요.";
 
 export function getPlanner(from: string, to: string): Promise<PlannerResponse> {
   const storedPlanner = getStoredPlanner();
@@ -124,25 +125,26 @@ export function deleteManualPlannerTask(id: string): Promise<void> {
   return respond(undefined);
 }
 
-// TODO(api): 실제 준비하기 API가 확정되면 전용 엔드포인트 호출로 교체한다.
 export function prepareOpportunity(
   id: string,
   includeCalendar: boolean,
   targetDate?: string,
 ): Promise<PrepareResult> {
+  if (!PREPARE_READY) return notReady(PREPARE_NOT_READY);
   return respond(prepareStoredOpportunity(id, includeCalendar, targetDate));
 }
 
-// TODO(api): 실제 서류 완료 API가 확정되면 planner task 수정 엔드포인트로 교체한다.
+// 서류 체크 = 플래너 할 일 완료 (PATCH /planner/tasks/{task_id})
 export function setDocumentDone(
   opportunityId: string,
   documentId: string,
   isDone: boolean,
 ): Promise<OpportunityDetail> {
+  if (!PREPARE_READY) return notReady("서류 체크는 아직 준비 중이에요.");
   return respond(setStoredDocumentDone(opportunityId, documentId, isDone));
 }
 
-// TODO(api): POST /opportunities/{id}/reports { reason, detail } — 서로 다른 3명째 신고에서 hidden: true
+// TODO(api): POST /opportunities/{id}/reports { reason, detail } — 신고(P1). 그 전까지 화면에 신고 버튼이 없다
 export function reportOpportunity(
   _id: string,
   _reason: ReportReason,
@@ -150,6 +152,10 @@ export function reportOpportunity(
 ): Promise<{ reported: boolean; hidden: boolean }> {
   return respond({ reported: true, hidden: false });
 }
+
+// 포스터 등록을 받을지. TODO(api): POST /files·/posters/extract·/posters/confirm(W6)이 생기면 아래 포스터 함수를
+// 바꾸고 지운다. 그 전까지 실제 모드는 포스터 등록 화면에서 준비 중이라고 알린다(목 공고는 실제 상세에서 열리지 않는다)
+export const POSTER_READY = USE_MOCKS;
 
 export function getPosterPreviewState(): Promise<PosterPreviewState> {
   const scenario = getDevScenario();

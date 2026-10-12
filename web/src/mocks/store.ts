@@ -3,9 +3,7 @@ import { opportunities } from "@/mocks/opportunities";
 import { planner } from "@/mocks/planner";
 import { mockToday } from "@/mocks/account";
 import type {
-  Condition,
   OpportunityItem,
-  PosterExtractResult,
   OpportunityDetail,
   PlannerResponse,
   PlannerTask,
@@ -157,98 +155,10 @@ export function setStoredDocumentDone(
   return detail;
 }
 
-export function registerStoredPoster(
-  draft: PosterExtractResult["draft"],
-): OpportunityDetail {
-  const id = `poster-${Date.now()}`;
-  const conditions: Condition[] = draft.requirements.map((requirement, index) => ({
-    requirement_id: `poster-requirement-${index}`,
-    field: requirement.field,
-    label: requirement.condition_text,
-    operator: requirement.operator,
-    value: requirement.value,
-    user_value: "확인됨",
-    condition_text: requirement.condition_text,
-    user_value_text: "확인됨",
-    outcome: "pass",
-    evidence_text: requirement.evidence_text,
-    is_ambiguous: requirement.is_ambiguous,
-  }));
-  const item: OpportunityItem = {
-    id,
-    title: draft.title,
-    organizer: draft.organizer,
-    category: draft.category,
-    source_type: "poster",
-    deadline_at: draft.deadline_at,
-    d_day: draft.deadline_at ? 25 : null,
-    easy_summary: draft.easy_summary,
-    eligibility: {
-      status: "eligible",
-      display_status: "eligible",
-      summary: "현재 입력한 조건을 충족해요.",
-      missing_fields: [],
-    },
-    recommend_reason: "직접 등록한 포스터 공고예요.",
-    needs_review: draft.low_confidence_fields.length > 0,
-    uploader_masked: "김*지",
-    course_name: null,
-    prepared: false,
-    is_new: true,
-  };
-  const detail: OpportunityDetail = {
-    id,
-    title: draft.title,
-    organizer: draft.organizer,
-    category: draft.category,
-    source_type: "poster",
-    original_url: null,
-    poster_url: "/assets/mock-opportunity-poster.svg",
-    easy_summary: draft.easy_summary,
-    apply_start_at: draft.apply_start_at,
-    deadline_at: draft.deadline_at,
-    needs_review: draft.low_confidence_fields.length > 0,
-    extraction_confidence: draft.extraction_confidence,
-    uploader_masked: "김*지",
-    course_name: null,
-    eligibility: {
-      status: "eligible",
-      display_status: "eligible",
-      summary: "현재 입력한 조건을 충족해요.",
-      reason_text: null,
-      missing_fields: [],
-      conditions,
-      evaluated_at: "2026-10-05T10:30:00+09:00",
-    },
-    documents: draft.documents.map((document, index) => ({
-      id: `poster-document-${index}`,
-      ...document,
-      how_to: null,
-      is_required: true,
-      task_id: null,
-      is_done: null,
-    })),
-    prep: {
-      prepared: false,
-      prep_plan_id: null,
-      tasks_total: 0,
-      tasks_done: 0,
-      calendar_events: [],
-    },
-    process: {
-      extraction: [
-        { seq: 1, label: "포스터에서 글자·날짜 읽기", status: "succeeded", latency_ms: 380 },
-        { seq: 2, label: "지원 자격 정리", status: "succeeded", latency_ms: 240 },
-        { seq: 3, label: "내 프로필과 비교", status: "succeeded", latency_ms: 190 },
-      ],
-      evaluated_at: "2026-10-05T10:30:00+09:00",
-      prepare_run_id: null,
-    },
-    reported_by_me: false,
-  };
+// 포스터 등록(posterStore.ts)이 만든 공고를 피드 맨 앞과 상세에 넣는다
+export function addStoredOpportunity(item: OpportunityItem, detail: OpportunityDetail): void {
   opportunities.unshift(item);
-  detailsState[id] = detail;
-  return detail;
+  detailsState[detail.id] = detail;
 }
 
 export function setStoredPlannerTaskDone(
