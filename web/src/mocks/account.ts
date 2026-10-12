@@ -31,8 +31,8 @@ export const profile: Profile = {
   birth_date: "2003-04-18",
   military_service_months: null,
   region_sido: "경기도",
-  region_sigungu: "안산시",
-  income_bracket: 4,
+  region_sigungu: null, // 시·군·구 단위 지역 조건은 "정보 필요"가 된다(목 공고 youth-capability)
+  income_bracket: null, // 목 공고 data-certificate의 "정보 필요"
   median_income_pct: null,
   welfare_status: "none",
   is_international: false,

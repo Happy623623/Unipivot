@@ -1,11 +1,14 @@
 import { useState } from "react";
 import {
+  errorMessage,
   getOpportunity,
-  MOCK_TODAY,
   prepareOpportunity,
+  PREPARE_NOT_READY,
+  PREPARE_READY,
+  todayKst,
 } from "@/api/client";
 import Badge from "@/components/Badge";
-import Button from "@/components/Button";
+import Button, { ButtonLink } from "@/components/Button";
 import Modal from "@/components/Modal";
 import StatusBadge from "@/components/StatusBadge";
 import {
@@ -22,7 +25,8 @@ interface OpportunityPreparationProps {
   calendarConnected: boolean;
   navigate: (route: Route) => void;
   onOpenProfile: () => void;
-  onOpenOriginal: () => void;
+  originalHref: string | null; // 공고 원문 주소(http·https만)
+  onOpenPoster: (() => void) | null; // 포스터 원본 이미지가 있으면 창으로 연다
   onDetailChange: (detail: OpportunityDetail) => void;
 }
 
@@ -32,7 +36,7 @@ const wait = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function deadlineCopy(detail: OpportunityDetail): string {
-  const days = getDdayValue(detail.deadline_at, MOCK_TODAY);
+  const days = getDdayValue(detail.deadline_at, todayKst());
   if (days === null) return "상시 모집";
   if (days === 0) return "오늘 마감";
   if (days > 0) return `마감까지 ${days}일`;
@@ -44,7 +48,8 @@ export default function OpportunityPreparation({
   calendarConnected,
   navigate,
   onOpenProfile,
-  onOpenOriginal,
+  originalHref,
+  onOpenPoster,
   onDetailChange,
 }: OpportunityPreparationProps) {
   const [steps, setSteps] = useState<[StepStatus, StepStatus]>(["idle", "idle"]);
@@ -54,28 +59,37 @@ export default function OpportunityPreparation({
   const [finishing, setFinishing] = useState(false);
   const [completed, setCompleted] = useState(false);
   const [targetDate, setTargetDate] = useState(""); // 상시 공고의 준비 목표일
-  const ineligible = detail.eligibility.display_status === "ineligible";
-  const deadlineSoon = isDeadlineSoon(detail.deadline_at, MOCK_TODAY);
+  const [message, setMessage] = useState<string | null>(null); // 준비하기를 하지 못한 이유
+  const today = todayKst();
+  const deadlineSoon = isDeadlineSoon(detail.deadline_at, today);
   const applicationPeriod = `${detail.apply_start_at ? formatKstDate(detail.apply_start_at) : "시작일 미정"} ~ ${
     detail.deadline_at ? formatKstDate(detail.deadline_at) : "상시"
   }`;
-  const reason = ineligible ? detail.eligibility.reason_text : detail.eligibility.summary;
 
+  // 실제 모드는 아직 준비하기 API가 없어 누르면 바로 준비 중이라고 알린다(목표일·확인 창 없이)
+  const notReady = () => setMessage(PREPARE_NOT_READY);
+
+  // 목 모드: 단계 진행을 흉내 낸다. TODO(api): 준비하기 API가 생기면 waitForRun의 steps로 바꾼다
   const startPreparation = async () => {
     setConfirmOpen(false);
     setCompleted(false);
     setResult(null);
+    setMessage(null);
     setSteps(["running", "idle"]);
-    await wait(600);
-    setSteps(["done", "running"]);
-    const [prepared] = await Promise.all([
-      prepareOpportunity(detail.id, false, targetDate || undefined),
-      wait(600),
-    ]);
-    setSteps(["done", "done"]);
-    setResult(prepared);
-    const updated = await getOpportunity(detail.id);
-    onDetailChange(updated);
+    try {
+      await wait(600);
+      setSteps(["done", "running"]);
+      const [prepared] = await Promise.all([
+        prepareOpportunity(detail.id, false, targetDate || undefined),
+        wait(600),
+      ]);
+      setSteps(["done", "done"]);
+      setResult(prepared);
+      onDetailChange(await getOpportunity(detail.id));
+    } catch (error) {
+      setSteps(["idle", "idle"]);
+      setMessage(errorMessage(error, "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요."));
+    }
   };
 
   const finishPreparation = async () => {
@@ -113,6 +127,7 @@ export default function OpportunityPreparation({
       );
     }
     if (detail.eligibility.display_status === "eligible") {
+      if (!PREPARE_READY) return <Button onClick={notReady}>준비 일정 만들기</Button>;
       if (!detail.deadline_at) {
         return (
           <div className="flex items-end gap-2">
@@ -121,7 +136,7 @@ export default function OpportunityPreparation({
               <input
                 type="date"
                 value={targetDate}
-                min={MOCK_TODAY}
+                min={today}
                 onChange={(event) => setTargetDate(event.target.value)}
                 className="mt-1 block h-[42px] rounded-[10px] border border-[#e5e7eb] px-3 text-[14px] text-[#181a20]"
               />
@@ -136,21 +151,26 @@ export default function OpportunityPreparation({
       return <Button onClick={onOpenProfile}>정보 입력</Button>;
     }
     if (detail.eligibility.display_status === "needs_review") {
-      return <Button onClick={onOpenOriginal}>원문 보기</Button>;
+      if (originalHref) return <ButtonLink href={originalHref}>원문 보기</ButtonLink>;
+      return (
+        <Button onClick={onOpenPoster ?? undefined} disabled={!onOpenPoster} title={onOpenPoster ? undefined : "원문 주소가 없어요"}>
+          원문 보기
+        </Button>
+      );
     }
     return (
       <div className="flex gap-2">
         <span title="대체 공고 추천은 준비 중이에요">
           <Button disabled>대체 공고 보기</Button>
         </span>
-        <Button secondary onClick={() => setConfirmOpen(true)}>그래도 준비하기</Button>
+        <Button secondary onClick={PREPARE_READY ? () => setConfirmOpen(true) : notReady}>그래도 준비하기</Button>
       </div>
     );
   })();
 
   return (
     <>
-      <section className="flex items-center justify-between gap-5 rounded-2xl border border-[#e5e7eb] bg-white p-[22px] max-[760px]:items-start">
+      <section className="flex items-center justify-between gap-5 rounded-2xl border border-[#e5e7eb] bg-white p-[22px] max-[760px]:flex-col max-[760px]:items-start">
         <div>
           <div className="flex gap-2">
             <StatusBadge displayStatus={detail.eligibility.display_status} />
@@ -158,7 +178,7 @@ export default function OpportunityPreparation({
               <Badge tone="gray">원문 확인 필요</Badge>
             )}
           </div>
-          <p className="mt-2 text-[16px] font-semibold">{reason}</p>
+          <p className="mt-2 text-[16px] font-semibold">{detail.eligibility.reason_text}</p>
           <p className={`mt-2 text-[13px] ${deadlineSoon ? "font-semibold text-[#c53030]" : "text-[#667085]"}`}>
             {deadlineCopy(detail)}
           </p>
@@ -166,6 +186,9 @@ export default function OpportunityPreparation({
         </div>
         {action}
       </section>
+      {message && (
+        <p role="status" className="rounded-[10px] bg-[#f2f4f7] px-4 py-3 text-[13px] text-[#475467]">{message}</p>
+      )}
       {steps[0] !== "idle" && (
         <section className="rounded-[14px] border border-[#e5e7eb] bg-white p-[18px]">
           <h2 className="text-[15px] font-semibold">준비 일정 생성</h2>

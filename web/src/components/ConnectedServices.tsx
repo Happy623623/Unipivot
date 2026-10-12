@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { disconnectLms, errorMessage, MOCK_NOW, reconnectCalendar } from "@/api/client";
+import { disconnectLms, errorMessage, nowIso, reconnectCalendar } from "@/api/client";
 import Button from "@/components/Button";
 import Modal from "@/components/Modal";
 import { formatRelativeTime } from "@/lib/format";
@@ -81,7 +81,7 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
             <p className="text-[14px] font-semibold">LearningX</p>
             <p className="mt-1 text-[12px] text-[#667085]">
               {lms.status === "active"
-                ? `토큰 끝 4자리 ${lms.token_last4} · 마지막 동기화 ${lms.last_synced_at ? formatRelativeTime(lms.last_synced_at, MOCK_NOW) : "없음"}`
+                ? `토큰 끝 4자리 ${lms.token_last4} · 마지막 동기화 ${lms.last_synced_at ? formatRelativeTime(lms.last_synced_at, nowIso()) : "없음"}`
                 : "연결되지 않음"}
             </p>
           </div>

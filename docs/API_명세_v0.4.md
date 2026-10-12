@@ -14,6 +14,8 @@
 >
 > v0.4 보강(10/11, 계정 화면 실제 연결): 캘린더 연결 콜백의 취소·다른 계정·Google 토큰 처리, 프론트 전용 오류 코드
 >
+> v0.4 보강(10/12, 공고 화면 실제 연결): 홈 피드 호출 방식, 포스터 카드 표시, profile_prompt_submitted 미결
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -305,7 +307,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 
 서버는 `status = active`이고, `visible_canvas_course_id`가 없거나 사용자가 그 과목 수강생인 공고만 내려준다.
 
-- `eligibility`는 쉼표로 여러 값을 받는다. 홈은 기본 목록을 `eligibility=eligible,undetermined`로 부르고, "지원 어려움 N개" 묶음을 펼칠 때 `eligibility=ineligible`로 따로 부른다
+- `eligibility`는 쉼표로 여러 값을 받는다. 홈은 eligibility 없이 50개씩 next_cursor가 없을 때까지(최대 1,000개) 받아 화면에서 지원 어려움을 맨 아래 묶음으로 나눈다. 묶음 개수가 칩(category)과 맞아야 해서 따로 부르지 않는다
 - `sort=deadline`은 마감일 없는 공고를 맨 뒤로 보낸다
 - `counts`는 카테고리 필터와 상관없이 전체 기준이다(ERD 집계 쿼리)
 
@@ -359,7 +361,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 }
 ```
 
-- `uploaded_by_me`: 내가 올린 포스터인지. 포스터 카드는 주최 자리에 "내가 올린 포스터"를 쓴다. 업로더 이름은 표시하지 않는다
+- `uploaded_by_me`: 내가 올린 포스터인지. 포스터 카드는 주최 옆에 "내가 올린 포스터"를 붙이고, 상세는 부제에 쓴다. 업로더 이름은 표시하지 않는다
 - `recommend_reason`(F-24, P1)은 MVP 초기엔 `null`이어도 된다
 - `eligibility.display_status`: `eligible` \| `missing_info` \| `needs_review` \| `ineligible`. 화면 라벨(지원 가능·정보 필요·원문 확인 필요·지원 어려움)에 1:1로 대응한다
 - `easy_summary`는 카드 설명 한 줄, `is_new`는 등록 7일 이내이고 아직 상세를 열지 않은 지원 가능 공고다
@@ -1125,6 +1127,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - [ ] 작업 큐 — MVP는 FastAPI `BackgroundTasks`로 시작하고, 동기화 배치가 무거워지면 별도 워커로 분리할지
 - [ ] 실행 상태 전달 — 폴링을 유지한다. Supabase Realtime으로 바꿔도 RLS 읽기 정책이 이미 있어 그대로 쓸 수 있다
 - [ ] 요건 추출 에이전트 상한 — 공고당 도구 호출 4회와 입력 토큰 상한을 W2–3 실제 공지로 정한다
+- [ ] profile_prompt_submitted에 어느 공고의 정보 입력창인지 남기는 방법 — PATCH /me/profile이 opportunity_id를 받을지, 이 이벤트만 POST /events로 받을지 (10/12)
 
 ---
 
@@ -1145,3 +1148,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | 화면 | 판정표를 묶음으로 표시, 판정 기준일 표시. 로그인 화면의 "캘린더 권한을 함께 요청해요" 문구 삭제. 준비하기 결과 화면에 캘린더 연결 버튼. 온보딩에 학과 목록 선택·유학생 여부·소득 선택 동의 추가. 포스터 등록의 공개 안내, 카드·상세의 업로더 표시와 신고 버튼 숨김. 설정의 HY-in 숨김과 캘린더 연결 추가. 과목 상세 자료 탭의 구간 번역 숨김 |
 
 > 10/11 반영: 설정의 HY-in 숨김과 캘린더 연결.
+
+> 10/12 반영: OpportunityItem·OpportunityDetail·Condition·ProcessStep·Run.steps 타입, 판정표 묶음·판정 기준일, 카드·상세의 업로더 표시와 신고 버튼 숨김.

@@ -3,12 +3,14 @@ import {
   extractPoster,
   getPosterPreviewState,
   MockApiError,
+  POSTER_READY,
   registerPosterOpportunity,
 } from "@/api/client";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import Header from "@/components/Header";
 import PosterExtractForm from "@/components/PosterExtractForm";
+import PosterNotReady from "@/components/PosterNotReady";
 import Skeleton from "@/components/Skeleton";
 import { validatePosterFile } from "@/lib/posterFile";
 import useAsyncData from "@/lib/useAsyncData";
@@ -168,6 +170,7 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
     setTimeout(() => navigate({ name: "opportunity", id: detail.id }), 700);
   };
 
+  if (!POSTER_READY) return <PosterNotReady navigate={navigate} />;
   if (scenario.loading) {
     return (
       <>

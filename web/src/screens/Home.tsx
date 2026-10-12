@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { getFeed, getMe, MOCK_TODAY, type FeedParams } from "@/api/client";
+import { errorMessage, getFeed, getMe, POSTER_READY, type FeedParams } from "@/api/client";
 import Badge from "@/components/Badge";
 import Header from "@/components/Header";
 import Skeleton from "@/components/Skeleton";
 import StatusBadge from "@/components/StatusBadge";
-import { formatDday, getCategoryLabel, getSourceLabel } from "@/lib/format";
+import { formatDdayValue, getCategoryLabel, getSourceLabel } from "@/lib/format";
 import useAsyncData from "@/lib/useAsyncData";
 import type { Category, DisplayStatus, OpportunityItem } from "@/types/api";
 import type { Route } from "@/types/route";
@@ -59,9 +59,10 @@ function OpportunityCard({ item, navigate }: { item: OpportunityItem; navigate: 
           ? "bg-[#f2f4f7] text-[#475467]"
           : "bg-[#fef2f2] text-[#c53030]";
   const deadlineSoon = item.d_day !== null && item.d_day >= 0 && item.d_day <= 3;
+  // 포스터는 올린 사람에게만 보인다. 업로더 이름 대신 "내가 올린 포스터"라고 쓴다
   const context =
-    item.source_type === "poster" && item.uploader_masked
-      ? `${item.uploader_masked}님 공유`
+    item.source_type === "poster" && item.uploaded_by_me
+      ? "내가 올린 포스터"
       : item.source_type === "lms_announcement" && item.course_name
         ? `${item.course_name} 수강생 대상`
         : null;
@@ -86,7 +87,7 @@ function OpportunityCard({ item, navigate }: { item: OpportunityItem; navigate: 
           )}
           <span className={`text-[12px] font-semibold ${deadlineSoon ? "text-[#c53030]" : "text-[#667085]"}`}>
             {deadlineSoon && "마감 임박 "}
-            {formatDday(item.deadline_at, MOCK_TODAY)}
+            {formatDdayValue(item.d_day)}
           </span>
         </div>
       </div>
@@ -112,9 +113,14 @@ export default function Home({ navigate }: HomeProps) {
   const [summaryFilter, setSummaryFilter] = useState<SummaryFilter | null>(null);
   const [sort, setSort] = useState<FeedParams["sort"]>("deadline");
   const [showIneligible, setShowIneligible] = useState(false);
+  const [reload, setReload] = useState(0);
+  // 판정 결과를 모두 받아 화면에서 묶는다. 요약 카드 숫자(counts)는 카테고리와 상관없는 전체 기준이다
   const request = useAsyncData(
-    () => Promise.all([getMe(), getFeed({ sort }), getFeed({ category, sort })]),
-    [category, sort],
+    () =>
+      Promise.all([getMe(), getFeed({ category, sort })]).catch((error: unknown) => {
+        throw new Error(errorMessage(error, "공고를 불러오지 못했어요. 잠시 후 새로 고쳐 주세요."));
+      }),
+    [category, sort, reload],
   );
 
   if (request.loading) return <HomeSkeleton />;
@@ -122,8 +128,8 @@ export default function Home({ navigate }: HomeProps) {
     return <p className="rounded-[14px] bg-[#fef2f2] p-4 text-[#c53030]">{request.error ?? "홈 데이터를 불러오지 못했어요."}</p>;
   }
 
-  const [me, fullFeed, filteredFeed] = request.data;
-  const summaryFilteredItems = filteredFeed.items.filter((item) => {
+  const [me, feed] = request.data;
+  const summaryFilteredItems = feed.items.filter((item) => {
     if (summaryFilter === "eligible") return item.eligibility.display_status === "eligible";
     if (summaryFilter === "undetermined") return item.eligibility.status === "undetermined";
     if (summaryFilter === "deadline_soon") {
@@ -133,9 +139,9 @@ export default function Home({ navigate }: HomeProps) {
   });
   const visibleItems = summaryFilteredItems.filter((item) => item.eligibility.display_status !== "ineligible");
   const ineligibleItems = summaryFilteredItems.filter((item) => item.eligibility.display_status === "ineligible");
-  const counts = fullFeed.counts;
+  const counts = feed.counts;
   const hasFilteredResults = visibleItems.length + ineligibleItems.length > 0;
-  const isEmptyFeed = fullFeed.items.length === 0;
+  const isEmptyFeed = counts.eligible + counts.undetermined + counts.ineligible === 0;
 
   const toggleSummary = (filter: SummaryFilter) => {
     setSummaryFilter((current) => (current === filter ? null : filter));
@@ -220,10 +226,17 @@ export default function Home({ navigate }: HomeProps) {
           ))}
         </div>
         {isEmptyFeed ? (
+          // 실제 모드는 포스터 등록(W6) 전이라 다시 불러오기를 안내한다
           <div className="mt-7 rounded-2xl border border-dashed border-[#e5e7eb] bg-white p-10 text-center">
-            <p className="text-[16px] font-semibold">포스터를 올리면 공고로 등록하고 자격을 판정해요</p>
-            <button type="button" onClick={() => navigate({ name: "upload" })} className="mt-3 text-[13px] font-semibold text-[#4f6ef7]">
-              포스터 등록
+            <p className="text-[16px] font-semibold">
+              {POSTER_READY ? "포스터를 올리면 공고로 등록하고 자격을 판정해요" : "아직 볼 수 있는 공고가 없어요. 새 공고가 올라오면 여기에 보여요"}
+            </p>
+            <button
+              type="button"
+              onClick={() => (POSTER_READY ? navigate({ name: "upload" }) : setReload((value) => value + 1))}
+              className="mt-3 text-[13px] font-semibold text-[#4f6ef7]"
+            >
+              {POSTER_READY ? "포스터 등록" : "다시 불러오기"}
             </button>
           </div>
         ) : !hasFilteredResults ? (
