@@ -193,7 +193,7 @@ web/src/lib/profileFields.ts            정수 확인, 시·군·구 40자
 
 ## 남은 것과 다음 단계
 
-- **다음 PR(S1-5·S1-6 웹):** 홈 피드와 공고 상세를 실제 API에 붙인다. 공고 타입을 v0.4에 맞추고(`reason_text`, `uploaded_by_me`, 조건 묶음·기준일, `review_reasons`, `chosen_by`), "정보 입력" 저장 뒤 다시 불러오고 `profile_prompt_shown`을 보낸다. D-day의 기준인 `MOCK_TODAY`도 실제 모드에서는 오늘(KST)로 바꾼다.
+- **다음 PR(S1-5·S1-6 웹):** 홈 피드와 공고 상세를 실제 API에 붙인다. 공고 타입을 v0.4에 맞추고(`reason_text`, `uploaded_by_me`, 조건 묶음·기준일, `review_reasons`, `chosen_by`), "정보 입력" 저장 뒤 다시 불러오고 `profile_prompt_shown`을 보낸다. D-day의 기준인 `MOCK_TODAY`도 실제 모드에서는 오늘(KST)로 바꾼다. → 10/12 docs/공고API연결_구현.md.
 - **API가 생기면 지울 것:** `LMS_CONNECT_READY`(9장 LMS), `DELETE_ACCOUNT_READY`(`DELETE /me`), `NOTIFICATION_SETTINGS_READY`(`/me/settings` P1), 알림 목록의 빈 값(10장).
 - **캘린더 연결 해제:** PRD F-06에는 있는데 API 명세에 엔드포인트가 없다. PRD 14장 미결에 올린다(아래 반영하기).
 - **다른 계정을 골랐을 때 남는 사용자:** 처음 쓰는 Google 계정이었다면 Supabase 사용자만 생기고 남는다. 정리는 탈퇴(`DELETE /me`) 작업 때 정한다(코드에 `TODO`).

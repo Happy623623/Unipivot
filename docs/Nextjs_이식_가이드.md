@@ -540,14 +540,14 @@ npm run build      # 타입 검사 포함
 | `getProfile` · `saveProfile` | `GET` · `PATCH /me/profile` | 저장하면 서버가 재판정 · 실제 API 연결(10/11) |
 | `saveConsents` | `POST /me/consents` | 온보딩 동의 · 실제 API 연결(10/11) |
 | `getSettings` · `saveSettings` | `GET` · `PATCH /me/settings` | P1. API 전까지 실제 모드는 설정에서 알림 구역을 숨긴다 |
-| `getFeed` | `GET /opportunities` | 홈 목록은 `eligibility=eligible,undetermined`, 지원 어려움 묶음을 펼칠 때 `eligibility=ineligible`, 정렬 `deadline`·`recent` |
-| `getOpportunity` | `GET /opportunities/{id}` | 서버가 조회 기록을 남긴다 |
+| `getFeed` | `GET /opportunities` | 판정 결과를 eligibility 없이 50개씩 끝까지 받아 화면에서 묶는다(칩은 category, 기타 = research·exam·etc). 정렬 `deadline`·`recent`. 실제 API 연결(10/12) |
+| `getOpportunity` | `GET /opportunities/{id}` | 서버가 다시 판정하고 조회 기록을 남긴다. 형식이 틀린 id(422)는 없는 공고로 안내. 실제 API 연결(10/12) |
 | `reportOpportunity` | `POST /opportunities/{id}/reports` | |
-| `prepareOpportunity` | `POST /opportunities/{id}/prepare` → `waitForRun` | 상시 공고는 `target_date`. 캘린더 등록은 `POST /calendar/events` |
-| `setDocumentDone` · `setPlannerTaskDone` | `PATCH /planner/tasks/{task_id}` | 서류 체크 = 플래너 할 일 |
+| `prepareOpportunity` | `POST /opportunities/{id}/prepare` → `waitForRun` | 상시 공고는 `target_date`. 캘린더 등록은 `POST /calendar/events` · API 전까지 실제 모드는 누르면 준비 중 안내(PREPARE_READY) |
+| `setDocumentDone` · `setPlannerTaskDone` | `PATCH /planner/tasks/{task_id}` | 서류 체크 = 플래너 할 일 · API 전까지 실제 모드는 서류 체크를 막는다(PREPARE_READY) |
 | `getPlanner` · 직접 추가·수정·삭제 | `GET` · `POST` · `PATCH` · `DELETE /planner/tasks` | |
-| `extractPoster` | `POST /files` → `POST /posters/extract` → `waitForRun` | |
-| `registerPosterOpportunity` | `POST /posters/confirm` | 중복이면 `merged: true` |
+| `extractPoster` | `POST /files` → `POST /posters/extract` → `waitForRun` | API 전까지 실제 모드는 포스터 등록 화면에 준비 중 안내(POSTER_READY) |
+| `registerPosterOpportunity` | `POST /posters/confirm` | 중복이면 `merged: true` · API 전까지 실제 모드는 포스터 등록 화면에 준비 중 안내(POSTER_READY) |
 | `getLmsConnection` · `connectLms` · `disconnectLms` | `GET` · `POST` · `DELETE /lms/connection` | API 전까지 실제 모드는 '연결되지 않음', 연결 창은 준비 중 안내 |
 | `getCourses` · `getCourse` | `GET /lms/courses` · `GET /lms/courses/{id}` | |
 | `getLmsUpdates` | `GET /lms/updates` | |
@@ -558,6 +558,8 @@ npm run build      # 타입 검사 포함
 | `updateIncomeConsent` | `PATCH /me/consents` | 실제 API 연결(10/11) |
 | `getDepartments` | `GET /meta/departments` | 응답의 `items`. 실제 API 연결(10/11) |
 | `recordEvent` (새로) | `POST /events` | 기다리지 않고 실패도 무시한다. 목 모드는 보내지 않는다. 실제 API 연결(10/11) |
+
+화면의 오늘·지금은 client.ts의 todayKst()·nowIso()다. 목 모드는 목데이터 기준일(2026-10-05)을 돌려준다(10/12).
 
 ## Claude Code로 옮길 때
 
