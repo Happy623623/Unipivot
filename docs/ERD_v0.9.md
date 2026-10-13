@@ -17,6 +17,8 @@
 > v0.9 보강(10/11, S1-4 후속): tool_calls.output의 forced(스키마 변경 없음)
 >
 > v0.9 보강(10/12): profiles.degree_program(학위과정), 요건 항목 degree_program
+>
+> v0.9 보강(10/13): 청년정책(온통청년) 행의 값(스키마 변경 없음)
 
 ---
 
@@ -607,6 +609,15 @@ erDiagram
 - opportunity_attachments: 학교 공지는 source_url이 학교 다운로드 주소다. 본문 이미지도 첨부 행으로 두고(source_url 없음) 첨부 번호를 이어서 쓴다. storage_path는 비운다(파일을 복제하지 않는다). 가져오지 못한 첨부는 extract_error를 남긴다
 - status: 학교 공지의 hidden은 가져오기가 쓴다(서울캠퍼스로 바뀌면 숨기고 돌아오면 푼다). expired는 내용이 바뀌었고 마감이 지나지 않았을 때 가져오기가 푼다
 
+### 청년정책 (온통청년)
+
+- sources: 온통청년 행 하나(type youth_policy, name 온통청년, base_url https://www.youthcenter.go.kr). 수집 명령이 없으면 만든다. last_collected_at은 수집을 마친 시각
+- opportunities: external_id가 정책 번호(plcyNo), original_url이 온통청년 정책 상세(https://www.youthcenter.go.kr/youthPolicy/ythPlcyTotalSearch/ythPlcyDetail/{정책 번호}), source_type·category가 youth_policy다. organizer는 주관 기관(없으면 등록 기관), easy_summary는 정책 설명 400자, raw_text는 "칸 이름: 내용" 줄(정책 설명·지원 내용·추가 자격·참여 제한·소득·신청 방법·심사 방법·제출 서류·기타·신청 사이트·참고 사이트)이다. apply_start_at·deadline_at은 신청 기간의 00:00·23:59 KST이고 상시면 null이다. extraction_confidence는 null이다(코드로 만든 요건)
+- content_hash: 변환 결과(제목·기관·주소·원문 글·쉬운 설명·기간·요건·원문 확인 이유)의 sha256이다. 조회수처럼 변환에 안 쓰는 칸은 들어가지 않는다. 바뀌면 요건을 다시 넣고 requirements_version을 올린다
+- extraction_run_id: 그 정책을 넣거나 바꾼 수집 실행(agent_runs, trigger batch_crawl)이다. 실행 하나에 tool_calls가 둘이다(fetch_youth_policies, build_youth_requirements)
+- status: 넣은 정책이 마감·사업 종료가 되면 expired, 수도권 밖·승인 안 됨이 되면 hidden이다. 목록에서 사라진 정책은 목록을 빠짐없이 받았을 때만 hidden이다(한 번에 활성의 20%·최소 20건을 넘게 사라지면 --hide-gone일 때만). 다시 범위에 들면 active로 돌린다(expired는 마감이 지나지 않았을 때만)
+- 요건 만들기는 docs/판정엔진_규칙.md 11장, 판정 기준일은 같은 문서 8장이다
+
 ### 학과
 
 - 프로필 학과는 `departments.name`만 쓸 수 있다. 학과 이름이 바뀌면 `on update cascade`로 프로필도 따라간다. 폐지된 학과는 `is_active = false`로 목록에서만 숨긴다. 통폐합 이력은 MVP에서 다루지 않는다.
@@ -834,6 +845,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-10-13): 청년정책(온통청년) 행의 값, 스키마 변경 없음
 - v0.9 보강 (2026-10-12): profiles.degree_program(학위과정), 요건 항목 degree_program
 - v0.9 보완 (2026-10-09): content_hash 정의, 추출 실패 처리, Vision 첨부, 학교 공지(A안) 설명
 - v0.9 (2026-10-06): 요건 묶음(clause_no)·비교 기준(basis), 판정 기준일·변경 감지·요건 버전, 첨부·학과·사용 이벤트 테이블, 소득 선택 동의 제약, 알림 dedupe_key, 플래너·파일·캘린더 제약, enum 3개 → text + check, FK 인덱스, 전 테이블 RLS

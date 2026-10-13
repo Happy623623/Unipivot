@@ -2,7 +2,8 @@
 
 - 판정은 코드(app/eligibility)로 하고 eligibility_results에 남긴다. 피드를 읽을 때 그 목록에 나올
   공고의 낡은 판정만 다시 계산한다. 낡은 판정: 결과가 없음, 요건 버전이 다름(재추출), 엔진 버전이
-  다름(판정 규칙·문구·오류 수정), 기준일이 "오늘"(기준일·마감일이 모두 없음)인데 판정한 날이 지남.
+  다름(판정 규칙·문구·오류 수정), 기준일이 "오늘"(기준일·마감일이 모두 없음, 또는 신청 기간이 끝나지 않은
+  청년정책)인데 판정한 날이 지남. 청년정책의 기준일은 _basis_dates를 본다.
 - 프로필 저장과 소득·수급 동의 철회는 같은 요청에서 그 사용자의 활성 공고를 모두 다시 판정하고(force),
   나머지 공고(마감·숨김·안 보임)의 판정은 지운다. 바뀌기 전 값(철회한 소득 값 포함)이 판정 기록에 남지
   않고, 지운 판정은 그 공고를 다시 보여 줄 때 새로 계산한다. 프로필을 바꾸는 코드를 새로 만들면 같은
@@ -73,6 +74,8 @@ from app.schemas.opportunities import (
     Process,
     ProcessStep,
 )
+from app.youth import BUILD_TOOL as BUILD_YOUTH
+from app.youth import FETCH_TOOL as FETCH_YOUTH
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +232,7 @@ def _stale_sql(scope: str) -> str:
     """다시 판정할 공고와 그 요건."""
     return (
         "select o.id, o.requirements_version, o.eligibility_basis_date, o.deadline_at,"
+        " o.apply_start_at, o.source_type::text as source_type,"
         " e.user_id is not null as had_result, e.status::text as old_status,"
         " e.missing_fields as old_missing, " + _REQUIREMENTS_JSON + " as requirements"
         " from opportunities o"
@@ -242,8 +246,10 @@ def _stale_sql(scope: str) -> str:
         " and (%(force)s or e.user_id is null or e.evaluated_at is null"
         " or e.requirements_version <> o.requirements_version"
         " or e.engine_version <> %(engine)s"
-        # 날이 바뀌면 다시: 기준일이 "오늘"인 공고, 엔진 오류로 판정하지 못한 공고(오류를 고쳤을 수 있다)
-        " or (((o.eligibility_basis_date is null and o.deadline_at is null)"
+        # 날이 바뀌면 다시: 기준일이 "오늘"인 공고(청년정책 포함), 엔진 오류로 판정하지 못한 공고(오류를
+        # 고쳤을 수 있다)
+        " or (((o.eligibility_basis_date is null and (o.deadline_at is null"
+        " or (o.source_type = 'youth_policy' and o.deadline_at >= %(now)s)))"
         " or e.reason_text = %(engine_error)s)"
         " and (e.evaluated_at at time zone 'Asia/Seoul')::date < %(today)s))"
     )
@@ -636,16 +642,47 @@ def _judge(
     basis: date | None = None
     try:
         requirements = tuple(Requirement.from_row(r) for r in item["requirements"])
-        basis = resolve_basis_date(item["eligibility_basis_date"], item["deadline_at"], today)
-        judgment = check_eligibility(
-            list(requirements), profile, basis_date=basis, departments=departments
+        days = _basis_dates(item, today)
+        basis = days[0]
+        # 기준일이 둘이면(청년정책) 더 나은 쪽을 쓴다. 같으면 앞 날짜다(max는 처음 나온 것을 고른다)
+        judgment = max(
+            (
+                check_eligibility(
+                    list(requirements), profile, basis_date=day, departments=departments
+                )
+                for day in days
+            ),
+            key=lambda found: _RANK[found.status],
         )
         return _Judged(
-            judgment.storage_row(), judgment.display_status, judgment, requirements, basis
+            judgment.storage_row(),
+            judgment.display_status,
+            judgment,
+            requirements,
+            judgment.basis_date,
         )
     except Exception:
         logger.exception("판정하지 못한 공고: %s", item["id"])
         return _Judged(_engine_error_row(), "needs_review", None, (), basis)
+
+
+_RANK = {"ineligible": 0, "undetermined": 1, "eligible": 2}
+
+
+def _basis_dates(item: dict[str, Any], today: date) -> tuple[date, ...]:
+    """판정 기준일(판정엔진_규칙.md 8장). 보통 하나다(공고 기준일 → 마감일 → 오늘).
+
+    청년정책(온통청년)은 신청일 기준이 대부분이고 신청 기간이 몇 년인 정책도 있다. 그래서 신청할 수 있는 첫날
+    (오늘, 신청 기간 전이면 시작일)과 마감일을 둘 다 보고 더 나은 결과를 쓴다. 나이 상한은 첫날에, 하한은
+    마감일에 맞으면 그 사이 어느 날엔 신청할 수 있다. 신청 기간이 끝났으면 마감일 하나다."""
+    if item["source_type"] != "youth_policy" or item["eligibility_basis_date"] is not None:
+        return (resolve_basis_date(item["eligibility_basis_date"], item["deadline_at"], today),)
+    start = item["apply_start_at"]
+    first = max(today, to_kst_date(start)) if start is not None else today
+    if item["deadline_at"] is None:
+        return (first,)
+    deadline = to_kst_date(item["deadline_at"])
+    return (deadline,) if deadline <= first else (first, deadline)
 
 
 def _engine_error_row() -> dict[str, Any]:
@@ -736,6 +773,10 @@ def _step(step: dict[str, Any], names: dict[int, str]) -> ProcessStep:
         label = f"{target} {how}{again}읽기"
     elif tool == FETCH_ORIGINAL:
         label = f"공고 원문 페이지 {again}읽기"
+    elif tool == FETCH_YOUTH:
+        label = "온통청년에서 정책 정보 받기"
+    elif tool == BUILD_YOUTH:
+        label = "온통청년 항목으로 지원 자격 정리"
     else:
         label = "지원 자격 정리" if tool == SUBMIT else tool
     failed = step.get("error") is True or (tool == SUBMIT and step.get("accepted") is False)
