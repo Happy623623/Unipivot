@@ -6,6 +6,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 EnrollmentStatus = Literal["enrolled", "on_leave", "deferred_graduation", "graduated"]
+# 지금 다니는(졸업했으면 마지막으로 다닌) 학위과정: 학부·석사·박사·석박사통합
+DegreeProgram = Literal["bachelor", "master", "doctoral", "integrated"]
 WelfareStatus = Literal["none", "near_poverty", "basic_livelihood"]
 # 시도는 정식 이름만 받는다 (판정 엔진의 지역 비교 기준)
 RegionSido = Literal[
@@ -31,6 +33,7 @@ RegionSido = Literal[
 
 class ProfileFields(BaseModel):
     department: str | None = Field(None, max_length=60)  # 학과 목록(GET /meta/departments)의 이름
+    degree_program: DegreeProgram | None = None
     grade: int | None = Field(None, ge=1, le=6)
     enrollment_status: EnrollmentStatus | None = None
     semesters_completed: int | None = Field(None, ge=0, le=16)  # 마친 학기 수

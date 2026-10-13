@@ -185,6 +185,8 @@ def _compile(req: Requirement) -> Evaluator:
         return _number(req)
     if req.field in GPA_FIELDS:
         return _gpa(req)
+    if req.field == "degree_program":
+        return _degree(req)
     if req.field in ENUM_LABELS:
         return _enum(req)
     if req.field == "age":
@@ -347,6 +349,54 @@ def _enum(req: Requirement) -> Evaluator:
         if actual is None:
             return _Eval("unknown", "missing_profile")
         return _Eval(_outcome(predicate(actual)), user_value=actual)
+
+    return evaluate
+
+
+# 석박사통합과정은 지금 석사 단계인지 박사 단계인지 프로필로 알 수 없다
+_GRADUATE_STAGES = frozenset({"master", "doctoral"})
+# 학부·석사·박사를 모두 받으면 석박사통합도 해당한다. 누구나 해당하는 조건이다
+_EVERY_DEGREE = frozenset({"bachelor", "master", "doctoral"})
+
+
+def _degree(req: Requirement) -> Evaluator:
+    """학위과정. 모든 과정을 받는 조건은 묻지 않고 충족이다. 석박사통합 학생은 공고가 석사·박사를
+    둘 다 적었으면 해당하고, 하나만 적었으면 모른다(기준 다름)."""
+    allowed = ENUM_LABELS["degree_program"]
+
+    def convert(value: Any) -> str:
+        if not isinstance(value, str) or value not in allowed:
+            raise RequirementError(
+                f"degree_program 값은 {', '.join(allowed)} 중 하나여야 한다: {value!r}"
+            )
+        return value
+
+    if req.operator in ("eq", "neq"):
+        targets = frozenset({convert(req.value)})
+    elif isinstance(req.value, list) and req.value:
+        targets = frozenset(convert(item) for item in req.value)
+    else:
+        raise RequirementError("in·not_in 값은 비어 있지 않은 목록이어야 한다")
+    positive = req.operator in ("eq", "in")
+    every = _EVERY_DEGREE <= targets
+    if every and not positive:
+        raise RequirementError("모든 학위과정을 빼면 아무도 지원할 수 없다. 원문을 다시 확인해라")
+
+    def evaluate(
+        profile: Profile, basis_date: date, departments: Mapping[str, Department]
+    ) -> _Eval:
+        actual = profile.degree_program
+        if every:
+            return _Eval("pass", user_value=actual)  # 입력해도 결과가 같으니 묻지 않는다
+        if actual is None:
+            return _Eval("unknown", "missing_profile")
+        matched = actual in targets
+        if actual == "integrated" and not matched and targets & _GRADUATE_STAGES:
+            if not _GRADUATE_STAGES <= targets:
+                # "석사과정"만 적은 공고가 석박사통합 학생을 어떻게 보는지는 학교·공고마다 다르다
+                return _Eval("unknown", "basis_mismatch", actual)
+            matched = True  # 석사·박사를 둘 다 받으면 어느 단계든 해당한다
+        return _Eval(_outcome(matched == positive), user_value=actual)
 
     return evaluate
 

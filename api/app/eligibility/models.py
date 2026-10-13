@@ -41,6 +41,7 @@ class Profile:
     """판정에 쓰는 프로필 값. None은 미입력이다."""
 
     department: str | None = None
+    degree_program: str | None = None  # bachelor·master·doctoral·integrated
     grade: int | None = None
     enrollment_status: str | None = None
     semesters_completed: int | None = None

@@ -31,6 +31,7 @@ _VALUE_EXAMPLES = {
     "median_income_pct": "150",
     "welfare_status": '["basic_livelihood", "near_poverty"]',
     "is_international": "true",
+    "degree_program": '"bachelor" · ["master", "doctoral", "integrated"]',
     "other": '{"text": "봉사활동 20시간 이상"}',
 }
 
@@ -73,7 +74,10 @@ def system_prompt(departments: Sequence[Department], limits: Limits) -> str:
 - 평점은 만점이 4.5가 아니면 scale을 적는다. 학점 글자는 4.5 만점 값으로 쓴다(A0 4.0, B+ 3.5, B0 3.0). "B학점(80점)"처럼 100점 기준이 함께 있으면 {{"value": 80, "scale": 100}}으로 쓴다.
 - 나이는 만 나이다. 병역 기간만큼 상한을 늘린다는 문구가 있으면 between 값에 "military_extension": true를 넣고, 늘리는 최대 개월이 있으면 {{"max_months": 36}}처럼 쓴다.
 - 이수 학기는 마친 학기 수다. "8학기 이내 재학"은 semesters_completed lte 7, "N학기 이상 이수"는 gte N이다. 현재 학기를 세는지 애매하면 is_ambiguous를 true로 둔다.
-- 학적: "재학생"은 enrollment_status eq "enrolled", "휴학생 포함"은 in ["enrolled", "on_leave"], "졸업유예자 제외"는 not_in ["deferred_graduation"]이다. graduated는 이미 졸업한 사람이다. 졸업예정자만 되거나 졸업예정자를 빼는 조건, 대학원 과정(석사·박사)만 되는 조건은 학적 값에 없으니 other로 둔다. "졸업예정자 포함"처럼 대상을 넓히기만 하는 말은 조건으로 만들지 않는다.
+- 학적: "재학생"은 enrollment_status eq "enrolled", "휴학생 포함"은 in ["enrolled", "on_leave"], "졸업유예자 제외"는 not_in ["deferred_graduation"]이다. graduated는 이미 졸업한 사람이다. 졸업예정자·수료생만 되거나 이들을 빼는 조건은 학적 값에 없으니 other로 둔다. "졸업예정자 포함"·"수료생 포함"처럼 대상을 넓히기만 하는 말은 조건으로 만들지 않는다.
+- 학위과정: 지금 다니는 과정으로 대상을 좁힌 조건이다. "학부생"은 degree_program eq "bachelor", "대학원생"·"석사 이상"은 in ["master", "doctoral", "integrated"], "석사과정"은 in ["master"], "박사과정"은 in ["doctoral"]이다. 석사과정·박사과정 하나만 적은 조건에는 공고가 석박사통합과정을 함께 적었을 때만 integrated를 넣는다. 여러 과정을 "또는"으로 받으면 in 목록 하나로 쓴다("석사과정 또는 박사과정" → in ["master", "doctoral"]).
+- 학위과정과 다른 조건: 재학·휴학 조건은 다른 묶음의 학적 조건으로 둔다. 예) "석사 재학(휴학) 이상" → 묶음 1: degree_program in ["master", "doctoral", "integrated"] / 묶음 2: enrollment_status in ["enrolled", "on_leave"]. "학부 4학년 또는 대학원생"은 묶음 하나다: grade eq 4 또는 degree_program in ["master", "doctoral", "integrated"]
+- 학위과정 조건을 만들지 않는 말: "대학(원)생"·"학부생 및 대학원생"처럼 모든 과정을 받는 말, 과정을 적지 않은 "재학생"·"대학생", 학과 이름 속 "학부"(예: 컴퓨터학부). 지원·진학하려는 과정(대학원 신입생 모집의 석사과정, 대학원 진학 예정자)과 받았거나 받을 학위("학사 학위 소지자", "학부 졸업(예정)자")를 보는 조건은 other로 둔다.
 - 소득: 학자금 지원구간은 income_bracket(0–10), 기준 중위소득 %는 median_income_pct, 기초생활수급·차상위는 welfare_status다. 서로 바꿔 계산하지 않는다. 여러 소득 기준이 "또는"이면 같은 묶음에 넣는다.
 
 ## 항목(field)·연산자·값
@@ -81,6 +85,7 @@ def system_prompt(departments: Sequence[Department], limits: Limits) -> str:
 value_json은 값을 JSON으로 쓴 문자열이다.
 {fields}
 - enrollment_status 값: enrolled 재학, on_leave 휴학, deferred_graduation 졸업유예, graduated 졸업
+- degree_program 값: bachelor 학부, master 석사, doctoral 박사, integrated 석박사통합
 - welfare_status 값: none 해당 없음, near_poverty 차상위, basic_livelihood 기초생활수급
 - region의 basis: resident_registration 주민등록 주소, unspecified 기준이 적혀 있지 않음, actual_residence 실거주, high_school 출신 고교 소재지, guardian 보호자 주소
 - department의 basis: department 학과, college 단과대학, field_group 계열

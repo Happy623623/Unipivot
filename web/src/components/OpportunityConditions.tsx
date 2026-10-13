@@ -24,6 +24,14 @@ const UNKNOWN: Record<UnknownReason, { value: string; hint: string }> = {
 
 // 비어 있어도 같은 묶음의 다른 조건이 충족됐거나 다른 묶음이 불충족이면 정보 입력에서 묻지 않는다
 const NOT_ASKED = "입력하지 않은 정보예요. 다른 조건으로 결과가 정해져서 지금은 묻지 않아요.";
+// 석박사통합 학생에게 석사과정·박사과정 중 하나만 적은 공고 (판정엔진_규칙.md 4-6)
+const INTEGRATED = "석박사통합과정을 석사·박사 중 어느 쪽으로 보는지 공고마다 달라요. 원문을 확인해 주세요.";
+
+function hintFor(condition: Condition, asked: boolean): string | undefined {
+  if (condition.unknown_reason === "missing_profile" && !asked) return NOT_ASKED;
+  if (condition.unknown_reason === "basis_mismatch" && condition.field === "degree_program") return INTEGRATED;
+  return condition.unknown_reason ? UNKNOWN[condition.unknown_reason].hint : undefined;
+}
 
 function ConditionRow({ condition, asked, open, highlightFailure, onToggle }: {
   condition: Condition;
@@ -34,7 +42,7 @@ function ConditionRow({ condition, asked, open, highlightFailure, onToggle }: {
 }) {
   const result = OUTCOMES[condition.outcome];
   const unknown = condition.unknown_reason ? UNKNOWN[condition.unknown_reason] : null;
-  const hint = condition.unknown_reason === "missing_profile" && !asked ? NOT_ASKED : unknown?.hint;
+  const hint = hintFor(condition, asked);
   const value = condition.user_value_text ?? unknown?.value ?? "미입력";
 
   return (

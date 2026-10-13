@@ -61,6 +61,11 @@ def req(field, operator, value, *, basis=None, rid="r1", clause_no=1, evidence=N
         (req("is_international", "eq", False), "유학생 아님"),
         (req("department", "in", ["공학계열"], basis="field_group"), "공학계열"),
         (req("other", "eq", {"text": "면접 통과자"}), "면접 통과자"),
+        (
+            req("degree_program", "in", ["master", "doctoral", "integrated"]),
+            "석사·박사·석박사통합",
+        ),
+        (req("degree_program", "neq", "bachelor"), "학부 제외"),
     ],
 )
 def test_condition_text(requirement, text):
@@ -106,6 +111,7 @@ def test_user_value_texts():
         req("department", "in", ["소프트웨어융합대학"], basis="college", rid="dept", clause_no=2),
         req("region", "in", ["경기도"], basis="unspecified", rid="region", clause_no=3),
         req("gpa_total", "gte", 3.0, rid="gpa", clause_no=4),
+        req("degree_program", "eq", "master", rid="degree", clause_no=5),
     ]
     profile = Profile(
         birth_date=date(1991, 3, 10),
@@ -115,6 +121,7 @@ def test_user_value_texts():
         region_sigungu="안산시  단원구",
         gpa_total=Decimal("3.5"),
         gpa_scale=Decimal("4.3"),
+        degree_program="integrated",
     )
     judgment = check_eligibility(
         requirements, profile, basis_date=date(2026, 10, 15), departments=DEPARTMENTS
@@ -128,4 +135,5 @@ def test_user_value_texts():
         "dept": "인공지능학과 (소프트웨어융합대학)",
         "region": "경기도 안산시 단원구",
         "gpa": "3.50 (4.3 만점)",
+        "degree": "석박사통합",
     }

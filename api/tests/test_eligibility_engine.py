@@ -315,6 +315,105 @@ def test_field_comparisons(requirement, profile, outcome):
     assert judge([requirement], **profile).conditions[0].outcome == outcome
 
 
+GRADUATE = ["master", "doctoral", "integrated"]
+
+
+@pytest.mark.parametrize(
+    ("requirement", "degree", "outcome", "reason"),
+    [
+        (req(1, "degree_program", "in", GRADUATE), "master", "pass", None),
+        (req(1, "degree_program", "in", GRADUATE), "bachelor", "fail", None),
+        (req(1, "degree_program", "in", GRADUATE), None, "unknown", "missing_profile"),
+        (req(1, "degree_program", "eq", "bachelor"), "bachelor", "pass", None),
+        (req(1, "degree_program", "neq", "bachelor"), "doctoral", "pass", None),
+        (req(1, "degree_program", "not_in", ["master", "doctoral"]), "bachelor", "pass", None),
+        (req(1, "degree_program", "in", ["integrated"]), "doctoral", "fail", None),
+        # 석박사통합: 석사·박사를 둘 다 받으면 해당하고, 하나만 적었으면 모르고, 학부만이면 아니다
+        (req(1, "degree_program", "in", ["integrated"]), "integrated", "pass", None),
+        (req(1, "degree_program", "in", ["master", "doctoral"]), "integrated", "pass", None),
+        (req(1, "degree_program", "in", ["doctoral"]), "integrated", "unknown", "basis_mismatch"),
+        (req(1, "degree_program", "eq", "master"), "integrated", "unknown", "basis_mismatch"),
+        (req(1, "degree_program", "eq", "bachelor"), "integrated", "fail", None),
+        (req(1, "degree_program", "neq", "bachelor"), "integrated", "pass", None),
+        (
+            req(1, "degree_program", "not_in", ["master", "doctoral"]),
+            "integrated",
+            "fail",
+            None,
+        ),
+        (req(1, "degree_program", "not_in", ["master"]), "integrated", "unknown", "basis_mismatch"),
+        # 모든 과정을 받는 조건: 입력해도 결과가 같으니 묻지 않는다
+        (req(1, "degree_program", "in", ["bachelor", "master", "doctoral"]), None, "pass", None),
+        (req(1, "degree_program", "in", ["bachelor", *GRADUATE]), "integrated", "pass", None),
+    ],
+    ids=[
+        "grad-master",
+        "grad-bachelor",
+        "grad-missing",
+        "eq",
+        "neq",
+        "not-in-grad",
+        "integrated-only-doctoral",
+        "integrated-listed",
+        "integrated-both-stages",
+        "integrated-doctoral-only",
+        "integrated-master-only",
+        "integrated-not-bachelor",
+        "integrated-neq-bachelor",
+        "integrated-not-in-both",
+        "integrated-not-in-one",
+        "every-missing",
+        "every-integrated",
+    ],
+)
+def test_degree_program(requirement, degree, outcome, reason):
+    condition = judge([requirement], degree_program=degree).conditions[0]
+    assert (condition.outcome, condition.unknown_reason) == (outcome, reason)
+    assert condition.user_value == degree
+
+
+# 116702 "석사 재학(휴학) 이상": 학위과정과 학적을 다른 묶음(그리고)으로 둔다
+GRADUATE_ENROLLED = [
+    req(1, "degree_program", "in", GRADUATE),
+    req(2, "enrollment_status", "in", ["enrolled", "on_leave"]),
+]
+
+
+def test_graduate_only_notice():
+    undergraduate = judge(
+        GRADUATE_ENROLLED, degree_program="bachelor", enrollment_status="enrolled"
+    )
+    assert (undergraduate.display_status, undergraduate.reason_text) == (
+        "ineligible",
+        "학위과정: 석사·박사·석박사통합 (현재 학부)",
+    )
+    unknown = judge(GRADUATE_ENROLLED, enrollment_status="enrolled")
+    assert (unknown.display_status, unknown.missing_fields, unknown.reason_text) == (
+        "missing_info",
+        ("degree_program",),
+        "학위과정 입력 필요",
+    )
+    on_leave = judge(GRADUATE_ENROLLED, degree_program="integrated", enrollment_status="on_leave")
+    assert on_leave.display_status == "eligible"
+    # 박사과정만 적은 공고: 석박사통합 학생은 묻지 않고 원문 확인 필요다(입력해도 판정할 수 없다)
+    doctoral = judge([req(1, "degree_program", "in", ["doctoral"])], degree_program="integrated")
+    assert (doctoral.display_status, doctoral.missing_fields, doctoral.reason_text) == (
+        "needs_review",
+        (),
+        "원문 확인 필요: 학위과정 박사",
+    )
+
+
+def test_fourth_year_or_graduate_is_one_clause():
+    """학부 4학년 또는 대학원생: 묶음 하나(4학년 또는 대학원 과정)로 두면 둘 다 해당한다."""
+    either = [req(1, "grade", "eq", 4), req(1, "degree_program", "in", GRADUATE)]
+    assert judge(either, degree_program="bachelor", grade=4).display_status == "eligible"
+    assert judge(either, degree_program="master").display_status == "eligible"
+    assert judge(either, degree_program="bachelor", grade=3).display_status == "ineligible"
+    unknown = judge(either, grade=3)
+    assert (unknown.display_status, unknown.missing_fields) == ("missing_info", ("degree_program",))
+
+
 def test_income_bases_are_not_converted():
     either = [req(1, "income_bracket", "lte", 8), req(1, "median_income_pct", "lte", 150)]
     assert judge(either, median_income_pct=120).status == "eligible"  # OR이면 하나만 맞아도 충족
@@ -333,6 +432,12 @@ def test_income_bases_are_not_converted():
         req(1, "is_international", "eq", "yes"),
         req(1, "age", "between", {"min": 19, "military_extension": True}),
         req(1, "grade", "eq", 3, basis="college"),
+        req(1, "degree_program", "gte", "master"),
+        req(1, "degree_program", "in", ["graduate"]),
+        req(1, "degree_program", "in", []),
+        req(1, "degree_program", "eq", ["master"]),
+        req(1, "degree_program", "in", "master"),
+        req(1, "degree_program", "not_in", ["bachelor", "master", "doctoral"]),
     ],
     ids=[
         "not-number",
@@ -343,6 +448,12 @@ def test_income_bases_are_not_converted():
         "not-bool",
         "extension-no-max",
         "basis-on-grade",
+        "degree-op",
+        "degree-value",
+        "degree-empty",
+        "degree-eq-list",
+        "degree-in-text",
+        "degree-not-in-every",
     ],
 )
 def test_malformed_requirement_is_ambiguous_never_fail(requirement):
@@ -354,6 +465,7 @@ def test_malformed_requirement_is_ambiguous_never_fail(requirement):
         enrollment_status="enrolled",
         region_sido="경기도",
         is_international=False,
+        degree_program="master",
     )
     assert (judgment.status, judgment.conditions[0].unknown_reason) == ("undetermined", "ambiguous")
     assert requirement_problem(requirement) is not None
@@ -366,8 +478,10 @@ def test_requirement_problem():
         *MILITARY,
         req(1, "region", "in", ["경기도 안산시"], basis="unspecified"),
         req(1, "other", "eq", {"text": "면접 통과자"}),
+        *GRADUATE_ENROLLED,
     ]
     assert [requirement_problem(r) for r in valid] == [None] * len(valid)
+    assert "basis" in requirement_problem(req(1, "degree_program", "eq", "master", basis="college"))
     assert "시도" in requirement_problem(req(1, "region", "in", ["안산시"], basis="unspecified"))
     assert "basis" in requirement_problem(req(1, "region", "in", ["경기도"]))
     assert "clause_no" in requirement_problem(req(0, "grade", "eq", 3))

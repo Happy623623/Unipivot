@@ -22,7 +22,7 @@ import Modal from "@/components/Modal";
 import NotificationSettings from "@/components/NotificationSettings";
 import ProfileForm from "@/components/ProfileForm";
 import Skeleton from "@/components/Skeleton";
-import type { ProfileErrors } from "@/lib/profileFields";
+import { DEGREE_LABELS, type ProfileErrors } from "@/lib/profileFields";
 import useAsyncData from "@/lib/useAsyncData";
 import type { Me, Profile, Settings as SettingsData } from "@/types/api";
 import type { Route } from "@/types/route";
@@ -91,6 +91,10 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
     deferred_graduation: "졸업 유예",
     graduated: "졸업",
   };
+  const academicStatus = [
+    profile.degree_program ? DEGREE_LABELS[profile.degree_program] : null,
+    profile.enrollment_status ? enrollmentLabels[profile.enrollment_status] : null,
+  ].filter(Boolean).join(" ");
   const showToast = (message: string) => {
     setToast(message);
     setTimeout(() => setToast(""), 2400);
@@ -146,7 +150,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
         </div>
         <div className="mt-4 grid grid-cols-5 gap-3 max-[900px]:grid-cols-2">
           {[
-            ["학적", `${profile.department ?? "미입력"} · ${profile.enrollment_status ? enrollmentLabels[profile.enrollment_status] : "미입력"}`],
+            ["학적", `${profile.department ?? "미입력"} · ${academicStatus || "미입력"}`],
             ["성적", profile.gpa_last_semester ? `${profile.gpa_last_semester} / ${profile.gpa_scale}` : "미입력"],
             ["나이", age ? `${age}세` : "미입력"],
             ["지역", [profile.region_sido, profile.region_sigungu].filter(Boolean).join(" ") || "미입력"],

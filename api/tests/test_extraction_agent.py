@@ -367,11 +367,41 @@ async def test_prompt_asks_for_unreadable_sources_and_plain_notes() -> None:
     assert "(읽지 못한 첨부, QR 코드, 다른 사이트)" in system
     assert "review_note에 무엇을 확인하지 못했는지 적는다" in system
     assert "review_note: 학생에게 원문 확인이 필요한 이유로 그대로 보인다" in system
-    assert "대학원 과정(석사·박사)만 되는 조건은 학적 값에 없으니 other로 둔다" in system
-    assert '"졸업예정자 포함"처럼 대상을 넓히기만 하는 말은 조건으로 만들지 않는다' in system
+    assert "졸업예정자·수료생만 되거나 이들을 빼는 조건은 학적 값에 없으니 other로 둔다" in system
+    assert (
+        '"졸업예정자 포함"·"수료생 포함"처럼 대상을 넓히기만 하는 말은 조건으로 만들지 않는다'
+        in system
+    )
     assert "reason에 고른 이유를 쉬운 말 한 줄로 적는다(도구 이름은 쓰지 않는다)" in system
     note = SUBMIT_SPEC.parameters["properties"]["review_note"]["description"]
     assert "학생에게 그대로 보인다" in note
+
+
+async def test_prompt_offers_the_degree_program_field() -> None:
+    """대학원생 대상 공고(116702 "석사 재학(휴학) 이상")를 기타 조건 대신 학위과정으로 뽑게 한다."""
+    llm = ScriptedLlm(call(SUBMIT, **submission(GPA)))
+    await run(llm)
+    system = llm.requests[0].system
+    assert system is not None
+    assert '"대학원생"·"석사 이상"은 in ["master", "doctoral", "integrated"]' in system
+    assert '여러 과정을 "또는"으로 받으면 in 목록 하나로 쓴다' in system
+    assert (
+        '"학부 4학년 또는 대학원생"은 묶음 하나다: grade eq 4 또는 degree_program in ["master",'
+        in system
+    )
+    # 모든 과정·과정을 적지 않은 말·학과 이름·지원하려는 과정·받은 학위는 학위과정 조건이 아니다
+    assert '"대학(원)생"·"학부생 및 대학원생"처럼 모든 과정을 받는 말' in system
+    assert '과정을 적지 않은 "재학생"·"대학생", 학과 이름 속 "학부"(예: 컴퓨터학부)' in system
+    assert "지원·진학하려는 과정(대학원 신입생 모집의 석사과정, 대학원 진학 예정자)" in system
+    assert (
+        '받았거나 받을 학위("학사 학위 소지자", "학부 졸업(예정)자")를 보는 조건은 other' in system
+    )
+    assert (
+        "degree_program 값: bachelor 학부, master 석사, doctoral 박사, integrated 석박사통합"
+        in system
+    )
+    fields = SUBMIT_SPEC.parameters["properties"]["requirements"]["items"]["properties"]["field"]
+    assert "degree_program" in fields["enum"]
 
 
 async def test_no_submission_is_a_failed_extraction() -> None:

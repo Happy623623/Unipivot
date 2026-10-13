@@ -3,23 +3,9 @@ import type { Department, Me, Profile, Settings } from "@/types/api";
 export const mockToday = "2026-10-05";
 export const mockNow = "2026-10-05T10:00:00+09:00";
 
-export const me: Me = {
-  user_id: "user-jinseo",
-  display_name: "진서",
-  hyin_verified: true,
-  calendar_connected: true,
-  lms: {
-    status: "active",
-    last_synced_at: "2026-10-05T09:30:00+09:00",
-  },
-  profile_completion: { filled: 9, total: 15 },
-  consented: true,
-  income_info_consented: true, // 목 프로필에 소득 값이 있다(동의 없이 소득 값을 둘 수 없다)
-  unread_notifications: 3,
-};
-
 export const profile: Profile = {
   department: "컴퓨터학부",
+  degree_program: "bachelor",
   grade: 3,
   enrollment_status: "enrolled",
   semesters_completed: 5,
@@ -36,6 +22,27 @@ export const profile: Profile = {
   median_income_pct: null,
   welfare_status: "none",
   is_international: false,
+};
+
+// GET /me의 profile_completion: 판정용 항목 중 채운 수. 평점 만점은 늘 값이 있어 세지 않는다(서버와 같다)
+export function profileCompletion(value: Profile): Me["profile_completion"] {
+  const entries = Object.entries(value).filter(([key]) => key !== "gpa_scale");
+  return { filled: entries.filter(([, item]) => item !== null && item !== "").length, total: entries.length };
+}
+
+export const me: Me = {
+  user_id: "user-jinseo",
+  display_name: "진서",
+  hyin_verified: true,
+  calendar_connected: true,
+  lms: {
+    status: "active",
+    last_synced_at: "2026-10-05T09:30:00+09:00",
+  },
+  profile_completion: profileCompletion(profile),
+  consented: true,
+  income_info_consented: true, // 목 프로필에 소득 값이 있다(동의 없이 소득 값을 둘 수 없다)
+  unread_notifications: 3,
 };
 
 export const mockDepartments: Department[] = [

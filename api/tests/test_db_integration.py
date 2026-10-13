@@ -47,7 +47,7 @@ async def test_profile_repository_roundtrip() -> None:
             False,
             False,
         )
-        assert (me.profile_completion.filled, me.profile_completion.total) == (0, 16)
+        assert (me.profile_completion.filled, me.profile_completion.total) == (0, 17)
 
         result = await repo.save_consent(user_id, "2026-10-07", agree_income_info=False)
         assert (result.consent_version, result.income_info_agreed_at) == ("2026-10-07", None)
@@ -55,6 +55,7 @@ async def test_profile_repository_roundtrip() -> None:
         assert not await meta.department_exists("없는학과")
         changes = {
             "department": "인공지능학과",
+            "degree_program": "master",
             "gpa_last_semester": 3.9,
             "is_international": False,
         }
@@ -63,10 +64,15 @@ async def test_profile_repository_roundtrip() -> None:
         assert profile is not None
         assert (
             profile.department,
+            profile.degree_program,
             profile.gpa_last_semester,
             profile.gpa_scale,
             profile.is_international,
-        ) == ("인공지능학과", 3.9, 4.5, False)
+        ) == ("인공지능학과", "master", 3.9, 4.5, False)
+        # 학위과정은 네 값만 (DB 제약 profiles_degree_program_chk)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            async with conn.transaction():
+                await repo.update_profile(user_id, {"degree_program": "graduate"})
 
         # 소득·수급 값은 선택 동의가 있어야 저장된다 (DB 제약도 같은 규칙)
         with pytest.raises(psycopg.errors.CheckViolation):
@@ -85,7 +91,7 @@ async def test_profile_repository_roundtrip() -> None:
         me = await repo.get_me(user_id)
         assert me is not None
         assert me.consented and me.calendar_connected and not me.income_info_consented
-        assert (me.profile_completion.filled, me.unread_notifications) == (3, 0)
+        assert (me.profile_completion.filled, me.unread_notifications) == (4, 0)
     finally:
         await conn.rollback()
         await conn.close()

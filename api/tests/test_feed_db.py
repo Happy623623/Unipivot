@@ -211,7 +211,7 @@ async def test_rejudges_only_stale_results(monkeypatch: pytest.MonkeyPatch) -> N
         assert await repo.refresh_judgments(me, now=now) == feed_module.Refresh(judged=1, changed=1)
 
         # 판정 규칙·문구가 바뀌면(ENGINE_VERSION) 저장된 판정이 모두 낡은 결과다
-        monkeypatch.setattr(feed_module, "ENGINE_VERSION", 2)
+        monkeypatch.setattr(feed_module, "ENGINE_VERSION", feed_module.ENGINE_VERSION + 1)
         assert (await repo.refresh_judgments(me, now=now)).judged == 7
         assert (await repo.refresh_judgments(me, now=now)).judged == 0
 
