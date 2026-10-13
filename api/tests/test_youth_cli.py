@@ -1,5 +1,5 @@
-"""청년정책 수집 CLI: 키가 없을 때, 미리 보기(--dry-run), 온통청년 오류, DB 문제, DB에 넣기(DB 테스트).
-온통청년은 가짜 클라이언트로 바꿔 끼운다. api/.env의 실제 키·DB 주소를 쓰지 않게 환경 변수로 덮어쓴다."""
+"""청년정책 수집 CLI: 키가 없을 때, 미리 보기(--dry-run), 온통청년 오류·막힘, DB 문제, DB에 넣기(DB 테스트).
+온통청년은 가짜 클라이언트나 respx로 바꿔 끼운다. api/.env의 실제 키·DB 주소를 쓰지 않게 환경 변수로 덮어쓴다."""
 
 import os
 import re
@@ -7,13 +7,15 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
+import httpx
 import psycopg
 import pytest
+import respx
 
 from app.eligibility import KST
 from app.youth import cli, importer
 from app.youth.cli import main
-from app.youth.client import BASE_URL
+from app.youth.client import BASE_URL, POLICY_PATH, YouthPolicyClient
 from tests.youth_samples import FakeClient, policy, skip_if_other_youth_policies
 
 pytestmark = pytest.mark.anyio
@@ -87,14 +89,59 @@ async def test_dry_run(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 async def test_youth_api_problems(capsys: pytest.CaptureFixture[str]) -> None:
-    bad_key = FakeClient([], error="온통청년 API 키가 맞지 않아요(HTTP 403·e001)")
-    assert await main(["fetch", "--dry-run"], make_client=factory(bad_key)) == 1
-    assert "온통청년 API 키가 맞지 않아요" in capsys.readouterr().out and bad_key.closed
+    blocked = FakeClient([], error="온통청년이 요청을 막았어요(HTTP 403·e001 invalid api key.). …")
+    assert await main(["fetch", "--dry-run"], make_client=factory(blocked)) == 1
+    assert "온통청년이 요청을 막았어요" in capsys.readouterr().out and blocked.closed
     stopped = FakeClient(items()[:1], skipped=tuple(range(100, 200)), stopped="2~3쪽을 받지 못함")
     assert await main(["fetch", "--dry-run"], make_client=factory(stopped)) == 1
+    out = capsys.readouterr().out.splitlines()
+    assert (
+        "읽지 못해 건너뛴 정책 100건(순번 [100, 101, 102, 103, 104, 105, 106, 107, 108, 109])"
+        in out
+    )
+    assert "끝까지 받지 못했어요: 2~3쪽을 받지 못함. 몇 분 뒤 다시 돌려 주세요" in out
+
+
+async def test_blocked_by_youthcenter(capsys: pytest.CaptureFixture[str]) -> None:
+    """실제 클라이언트로: 첫 쪽에서 막히면 이유와 할 일 한 줄, 2쪽에서 막히면 받은 100건으로 미리 보기. 둘 다 끝 코드 1."""
+    listed = [policy(plcyNo=f"{PREFIX}{n:03d}", plcyNm=f"정책 {n}") for n in range(150)]
+    blocked = httpx.Response(403, json={"errorCode": "e001", "errorMsg": "invalid api key."})
+
+    def make(api_key: str) -> YouthPolicyClient:
+        return YouthPolicyClient(api_key, retry_delay=0, page_delay=0)
+
+    def answer(block_from: int) -> Any:
+        def handle(request: httpx.Request) -> httpx.Response:
+            num, size = int(request.url.params["pageNum"]), int(request.url.params["pageSize"])
+            if num >= block_from:
+                return blocked
+            page = {"totCount": len(listed), "pageNum": num, "pageSize": size}
+            found = listed[(num - 1) * size : num * size]
+            body = {"resultCode": 200, "result": {"pagging": page, "youthPolicyList": found}}
+            return httpx.Response(200, json=body)
+
+        return handle
+
+    with respx.mock() as router:
+        router.get(BASE_URL + POLICY_PATH).mock(side_effect=answer(1))
+        assert await main(["fetch", "--dry-run"], make_client=make) == 1
     out = capsys.readouterr().out
-    assert "읽지 못해 건너뛴 정책 100건(순번 [100, 101, 102," in out
-    assert "끝까지 받지 못했어요: 2~3쪽을 받지 못함" in out
+    assert out.splitlines() == [
+        "온통청년이 요청을 막았어요(HTTP 403·e001 invalid api key.). 키가 틀렸거나, 방금 여러 번 불러"
+        " 잠깐 막혔을 수 있어요. 몇 분 뒤 다시 돌려 보고, 그래도 같으면 api/.env의 YOUTH_API_KEY를"
+        " 확인하세요"
+    ]
+    with respx.mock() as router:
+        router.get(BASE_URL + POLICY_PATH).mock(side_effect=answer(2))
+        assert await main(["fetch", "--dry-run"], make_client=make) == 1
+    out = capsys.readouterr().out
+    assert out.splitlines()[:3] == [
+        "온통청년 정책 100건 받음(전체 150건, 호출 2회, 0초)",
+        "끝까지 받지 못했어요: 2쪽에서 온통청년이 요청을 막음(HTTP 403·e001 invalid api key.)."
+        " 몇 분 뒤 다시 돌려 주세요",
+        "가져올 정책 100건 · 가져오지 않음 없음",
+    ]
+    assert KEY not in out
 
 
 async def test_db_problems(
@@ -216,7 +263,10 @@ async def test_fetch_command(
         )
         assert await main(argv, make_client=factory(stopped)) == 1
         out = capsys.readouterr().out
-        assert "끝까지 받지 못했어요: 2~3쪽을 받지 못함" in out
+        assert (
+            "끝까지 받지 못했어요: 2~3쪽을 받지 못함. 받은 정책은 넣었어요."
+            " 몇 분 뒤 다시 돌리면 나머지를 넣어요" in out
+        )
         assert "가져올 정책 1건: 새 공고 0 · 바뀐 공고 0 · 그대로 1" in out
         runs, statuses = await _statuses(scenario)
         assert runs == ["succeeded"] * 5

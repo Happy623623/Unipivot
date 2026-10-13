@@ -172,7 +172,12 @@ def _print_fetch(fetched: FetchResult, *, saving: bool) -> None:
     if fetched.skipped:
         print(f"읽지 못해 건너뛴 정책 {len(fetched.skipped)}건(순번 {list(fetched.skipped[:10])})")
     if fetched.stopped:
-        print(f"끝까지 받지 못했어요: {fetched.stopped}")
+        then = (
+            "받은 정책은 넣었어요. 몇 분 뒤 다시 돌리면 나머지를 넣어요"
+            if saving
+            else "몇 분 뒤 다시 돌려 주세요"
+        )
+        print(f"끝까지 받지 못했어요: {fetched.stopped}. {then}")
     if saving and not fetched.complete:
         print("목록을 빠짐없이 받지 못해 목록에서 사라진 정책은 숨기지 않았어요")
 
