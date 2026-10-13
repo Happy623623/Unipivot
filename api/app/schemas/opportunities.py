@@ -18,6 +18,7 @@ Category = Literal[
 SourceType = Literal["school_notice", "youth_policy", "contest", "poster", "lms_announcement"]
 EligibilityStatus = Literal["eligible", "undetermined", "ineligible"]
 DisplayStatus = Literal["eligible", "missing_info", "needs_review", "ineligible"]
+OpportunityMark = Literal["interested", "not_interested"]  # 관심, 관심 없음 (F-45)
 
 CATEGORIES: tuple[str, ...] = Category.__args__
 SOURCE_TYPES: tuple[str, ...] = SourceType.__args__
@@ -47,10 +48,11 @@ class OpportunityItem(BaseModel):
     course_name: str | None  # 과목 공지에서 온 공고만
     prepared: bool  # 준비하기를 했는지
     is_new: bool  # 최근 7일 안에 등록됐고 상세를 아직 열지 않음
+    my_mark: OpportunityMark | None = None  # 내 표시(F-45). 없으면 null
 
 
 class FeedCounts(BaseModel):
-    """홈 요약 카드. 카테고리·출처·판정 필터와 상관없이 활성 공고 전체 기준이다."""
+    """홈 요약 카드. 카테고리·출처·판정 필터와 상관없이 활성 공고 전체 기준이다. 관심 없음 공고는 세지 않는다."""
 
     eligible: int
     new_eligible: int
@@ -184,3 +186,16 @@ class OpportunityDetail(BaseModel):
     prep: Prep
     process: Process
     reported_by_me: bool  # 신고(P1) 전에는 늘 false
+    my_mark: OpportunityMark | None = None  # 내 표시(F-45). 없으면 null
+
+
+# PUT /opportunities/{id}/mark (F-45)
+
+
+class MarkRequest(BaseModel):
+    mark: OpportunityMark
+
+
+class MarkResult(BaseModel):
+    mark: OpportunityMark
+    marked_at: datetime  # 표시가 바뀐 시각(KST). 같은 표시를 다시 보내면 그대로다
