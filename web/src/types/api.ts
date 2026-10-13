@@ -14,6 +14,8 @@ export type NotificationType =
   | "new_eligible" | "new_assignment" | "new_material" | "schedule_change"
   | "task_due" | "deadline_soon" | "profile_needed";
 export type ReportReason = "wrong_info" | "duplicate" | "expired" | "inappropriate";
+// 지금 다니는(졸업했으면 마지막으로 다닌) 학위과정: 학부·석사·박사·석박사통합
+export type DegreeProgram = "bachelor" | "master" | "doctoral" | "integrated";
 
 // GET /me
 export interface Me {
@@ -31,6 +33,7 @@ export interface Me {
 // GET /me/profile (모든 값 null 가능)
 export interface Profile {
   department: string | null;
+  degree_program: DegreeProgram | null;
   grade: number | null;
   enrollment_status: "enrolled" | "on_leave" | "deferred_graduation" | "graduated" | null;
   semesters_completed: number | null;

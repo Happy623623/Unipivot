@@ -24,6 +24,7 @@ ALLOWED_OPERATORS: dict[str, frozenset[str]] = {
     "median_income_pct": _ALL,
     "welfare_status": _SET,
     "is_international": frozenset({"eq", "neq"}),
+    "degree_program": _SET,
     "other": _ALL,
 }
 
@@ -50,6 +51,13 @@ ENUM_LABELS: dict[str, dict[str, str]] = {
         "none": "해당 없음",
         "near_poverty": "차상위",
         "basic_livelihood": "기초생활수급",
+    },
+    # 지금 다니는(졸업했으면 마지막으로 다닌) 과정. 석박사통합은 석사·박사 중 어느 단계인지 모른다
+    "degree_program": {
+        "bachelor": "학부",
+        "master": "석사",
+        "doctoral": "박사",
+        "integrated": "석박사통합",
     },
 }
 
@@ -80,6 +88,7 @@ FIELD_LABELS = {
     "median_income_pct": "기준 중위소득",
     "welfare_status": "수급 여부",
     "is_international": "외국인 유학생",
+    "degree_program": "학위과정",
     "other": "기타 조건",
 }
 

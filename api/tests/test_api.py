@@ -71,7 +71,7 @@ def test_first_me_creates_profile(client: TestClient, auth: dict[str, str]) -> N
         False,
         False,
     )
-    assert body["profile_completion"] == {"filled": 0, "total": 16}
+    assert body["profile_completion"] == {"filled": 0, "total": 17}
 
 
 def test_profile_update_needs_consent(client: TestClient, auth: dict[str, str]) -> None:
@@ -96,13 +96,19 @@ def test_onboarding_flow(client: TestClient, auth: dict[str, str]) -> None:
 
     patch = {
         "department": "인공지능학과",
+        "degree_program": "bachelor",
         "grade": 3,
         "gpa_last_semester": 3.9,
         "is_international": False,
     }
     res = client.patch("/api/v1/me/profile", json=patch, headers=auth)
     assert res.status_code == 200
-    assert (res.json()["profile"]["grade"], res.json()["profile"]["is_international"]) == (3, False)
+    saved = res.json()["profile"]
+    assert (saved["degree_program"], saved["grade"], saved["is_international"]) == (
+        "bachelor",
+        3,
+        False,
+    )
     assert res.json()["rejudged"] == {
         "changed": 0,
         "eligible": 0,
@@ -112,7 +118,7 @@ def test_onboarding_flow(client: TestClient, auth: dict[str, str]) -> None:
 
     me = client.get("/api/v1/me", headers=auth).json()
     assert me["consented"] is True
-    assert me["profile_completion"]["filled"] == 4
+    assert me["profile_completion"]["filled"] == 5
 
     client.patch("/api/v1/me/profile", json={"grade": None}, headers=auth)  # null이면 지운다
     assert client.get("/api/v1/me/profile", headers=auth).json()["grade"] is None
@@ -134,6 +140,10 @@ def test_profile_validation(client: TestClient, auth: dict[str, str]) -> None:
 
     res = client.patch("/api/v1/me/profile", json={"nickname": "x"}, headers=auth)
     assert res.status_code == 422  # 명세에 없는 필드는 받지 않는다
+
+    res = client.patch("/api/v1/me/profile", json={"degree_program": "graduate"}, headers=auth)
+    assert res.status_code == 422  # 학위과정은 bachelor·master·doctoral·integrated만
+    assert list(res.json()["error"]["details"]["fields"]) == ["degree_program"]
 
     res = client.patch("/api/v1/me/profile", json={"department": "없는학과"}, headers=auth)
     assert res.status_code == 422

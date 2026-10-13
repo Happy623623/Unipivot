@@ -40,7 +40,7 @@ from app.repositories.opportunities import (
 from app.repositories.profiles import ProfileRepository
 from tests import samples
 from tests.conftest import make_token
-from tests.db_world import DATABASE_URL, build, connect, make_user
+from tests.db_world import DATABASE_URL, World, build, connect, make_user
 from tests.llm_fakes import Request, ScriptedLlm, call
 from tests.samples import hp
 
@@ -410,6 +410,70 @@ async def test_detail_judges_with_the_current_profile(monkeypatch: pytest.Monkey
             me,
             a,
         ) == {"reason_text": ENGINE_ERROR_SUMMARY}
+    finally:
+        await conn.rollback()
+        await conn.close()
+
+
+async def test_degree_program_from_profile_to_detail() -> None:
+    """학위과정: 대학원생 대상 공고는 학부생에게 지원 어려움이고, 비어 있으면 학위과정만 묻는다."""
+    conn = await connect()
+    try:
+        me = await make_user(conn, enrollment_status="enrolled")
+        world = await World.start(conn)
+        graduate = await world.add(
+            "대학원 N",
+            days=6,
+            requirements=(
+                (1, "degree_program", "in", ["master", "doctoral", "integrated"]),
+                (2, "enrollment_status", "in", ["enrolled", "on_leave"]),
+            ),
+        )
+        doctoral = await world.add(
+            "박사 O", days=6, requirements=((1, "degree_program", "in", ["doctoral"]),)
+        )
+        repo, profiles, now = OpportunityRepository(conn), ProfileRepository(conn), world.now
+
+        # 비어 있으면 그 항목만 묻는다 (eligibility_results.missing_fields 제약이 받는 값)
+        await repo.refresh_judgments(me, now=now)
+        assert await one(
+            conn,
+            "select missing_fields, reason_text from eligibility_results"
+            " where user_id = %s and opportunity_id = %s",
+            me,
+            graduate,
+        ) == {"missing_fields": ["degree_program"], "reason_text": "학위과정 입력 필요"}
+
+        await profiles.update_profile(me, {"degree_program": "bachelor"})
+        await repo.refresh_judgments(me, now=now, force=True)
+        detail = await repo.detail(me, graduate, now=now)
+        assert detail is not None
+        assert (detail.eligibility.display_status, detail.eligibility.reason_text) == (
+            "ineligible",
+            "학위과정: 석사·박사·석박사통합 (현재 학부)",
+        )
+        row = detail.eligibility.conditions[0]
+        assert (row.label, row.condition_text, row.user_value_text, row.outcome) == (
+            "학위과정",
+            "석사·박사·석박사통합",
+            "학부",
+            "fail",
+        )
+
+        # 석박사통합: 대학원생 공고는 지원 가능, 박사과정만 적은 공고는 묻지 않고 원문 확인 필요
+        await profiles.update_profile(me, {"degree_program": "integrated"})
+        await repo.refresh_judgments(me, now=now, force=True)
+        detail = await repo.detail(me, graduate, now=now)
+        assert detail is not None and detail.eligibility.display_status == "eligible"
+        detail = await repo.detail(me, doctoral, now=now)
+        assert detail is not None
+        row = detail.eligibility.conditions[0]
+        assert (
+            detail.eligibility.display_status,
+            detail.eligibility.missing_fields,
+            row.unknown_reason,
+            row.user_value_text,
+        ) == ("needs_review", [], "basis_mismatch", "석박사통합")
     finally:
         await conn.rollback()
         await conn.close()
