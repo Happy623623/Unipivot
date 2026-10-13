@@ -22,6 +22,8 @@
 >
 > v0.4 보강(10/13, 청년정책): 처리 과정 단계 이름 2개, 청년정책 판정 기준일, fetch-policies는 배포 때
 >
+> v0.4 보강(10/13, 시·군·구 선택): 프로필 region_sigungu 값
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -236,7 +238,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
     "credits_total": 98.0, "credits_last_semester": 18.0,
     "gpa_total": 3.71, "gpa_last_semester": 3.62, "gpa_scale": 4.5,
     "birth_date": null, "military_service_months": null,
-    "region_sido": "경기도", "region_sigungu": "안산시",
+    "region_sido": "경기도", "region_sigungu": "안산시 단원구",
     "income_bracket": null, "median_income_pct": null, "welfare_status": null,
     "is_international": false,
     "admission_year": null, "hyin_verified_at": null
@@ -250,6 +252,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `degree_program`(학위과정)을 추가한다. `bachelor` 학부, `master` 석사, `doctoral` 박사, `integrated` 석박사통합이고 null이면 미입력이다. 지금 다니는 과정이고, 졸업했으면 마지막으로 다닌 과정이다. 다른 값은 `422 VALIDATION_FAILED`(`details.fields.degree_program`)
 - 소득 3항목은 선택 동의 전이면 `403 CONSENT_REQUIRED`(`details.consent = "income_info"`)
 - 거주지역(`region_sido`, `region_sigungu`)은 주민등록 주소 기준이다. 입력 화면에 그렇게 적는다
+- `region_sigungu`는 시·도 안의 시·군·구 이름이고 구가 있는 시는 구까지 쓴다(예: `안산시 단원구`). 웹은 시·도를 고르면 그 안의 목록(법정동코드 2026-09-29 판의 끝 지역)에서 고르게 한다. 서버는 목록으로 검사하지 않고 그대로 저장하며, 판정할 때 앞에 붙은 시·도 이름을 뗀다(`docs/판정엔진_규칙.md` 4-2)
 - 보낸 항목 중 값이 실제로 바뀐 것만 저장하고, 바뀐 값이 있으면 그 사용자의 활성 공고를 모두 다시 판정한다. rejudged.changed는 판정이 있던 공고 중 라벨(display_status)이 바뀐 수이고, eligible·undetermined·ineligible은 GET /opportunities의 counts와 같은 기준이다.
 
 에러: `VALIDATION_FAILED`(422, 예: `gpa_last_semester > gpa_scale`)
@@ -1160,3 +1163,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 > 10/12 반영: OpportunityItem·OpportunityDetail·Condition·ProcessStep·Run.steps 타입, 판정표 묶음·판정 기준일, 카드·상세의 업로더 표시와 신고 버튼 숨김.
 
 > 10/12 반영: Profile.degree_program, 온보딩·설정의 학위과정 칸, 판정표의 석박사통합 안내.
+
+> 10/13 반영: 온보딩·설정·정보 입력의 거주 시·군·구 선택 상자, 설정 요약의 다시 고르기 표시, 설정 저장 버튼 옆 첫 오류.

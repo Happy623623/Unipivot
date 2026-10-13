@@ -489,7 +489,7 @@ def _region(req: Requirement) -> Evaluator:
         profile: Profile, basis_date: date, departments: Mapping[str, Department]
     ) -> _Eval:
         sido = normalize_sido(profile.region_sido)
-        sigungu = normalize_sigungu(profile.region_sigungu)
+        sigungu = normalize_sigungu(profile.region_sigungu, sido)
         shown = " ".join(part for part in (sido or profile.region_sido, sigungu) if part) or None
         if basis not in COMPARABLE_REGION_BASES:
             return _Eval("unknown", "basis_mismatch", shown)  # 실거주·출신 고교·보호자 주소

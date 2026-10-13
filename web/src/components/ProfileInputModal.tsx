@@ -15,9 +15,12 @@ import Modal from "@/components/Modal";
 import ProfileFieldInput from "@/components/profile/ProfileFieldInput";
 import {
   buildProfileSteps,
+  changeValue,
   fromFormValues,
+  resolveField,
   toFormValues,
   validateProfile,
+  withoutError,
   withoutIncome,
   type ProfileErrors,
   type ProfileFieldConfig,
@@ -182,10 +185,13 @@ export default function ProfileInputModal({ open, opportunityId, missingFields, 
             {editable.map((field) => (
               <ProfileFieldInput
                 key={field.key}
-                field={field}
+                field={resolveField(field, values)}
                 value={values[field.key]}
                 error={errors[field.key]}
-                onChange={(value) => setValues((current) => current && { ...current, [field.key]: value })}
+                onChange={(value) => {
+                  setValues((current) => current && changeValue(current, field.key, value));
+                  setErrors((current) => withoutError(current, field.key));
+                }}
               />
             ))}
           </div>

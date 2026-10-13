@@ -1,3 +1,4 @@
+import { SIDO, SIGUNGU_HINT, sigunguOf, squashSpaces } from "@/lib/regions";
 import type { DegreeProgram, Department, Profile } from "@/types/api";
 
 // 판정용 프로필 18개 항목을 온보딩 4단계와 설정 화면이 함께 쓴다 (ERD profiles 컬럼과 1:1)
@@ -28,12 +29,6 @@ export interface ProfileStepConfig {
   fields: ProfileFieldConfig[];
 }
 
-const SIDO = [
-  "서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시", "대전광역시",
-  "울산광역시", "세종특별자치시", "경기도", "강원특별자치도", "충청북도", "충청남도",
-  "전북특별자치도", "전라남도", "경상북도", "경상남도", "제주특별자치도",
-];
-
 // 학위과정 이름 (서버 판정표의 학위과정 문구와 같다)
 export const DEGREE_LABELS: Record<DegreeProgram, string> = {
   bachelor: "학부",
@@ -45,6 +40,56 @@ export const DEGREE_LABELS: Record<DegreeProgram, string> = {
 // 소득·수급 3항목은 선택 동의(소득·수급 정보)를 해야 저장된다 (동의 없이 값을 보내면 403)
 export function withoutIncome(profile: Profile): Profile {
   return { ...profile, income_bracket: null, median_income_pct: null, welfare_status: null };
+}
+
+// 거주 시·군·구 선택지는 고른 시·도에 따라 바뀐다. 목록에 없는 값(직접 입력하던 때의 값)은 그대로 보여 주고 다시 고르게 한다
+export function resolveField(field: ProfileFieldConfig, values: ProfileFormValues): ProfileFieldConfig {
+  if (field.key !== "region_sigungu") return field;
+  const sido = values.region_sido;
+  const names = sigunguOf(sido);
+  const current = values.region_sigungu;
+  const options = names.map((name) => ({ value: name, label: name }));
+  const unlisted = current !== "" && !names.includes(current);
+  if (unlisted) options.unshift({ value: current, label: `${current} (목록에 없음)` });
+  const hint =
+    unlisted && names.length > 0
+      ? "목록에 없는 값이에요. 목록에서 다시 골라 주세요."
+      : unlisted || !sido
+        ? unlistedMessage(sido)
+        : names.length === 0
+          ? "이 시·도는 시·군·구가 없어요."
+          : SIGUNGU_HINT[sido] ?? field.hint;
+  return { ...field, options, hint };
+}
+
+// 목록에 없는 시·군·구를 어떻게 고치는지
+function unlistedMessage(sido: string): string {
+  if (!sido) return "거주 시·도를 먼저 골라 주세요.";
+  if (sigunguOf(sido).length === 0) return "이 시·도는 시·군·구가 없어요. '선택 안 함'으로 바꿔 주세요.";
+  return "목록에서 다시 골라 주세요.";
+}
+
+// 설정 요약의 지역. 목록에 없는 시·군·구(직접 입력하던 때의 값)면 다시 고르라고 붙인다
+export function regionText(profile: Profile): string {
+  const text = [profile.region_sido, profile.region_sigungu].filter(Boolean).join(" ");
+  const sigungu = squashSpaces(profile.region_sigungu ?? "");
+  const listed = sigungu === "" || sigunguOf(profile.region_sido ?? "").includes(sigungu);
+  return !text ? "미입력" : listed ? text : `${text} (다시 골라 주세요)`;
+}
+
+// 값 하나를 바꾼다. 시·도를 바꾸면 시·군·구를 비운다(같은 이름의 구가 다른 시·도에도 있다)
+export function changeValue(values: ProfileFormValues, key: ProfileKey, value: string): ProfileFormValues {
+  const next = { ...values, [key]: value };
+  if (key === "region_sido" && value !== values.region_sido) next.region_sigungu = "";
+  return next;
+}
+
+// 값을 바꾼 항목의 오류를 지운다. 시·도를 바꾸면 시·군·구 오류도 지운다
+export function withoutError(errors: ProfileErrors, key: ProfileKey): ProfileErrors {
+  const next = { ...errors };
+  delete next[key];
+  if (key === "region_sido") delete next.region_sigungu;
+  return next;
 }
 
 // 학과 선택지는 GET /meta/departments 목록으로 만든다
@@ -152,7 +197,8 @@ export function buildProfileSteps(departments: Department[]): ProfileStepConfig[
           options: SIDO.map((sido) => ({ value: sido, label: sido })),
           hint: "주민등록 주소 기준이에요.",
         },
-        { key: "region_sigungu", label: "거주 시·군·구", kind: "text", maxLength: 40, placeholder: "예: 안산시 단원구" },
+        // 선택지는 resolveField가 고른 시·도로 채운다(구가 있는 시는 구까지)
+        { key: "region_sigungu", label: "거주 시·군·구", kind: "select", hint: "구가 있는 시는 구까지 골라요." },
       ],
     },
     {
@@ -207,6 +253,8 @@ export function toFormValues(profile: Profile): ProfileFormValues {
     const value = profile[key];
     values[key] = value === null || value === undefined ? "" : String(value);
   }
+  // 직접 입력하던 때의 시·군·구는 띄어쓰기를 맞춰 목록 값과 비교한다
+  values.region_sigungu = squashSpaces(values.region_sigungu ?? "");
   return values;
 }
 
@@ -227,6 +275,9 @@ export function validateProfile(values: ProfileFormValues, fields: ProfileFieldC
   const errors: ProfileErrors = {};
   for (const field of fields) {
     const raw = values[field.key]?.trim() ?? "";
+    if (field.key === "region_sigungu" && raw !== "" && !sigunguOf(values.region_sido).includes(raw)) {
+      errors.region_sigungu = unlistedMessage(values.region_sido);
+    }
     if (raw === "" || field.kind !== "number") continue;
     const value = Number(raw);
     if (Number.isNaN(value)) errors[field.key] = "숫자로 입력해 주세요.";

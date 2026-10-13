@@ -18,9 +18,11 @@ import ProfileStep from "@/components/onboarding/ProfileStep";
 import Skeleton from "@/components/Skeleton";
 import {
   buildProfileSteps,
+  changeValue,
   fromFormValues,
   toFormValues,
   validateProfile,
+  withoutError,
   withoutIncome,
   type ProfileErrors,
   type ProfileFormValues,
@@ -157,7 +159,10 @@ export default function Onboarding({ onDone }: OnboardingProps) {
             values={values}
             errors={errors}
             saving={saving}
-            onChange={(key, value) => setValues((current) => (current ? { ...current, [key]: value } : current))}
+            onChange={(key, value) => {
+              setValues((current) => (current ? changeValue(current, key, value) : current));
+              setErrors((current) => withoutError(current, key));
+            }}
             onBack={stage.index > 0 ? () => setStage({ kind: "profile", index: stage.index - 1 }) : undefined}
             onSkip={() => openStep(stage.index + 1)}
             onNext={() => saveStep(stage.index)}
