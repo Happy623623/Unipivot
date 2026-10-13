@@ -10,8 +10,11 @@ import pytest
 
 from app.extraction.prompt import FETCH_ORIGINAL, READ_IMAGE, READ_TEXT, SUBMIT
 from app.repositories.opportunities import LINE_MAX_CHARS, REASONS_MAX, _lines, _step
+from app.youth import BUILD_TOOL as BUILD_YOUTH
+from app.youth import FETCH_TOOL as FETCH_YOUTH
 
 NAMES = {1: "선발요강.hwpx", 2: "스캔 공고문.pdf", 3: "포스터.png"}
+PIPELINE_TOOLS = ("extract_from_image", FETCH_YOUTH, BUILD_YOUTH)  # 모델이 고르지 않는 단계
 
 
 def step(tool: str, **values: Any) -> dict[str, Any]:
@@ -81,12 +84,16 @@ def step(tool: str, **values: Any) -> dict[str, Any]:
         (step(SUBMIT, accepted=False, forced=True), "지원 자격 정리", "failed"),
         (step("extract_from_image"), "extract_from_image", "succeeded"),
         (step("extract_from_image", status="failed"), "extract_from_image", "failed"),
+        # 온통청년 청년정책(F-11): 코드가 정한 두 단계
+        (step(FETCH_YOUTH), "온통청년에서 정책 정보 받기", "succeeded"),
+        (step(BUILD_YOUTH), "온통청년 항목으로 지원 자격 정리", "succeeded"),
+        (step(BUILD_YOUTH, status="failed"), "온통청년 항목으로 지원 자격 정리", "failed"),
     ],
 )
 def test_step_label_and_status(row: dict[str, Any], label: str, status: str) -> None:
     result = _step(row, NAMES)
     assert (result.label, result.status) == (label, status)
-    pipeline = row["tool"] == "extract_from_image" or row["forced"] is True
+    pipeline = row["tool"] in PIPELINE_TOOLS or row["forced"] is True
     assert result.chosen_by == ("pipeline" if pipeline else "agent")
 
 

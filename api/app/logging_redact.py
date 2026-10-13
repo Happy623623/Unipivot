@@ -1,7 +1,8 @@
 """로그에서 토큰을 가린다 (PRD 7장 토큰 보안). 앱을 만들 때 install_log_redaction()을 한 번 부른다.
 
 가리는 것: Authorization 헤더, Bearer 토큰, token=… 값, JWT, Google access·refresh token,
-LearningX(Canvas) 개인 액세스 토큰, Fernet 암호문, Anthropic·Google API 키.
+LearningX(Canvas) 개인 액세스 토큰, Fernet 암호문, Anthropic·Google API 키, 주소에 붙은 API 키
+(온통청년 apiKeyNm=… 등). 요청 주소처럼 문자열이 아닌 인자도 문자열로 바꿔 보고 가릴 것이 있으면 가린다.
 """
 
 import logging
@@ -27,6 +28,11 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"gAAAAA[A-Za-z0-9_=-]{20,}"), _REDACTED),
     (re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}"), _REDACTED),
     (re.compile(r"AIza[0-9A-Za-z_-]{35}"), _REDACTED),
+    # 주소에 붙은 키: apiKeyNm=…, api_key=…, x_api_key=…, serviceKey=…
+    (
+        re.compile(r"(?i)(?<![A-Za-z0-9])((?:apiKeyNm|api_?key|service_?key)=)[^&\s'\"]+"),
+        r"\1" + _REDACTED,
+    ),
 )
 # 이런 말이 든 서식 문자열이면 인자(문자열)를 통째로 가린다: logger.info("Authorization: %s", value)
 _SENSITIVE_FORMAT = re.compile(r"(?i)authorization|bearer|token|secret|password|api[_-]?key")
@@ -59,9 +65,16 @@ def install_log_redaction() -> None:
             mask_all = isinstance(record.msg, str) and bool(_SENSITIVE_FORMAT.search(record.msg))
 
             def clean(item: Any) -> Any:
-                if not isinstance(item, str):
+                if isinstance(item, str):
+                    return _REDACTED if mask_all else redact(item)
+                if item is None or isinstance(item, int | float):
                     return item
-                return _REDACTED if mask_all else redact(item)
+                try:
+                    text = str(item)  # httpx 요청 로그의 주소(httpx.URL) 같은 객체
+                except Exception:
+                    return item  # 문자열로 못 바꾸는 값은 로그 쪽이 알아서 처리한다(부른 곳을 멈추지 않는다)
+                cleaned = redact(text)
+                return cleaned if cleaned != text else item
 
             if isinstance(record.args, Mapping):
                 record.args = {key: clean(item) for key, item in record.args.items()}
