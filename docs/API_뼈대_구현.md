@@ -79,7 +79,7 @@ supabase/ci/schema_checks.sql   RLS·FK 인덱스 점검 (ERD v0.9 때 넣음)
 
 ## 설계에서 정한 것
 
-- **토큰 검증.** `SUPABASE_JWT_SECRET`이 있으면 HS256으로, 비어 있으면 `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` 공개키로 검증한다. 프로젝트가 어느 방식인지는 Supabase 대시보드의 JWT 설정에서 확인한다.
+- **토큰 검증.** `SUPABASE_JWT_SECRET`이 있으면 HS256으로, 비어 있으면 `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` 공개키로 검증한다. 프로젝트가 어느 방식인지는 Supabase 대시보드의 JWT 설정에서 확인한다. 10/13: 시계 차이 60초 허용, 서버가 확인할 수 없으면 503(docs/로그인진단_구현.md).
 - **로그는 따로 커밋한다.** 요청 트랜잭션이 롤백돼도 실패한 실행이 `agent_runs`에 남아야 성공률을 잴 수 있다. 그래서 로그 전용 autocommit 풀을 두고, `agent_run`은 autocommit 연결이 아니면 거부한다.
 - **비밀값은 세 번 막는다.** 저장 전에 암호화한다. 로그 레코드에서는 Authorization 헤더와 토큰 모양 문자열(JWT, Google·LearningX 토큰, Fernet 암호문, API 키)을 가린다. `tool_calls`에 넣는 값은 키 이름(token·secret·password·api_key, 프로필 항목 이름)으로 한 번 더 지운다.
 - **로그 가리기는 인자만 바꾼다.** 서식 문자열은 그대로 두고 문자열 인자만 가려서, 인자를 직접 꺼내 쓰는 uvicorn 접근 로그도 깨지지 않는다. 서식 문자열에 authorization·token·secret 같은 말이 있으면 문자열 인자를 통째로 가린다. 예외 내용도 가린다.

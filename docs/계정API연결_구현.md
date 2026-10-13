@@ -111,7 +111,7 @@ Google 로그인 설정을 먼저 마친다(`온보딩_구현.md` "Supabase·Goo
 npx supabase db query --linked --output-format json "select p.consent_version, p.department is not null as has_department, p.income_info_agreed_at is not null as income_consent, (select count(*) from oauth_tokens t where t.user_id = p.id and t.refresh_token like 'gAAAAA%') as encrypted_calendar_tokens, (select count(*) from usage_events e where e.user_id = p.id and e.event = 'app_open') as app_opens from profiles p order by p.created_at desc limit 1" | Set-Clipboard
 ```
 
-`encrypted_calendar_tokens`가 1이면 토큰이 암호화돼 저장된 것이다. 로그인한 뒤에도 "로그인이 만료됐어요"가 반복되면 `api/.env`의 토큰 검증 설정(`SUPABASE_URL` 또는 `SUPABASE_JWT_SECRET`)이 프로젝트와 맞지 않는 것이다.
+`encrypted_calendar_tokens`가 1이면 토큰이 암호화돼 저장된 것이다. 로그인한 뒤에도 "로그인이 만료됐어요"가 반복되면 `api/.env`의 토큰 검증 설정(`SUPABASE_URL` 또는 `SUPABASE_JWT_SECRET`)이 프로젝트와 맞지 않는 것이다. 10/13부터는 uvicorn 터미널의 "로그인 확인 실패" 줄에 이유와 고칠 곳이 나온다(docs/로그인진단_구현.md).
 
 ## 구조
 
