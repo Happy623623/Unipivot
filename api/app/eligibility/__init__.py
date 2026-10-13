@@ -32,7 +32,8 @@ from app.eligibility.models import (
 # 판정 결과가 달라지는 변경(판정 규칙, 판정 문구, 판정 오류 수정)을 하면 1 올린다. 저장된 판정
 # (eligibility_results.engine_version)이 낡은 결과가 되어 피드를 읽을 때 다시 계산된다.
 # 2: 학위과정(degree_program) 항목 (2026-10-12)
-ENGINE_VERSION = 2
+# 3: 프로필 시군구 앞에 붙은 시도 이름을 떼고 비교 (2026-10-13)
+ENGINE_VERSION = 3
 
 __all__ = [
     "ALLOWED_OPERATORS",

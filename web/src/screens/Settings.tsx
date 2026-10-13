@@ -22,7 +22,7 @@ import Modal from "@/components/Modal";
 import NotificationSettings from "@/components/NotificationSettings";
 import ProfileForm from "@/components/ProfileForm";
 import Skeleton from "@/components/Skeleton";
-import { DEGREE_LABELS, type ProfileErrors } from "@/lib/profileFields";
+import { DEGREE_LABELS, regionText, type ProfileErrors } from "@/lib/profileFields";
 import useAsyncData from "@/lib/useAsyncData";
 import type { Me, Profile, Settings as SettingsData } from "@/types/api";
 import type { Route } from "@/types/route";
@@ -153,7 +153,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
             ["학적", `${profile.department ?? "미입력"} · ${academicStatus || "미입력"}`],
             ["성적", profile.gpa_last_semester ? `${profile.gpa_last_semester} / ${profile.gpa_scale}` : "미입력"],
             ["나이", age ? `${age}세` : "미입력"],
-            ["지역", [profile.region_sido, profile.region_sigungu].filter(Boolean).join(" ") || "미입력"],
+            ["지역", regionText(profile)],
             ["소득", profile.income_bracket !== null ? `${profile.income_bracket}구간` : "미입력"],
           ].map(([label, value]) => (
             <div key={label} className="rounded-[12px] bg-[#f7f8fa] p-3">
