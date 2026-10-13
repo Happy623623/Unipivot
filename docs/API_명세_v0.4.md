@@ -18,6 +18,8 @@
 >
 > v0.4 보강(10/12, 학위과정): 프로필 degree_program, profile_completion.total 17, basis_mismatch에 석박사통합
 >
+> v0.4 보강(10/13, 로그인 진단): 인증 시계 차이 60초, 서버가 로그인을 확인할 수 없으면 503 AUTH_UNAVAILABLE
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -52,7 +54,7 @@
 | 항목 | 규칙 |
 | --- | --- |
 | Base URL | `https://{api-host}/api/v1` |
-| 인증 | `Authorization: Bearer {Supabase access token}`. FastAPI가 Supabase JWT를 검증해 `user_id`를 얻는다. 4장의 로그인 콜백을 제외한 모든 사용자 API에 필요 |
+| 인증 | `Authorization: Bearer {Supabase access token}`. FastAPI가 Supabase JWT를 검증해 `user_id`를 얻는다. 4장의 로그인 콜백을 제외한 모든 사용자 API에 필요. 서버와의 시계 차이는 60초까지 허용한다. 토큰이 없거나 만료·위조·다른 프로젝트의 토큰이면 401 `UNAUTHORIZED`, 서버가 토큰을 확인할 수 없으면(공개키를 받지 못함, `SUPABASE_URL`이 비었거나 틀림) 503 `AUTH_UNAVAILABLE`이다 |
 | 데이터 접근 | 프론트는 DB를 직접 읽지 않는다(기존). DB의 모든 테이블에 RLS가 켜져 있고 클라이언트 쓰기 정책은 없다. 백엔드는 테이블 소유자로 연결해 RLS를 받지 않으므로, 공고 조회 쿼리에 5장의 공개 범위를 직접 건다 |
 | 형식 | JSON, 필드명 `snake_case`, UTF-8 |
 | 시간 | 일시는 ISO 8601 + 오프셋 (`2026-10-15T23:59:00+09:00`), 날짜만은 `YYYY-MM-DD`. DB는 UTC 저장. 날짜로 바꿀 때(due_date, D-day, 판정 기준일)는 항상 Asia/Seoul 기준이다. 날짜에 따라 결과가 바뀌는 코드는 현재 시각을 인자로 받는다(테스트에서 고정) |
@@ -60,7 +62,7 @@
 | 목록 | 커서 페이지네이션: `?limit=20&cursor={next_cursor}` → 응답 `{ "items": [...], "next_cursor": "..." \| null }` |
 | 업로드 | `multipart/form-data`, 파일 1개, 최대 20MB. 강의자료 분량 상한은 업로드가 아니라 요약 요청 때 토큰 기준으로 판정(8장) |
 | 에러 | `{ "error": { "code": "LMS_TOKEN_INVALID", "message": "사람이 읽는 메시지", "details": {} } }` (13장) |
-| 상태 코드 | 200 조회·수정, 201 생성, 202 비동기 작업 접수, 204 삭제, 400 잘못된 요청, 401 인증 없음, 403 권한 없음, 404 없음, 409 충돌·중복, 413 파일 초과, 422 검증 실패, 429 한도 초과, 502 외부 서비스 오류 |
+| 상태 코드 | 200 조회·수정, 201 생성, 202 비동기 작업 접수, 204 삭제, 400 잘못된 요청, 401 인증 없음, 403 권한 없음, 404 없음, 409 충돌·중복, 413 파일 초과, 422 검증 실패, 429 한도 초과, 502 외부 서비스 오류, 503 잠시 처리할 수 없음(DB 연결·로그인 확인) |
 | 비밀값 | LMS 토큰·Google 토큰은 **요청 본문으로 받기만 하고 어떤 응답에도 내보내지 않는다.** 로그와 에러 추적에서 Authorization 헤더와 토큰 모양 문자열을 가린다. 프로필 값은 LLM 호출과 `tool_calls.input`에 넣지 않는다 |
 | 파일 URL | Storage 파일은 API가 만든 서명 URL로만 준다. 수명은 5분이다(v0.3 `poster_url`의 1시간을 줄임) |
 | 외부 호출 | LearningX 클라이언트는 GET 요청과 9장의 허용 경로만 호출한다 |
@@ -1119,6 +1121,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `LLM_TIMEOUT` · `LLM_ERROR` | 502 | LLM 호출 실패(실행 결과의 error로도 전달) | 재시도 버튼 |
 | `RATE_LIMITED` | 429 | 같은 작업 과다 요청 | 잠시 후 재시도 |
 | `DB_UNAVAILABLE` | 503 | DB 연결 실패 | 잠시 후 재시도 |
+| `AUTH_UNAVAILABLE` | 503 | 서버가 로그인을 확인할 수 없음(공개키를 받지 못함, `SUPABASE_URL`이 비었거나 틀림). 토큰 문제가 아니다 | 잠시 후 재시도. 로그인 화면으로 보내지 않는다 |
 | `INTERNAL_ERROR` | 500 | 처리하지 못한 예외 | 에러 화면 |
 
 프론트만 쓰는 코드(서버는 주지 않는다, web/src/api/http.ts): NETWORK_ERROR(응답을 받지 못함), CONFIG_MISSING(API 주소 없음), NOT_READY(아직 API가 없는 기능), CALENDAR_CONNECT_FAILED(Google 화면을 열지 못함), RUN_TIMEOUT(실행 확인 시간 초과). 처리하지 못한 예외의 500 INTERNAL_ERROR에도 CORS 헤더가 붙어 브라우저가 문구를 읽을 수 있다.

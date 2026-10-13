@@ -54,7 +54,7 @@ def test_me_requires_login(client: TestClient) -> None:
 
 def test_expired_or_forged_token_is_rejected(client: TestClient) -> None:
     for token in (
-        make_token(expires_in=-10),
+        make_token(expires_in=-120),  # 시계 여유(60초)를 넘겨 만료
         make_token(secret="forged-secret-forged-secret-forged"),
     ):
         res = client.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
