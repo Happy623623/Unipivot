@@ -110,15 +110,16 @@ async def test_marks_follow_the_detail_visibility() -> None:
         rows = await (
             await conn.execute(
                 "select o.title, m.mark from opportunity_marks m join opportunities o"
-                " on o.id = m.opportunity_id where m.user_id = %s order by o.title",
+                " on o.id = m.opportunity_id where m.user_id = %s",
                 (me,),
             )
         ).fetchall()
-        assert [(row["title"], row["mark"]) for row in rows] == [
-            ("내 포스터 I", "not_interested"),
-            ("만료 M", "interested"),
-            ("장학 A", "interested"),
-        ]
+        # 순서는 보지 않는다. 한글 제목의 정렬 순서는 DB 정렬 규칙(collation)마다 다르다(CI의 en_US.utf8과 C가 다름)
+        assert len(rows) == 3 and {row["title"]: row["mark"] for row in rows} == {
+            "내 포스터 I": "not_interested",
+            "만료 M": "interested",
+            "장학 A": "interested",
+        }
         # 마감 공고는 include_expired 목록에서 내 표시와 함께 보인다
         await repo.refresh_judgments(me, now=now, include_expired=True)
         expired = await repo.feed_page(me, FeedQuery(include_expired=True), now=now)
