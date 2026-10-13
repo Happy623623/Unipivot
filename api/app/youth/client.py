@@ -7,8 +7,11 @@
   2차에서는 됐다). 그래도 실패하면 10건씩, 그래도 실패한 묶음은 1건씩 나눠 받아 읽지 못한 정책만 건너뛴다.
   첫 쪽도 같다(전체 건수는 처음 받은 묶음에서 안다). 10건 묶음이 앞의 둘 다 실패하면 그 쪽은 통째로
   실패한 것으로 보고, 첫 쪽이 그러면 멈춘다.
-- 두 쪽 연속으로 통째로 실패하거나, 받기가 연속 OUTAGE_FAILURES번 실패하면(온통청년이 멈춤) 멈춘다. 키가
-  틀리면(403 e001) 바로 멈춘다. 호출은 max_calls번까지다.
+- 두 쪽 연속으로 통째로 실패하거나, 받기가 연속 OUTAGE_FAILURES번 실패하면(온통청년이 멈춤) 멈춘다. 호출은
+  max_calls번까지다.
+- 401·403·e001("invalid api key.")은 키가 틀렸을 때도, 맞는 키로 잠깐 막혔을 때도 온다(10/13: 미리 보기 바로
+  뒤 넣기에서 403 e001, 4분 뒤 다시 돌리니 됐다). 다시 받지 않고 서버가 준 코드·문구와 함께 둘 다일 수 있다고 알린다.
+- 한 번이라도 받은 뒤에 멈추면(막힘, 응답 모양 오류 등) 오류로 끝내지 않고 거기까지 받은 정책을 돌려준다(stopped).
 - 전체 건수가 0이거나 받는 동안 바뀌면 빠짐없이 받은 것으로 보지 않는다(목록에서 사라진 정책을 숨기지 않는다).
 """
 
@@ -28,11 +31,20 @@ SMALL_PAGE = 10
 USER_AGENT = "UNIPIVOT-bot/0.3 (student capstone project)"
 SHAPE_ERROR = "온통청년 응답 모양이 달라요(result.youthPolicyList·result.pagging.totCount)"
 FIRST_PAGE_ERROR = "온통청년에서 정책 목록을 받지 못했어요(첫 쪽이 두 번 실패)"
+BLOCKED_ERROR = (
+    "온통청년이 요청을 막았어요({detail}). 키가 틀렸거나, 방금 여러 번 불러 잠깐 막혔을 수 있어요."
+    " 몇 분 뒤 다시 돌려 보고, 그래도 같으면 api/.env의 YOUTH_API_KEY를 확인하세요"
+)
 OUTAGE_FAILURES = 12  # 받기가 연속으로 이만큼 실패하면 멈춘다(응답 없음 30초씩이면 6분)
 
 
 class YouthApiError(Exception):
-    """온통청년 API를 쓸 수 없음. 메시지는 키 없이 사람에게 보여도 되는 한 줄이다."""
+    """온통청년 API를 쓸 수 없음. 메시지는 키 없이 사람에게 보여도 되는 한 줄이다. midway는 받는 도중에 났을 때
+    FetchResult.stopped에 남기는 짧은 이유다(없으면 메시지)."""
+
+    def __init__(self, message: str, *, midway: str | None = None) -> None:
+        super().__init__(message)
+        self.midway = midway or message
 
 
 class _Retry(Exception):
@@ -103,6 +115,7 @@ class YouthPolicyClient:
         self._max_calls = max_calls
         self.calls = 0
         self._totals: set[int] = set()  # 응답마다 받은 totCount
+        self._first_total: int | None = None  # 처음 받은 응답의 totCount. None이면 아직 받지 못했다
         self._failures = 0  # 연속으로 실패한 받기
 
     async def aclose(self) -> None:
@@ -111,6 +124,7 @@ class YouthPolicyClient:
     async def fetch_all(self) -> FetchResult:
         started = time.monotonic()
         self._totals = set()
+        self._first_total = None
         self._failures = 0
         found: dict[str, dict[str, Any]] = {}
         skipped: list[int] = []
@@ -151,9 +165,13 @@ class YouthPolicyClient:
             stopped = f"호출 {self._max_calls}회 한도에 닿음({num}쪽)"
         except _Outage:
             stopped = f"온통청년이 응답하지 않음(연속 {OUTAGE_FAILURES}번 실패, {num}쪽)"
+        except YouthApiError as exc:
+            if self._first_total is None:  # 아직 한 번도 받지 못했다
+                raise
+            stopped = f"{num}쪽에서 {exc.midway}"
         return FetchResult(
             policies=tuple(found.values()),
-            total=total or 0,
+            total=self._first_total or 0,  # 첫 쪽을 나눠 받다 멈춰도 전체 건수를 남긴다
             calls=self.calls,
             skipped=tuple(skipped),
             stopped=stopped,
@@ -218,21 +236,26 @@ class YouthPolicyClient:
             data = response.json()
         except ValueError:
             data = None
-        bad_key = isinstance(data, dict) and data.get("errorCode") == "e001"
-        if bad_key or response.status_code in (401, 403):
+        blocked = isinstance(data, dict) and data.get("errorCode") == "e001"
+        if blocked or response.status_code in (401, 403):
+            detail = self._detail(response.status_code, data)
             raise YouthApiError(
-                "온통청년 API 키가 맞지 않아요(HTTP 403·e001). api/.env의 YOUTH_API_KEY를 확인하세요"
+                BLOCKED_ERROR.format(detail=detail), midway=f"온통청년이 요청을 막음({detail})"
             )
         if response.status_code >= 500:
             raise _Retry
         if response.status_code != 200:
-            raise YouthApiError(f"온통청년이 요청을 받지 않았어요(HTTP {response.status_code})")
+            detail = self._detail(response.status_code, data)
+            raise YouthApiError(f"온통청년이 요청을 받지 않았어요({detail})")
         if data is None:
             raise _Retry  # 200인데 JSON이 아님(점검 화면 등)
         if not isinstance(data, dict):
             raise YouthApiError(SHAPE_ERROR)
         if str(data.get("resultCode")) != "200":
-            raise YouthApiError(f"온통청년 응답 오류: {data.get('resultCode')} {self._safe(data)}")
+            code = data.get("resultCode", data.get("errorCode"))
+            message = data.get("resultMessage", data.get("errorMsg"))
+            reason = f"{self._clean(code)} {self._clean(message)}".strip() or "모르는 응답"
+            raise YouthApiError(f"온통청년 응답 오류: {reason}")
         result = data.get("result")
         items = result.get("youthPolicyList") if isinstance(result, dict) else None
         paging = result.get("pagging") if isinstance(result, dict) else None
@@ -240,12 +263,22 @@ class YouthPolicyClient:
         if not isinstance(items, list) or not isinstance(total, int):
             raise YouthApiError(SHAPE_ERROR)
         self._totals.add(total)
+        if self._first_total is None:
+            self._first_total = total
         return [item for item in items if isinstance(item, dict) and item.get("plcyNo")], total
 
-    def _safe(self, data: dict[str, Any]) -> str:
-        """서버가 준 오류 문구. 요청 값을 되돌려 줄 수도 있어 키를 지우고 100자로 자른다."""
-        message = " ".join(str(data.get("resultMessage") or "").split())
-        return redact(message.replace(self._key, "[REDACTED]"))[:100].strip()
+    def _detail(self, status: int, data: Any) -> str:
+        """HTTP 상태와 서버가 준 오류 코드·문구. 예: HTTP 403·e001 invalid api key."""
+        text = f"HTTP {status}"
+        if isinstance(data, dict):
+            code, message = self._clean(data.get("errorCode")), self._clean(data.get("errorMsg"))
+            text += (f"·{code}" if code else "") + (f" {message}" if message else "")
+        return text
+
+    def _clean(self, value: Any) -> str:
+        """서버가 준 글. 요청 값을 되돌려 줄 수도 있어 키를 지우고 100자로 자른다."""
+        text = " ".join(("" if value is None else str(value)).split())
+        return redact(text.replace(self._key, "[REDACTED]"))[:100].strip()
 
 
 def _add(found: dict[str, dict[str, Any]], items: list[dict[str, Any]]) -> None:

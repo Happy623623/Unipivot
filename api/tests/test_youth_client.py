@@ -1,5 +1,5 @@
-"""온통청년 API 클라이언트: 쪽 받기, 실패한 쪽 나눠 받기, 키 오류, 키가 오류·로그에 남지 않음. HTTP는 respx로
-가로챈다(가짜 온통청년은 10/13에 본 응답 모양을 따른다)."""
+"""온통청년 API 클라이언트: 쪽 받기, 실패한 쪽 나눠 받기, 막힘(403), 중간에 멈추면 받은 데까지, 키가 오류·로그에
+남지 않음. HTTP는 respx로 가로챈다(가짜 온통청년은 10/13에 본 응답 모양을 따른다)."""
 
 import logging
 from collections.abc import Callable
@@ -8,11 +8,19 @@ import httpx
 import pytest
 import respx
 
-from app.youth.client import BASE_URL, POLICY_PATH, FetchResult, YouthApiError, YouthPolicyClient
+from app.youth.client import (
+    BASE_URL,
+    BLOCKED_ERROR,
+    POLICY_PATH,
+    FetchResult,
+    YouthApiError,
+    YouthPolicyClient,
+)
 
 pytestmark = pytest.mark.anyio
 KEY = "youthcenter-test-key-0123456789"
 URL = BASE_URL + POLICY_PATH
+BLOCKED = {"errorCode": "e001", "errorMsg": "invalid api key."}  # 10/13에 받은 403 본문
 
 
 def policies(count: int) -> list[dict[str, str]]:
@@ -247,6 +255,7 @@ async def test_total_changed_while_fetching_is_not_complete() -> None:
         )
         fetched = await client().fetch_all()
     assert fetched.total_changed and not fetched.complete
+    assert fetched.total == 150  # 처음 받은 쪽의 전체 건수
 
 
 async def test_total_changed_on_small_pages() -> None:
@@ -268,14 +277,28 @@ async def test_total_changed_on_small_pages() -> None:
     ("response", "message"),
     [
         (
-            httpx.Response(403, json={"errorCode": "e001", "errorMsg": "invalid api key."}),
-            "온통청년 API 키가 맞지 않아요",
+            httpx.Response(403, json=BLOCKED),
+            "온통청년이 요청을 막았어요(HTTP 403·e001 invalid api key.)",
+        ),
+        (httpx.Response(401, text="Unauthorized"), "온통청년이 요청을 막았어요(HTTP 401)."),
+        (
+            httpx.Response(200, json=BLOCKED),
+            "온통청년이 요청을 막았어요(HTTP 200·e001 invalid api key.)",
         ),
         (httpx.Response(404, text="없는 주소"), "온통청년이 요청을 받지 않았어요(HTTP 404)"),
+        (
+            httpx.Response(400, json={"errorCode": "e003", "errorMsg": "bad request"}),
+            "온통청년이 요청을 받지 않았어요(HTTP 400·e003 bad request)",
+        ),
         (
             httpx.Response(200, json={"resultCode": 400, "resultMessage": "잘못된 요청"}),
             "온통청년 응답 오류: 400 잘못된 요청",
         ),
+        (
+            httpx.Response(200, json={"errorCode": "e002", "errorMsg": "일일 호출 한도 초과"}),
+            "온통청년 응답 오류: e002 일일 호출 한도 초과",
+        ),
+        (httpx.Response(200, json={}), "온통청년 응답 오류: 모르는 응답"),
         (httpx.Response(200, json={"resultCode": 200, "result": {}}), "응답 모양이 달라요"),
         (httpx.Response(200, json=["목록"]), "응답 모양이 달라요"),
     ],
@@ -290,15 +313,125 @@ async def test_stops_on_errors_that_retry_cannot_fix(
     assert message in str(caught.value) and route.call_count == 1
 
 
+async def test_blocked_first_page_says_wrong_key_or_short_block() -> None:
+    """10/13: 미리 보기 바로 뒤 넣기에서 맞는 키로 403 e001이 왔고 4분 뒤 됐다. 키 탓으로만 말하지 않는다."""
+    with respx.mock() as router:
+        router.get(URL).mock(return_value=httpx.Response(403, json=BLOCKED))
+        with pytest.raises(YouthApiError) as caught:
+            await client().fetch_all()
+    assert str(caught.value) == BLOCKED_ERROR.format(detail="HTTP 403·e001 invalid api key.")
+    assert str(caught.value) == (
+        "온통청년이 요청을 막았어요(HTTP 403·e001 invalid api key.). 키가 틀렸거나, 방금 여러 번 불러"
+        " 잠깐 막혔을 수 있어요. 몇 분 뒤 다시 돌려 보고, 그래도 같으면 api/.env의 YOUTH_API_KEY를"
+        " 확인하세요"
+    )
+    assert caught.value.__context__ is None
+
+
+async def test_blocked_midway_keeps_what_was_fetched() -> None:
+    """2쪽에서 막히면 다시 받지 않고 멈춘다. 1쪽 정책은 돌려준다(넣을 수 있게). 빠짐없이 받은 것은 아니다."""
+    items = policies(250)
+    answer = server(items)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.params["pageNum"] == "2":
+            return httpx.Response(403, json=BLOCKED)
+        return answer(request)
+
+    with respx.mock() as router:
+        route = router.get(URL).mock(side_effect=handle)
+        fetched = await client().fetch_all()
+    assert [p["plcyNo"] for p in fetched.policies] == [p["plcyNo"] for p in items[:100]]
+    assert fetched.stopped == "2쪽에서 온통청년이 요청을 막음(HTTP 403·e001 invalid api key.)"
+    assert (fetched.total, fetched.calls, route.call_count) == (250, 2, 2)
+    assert not fetched.complete and fetched.summary()["stopped"] == fetched.stopped
+
+
+async def test_blocked_while_splitting_the_first_page_keeps_the_total() -> None:
+    """첫 쪽이 500이라 10건씩 받다가 둘째 묶음에서 막혔다. 받은 10건과 전체 건수(첫 묶음의 totCount)를 남긴다."""
+    items = policies(150)
+    answer = server(items, broken=lambda start, size: size == 100)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        if (params["pageNum"], params["pageSize"]) == ("2", "10"):
+            return httpx.Response(403, json=BLOCKED)
+        return answer(request)
+
+    with respx.mock() as router:
+        router.get(URL).mock(side_effect=handle)
+        fetched = await client().fetch_all()
+    assert len(fetched.policies) == 10 and fetched.total == 150 and fetched.calls == 4
+    assert fetched.stopped == "1쪽에서 온통청년이 요청을 막음(HTTP 403·e001 invalid api key.)"
+
+
+async def test_second_fetch_starts_over() -> None:
+    """같은 클라이언트로 다시 받을 때 앞의 결과를 쓰지 않는다. 다시 받은 첫 쪽이 막히면 오류다."""
+    fetcher = client()
+    with respx.mock() as router:
+        router.get(URL).mock(side_effect=server(policies(150)))
+        assert (await fetcher.fetch_all()).total == 150
+    with respx.mock() as router:
+        router.get(URL).mock(return_value=httpx.Response(403, json=BLOCKED))
+        with pytest.raises(YouthApiError, match="요청을 막았어요"):
+            await fetcher.fetch_all()
+
+
+async def test_long_server_message_is_cut() -> None:
+    """서버 문구는 100자까지만 붙인다."""
+    with respx.mock() as router:
+        body = {"errorCode": "e001", "errorMsg": "가" * 300}
+        router.get(URL).mock(return_value=httpx.Response(403, json=body))
+        with pytest.raises(YouthApiError) as caught:
+            await client().fetch_all()
+    assert f"(HTTP 403·e001 {'가' * 100})." in str(caught.value)
+
+
+async def test_other_error_midway_keeps_what_was_fetched() -> None:
+    """받는 도중의 다른 오류(응답 모양)도 거기까지 받은 정책으로 끝낸다. 첫 쪽이면 오류다(위 테스트)."""
+    items = policies(250)
+    answer = server(items)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.params["pageNum"] == "3":
+            return httpx.Response(200, json={"resultCode": 200, "result": {}})
+        return answer(request)
+
+    with respx.mock() as router:
+        router.get(URL).mock(side_effect=handle)
+        fetched = await client().fetch_all()
+    assert len(fetched.policies) == 200 and not fetched.complete
+    assert fetched.stopped == (
+        "3쪽에서 온통청년 응답 모양이 달라요(result.youthPolicyList·result.pagging.totCount)"
+    )
+
+
 async def test_server_message_never_carries_the_key() -> None:
-    """서버가 요청 값을 오류 문구에 되돌려 줘도 키는 지운다."""
-    for message in (f"잘못된 요청 apiKeyNm={KEY}", f"키 {KEY} 를 확인"):
-        body = {"resultCode": 500, "resultMessage": message}
+    """서버가 요청 값을 오류 문구·코드에 되돌려 줘도 키는 지운다. 받는 도중 멈춘 이유(stopped)도 같다."""
+    bodies = [
+        (200, {"resultCode": 500, "resultMessage": f"잘못된 요청 apiKeyNm={KEY}"}),
+        (200, {"resultCode": 500, "resultMessage": f"키 {KEY} 를 확인"}),
+        (403, {"errorCode": "e001", "errorMsg": f"invalid api key: {KEY}"}),
+        (400, {"errorCode": KEY, "errorMsg": "bad"}),
+    ]
+    for status, body in bodies:
         with respx.mock() as router:
-            router.get(URL).mock(return_value=httpx.Response(200, json=body))
+            router.get(URL).mock(return_value=httpx.Response(status, json=body))
             with pytest.raises(YouthApiError) as caught:
                 await client().fetch_all()
         assert KEY not in str(caught.value) and "[REDACTED]" in str(caught.value)
+        assert KEY not in caught.value.midway
+    answer = server(policies(150))
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.params["pageNum"] == "2":
+            return httpx.Response(403, json={"errorCode": "e001", "errorMsg": f"키 {KEY}"})
+        return answer(request)
+
+    with respx.mock() as router:
+        router.get(URL).mock(side_effect=handle)
+        fetched = await client().fetch_all()
+    assert fetched.stopped == "2쪽에서 온통청년이 요청을 막음(HTTP 403·e001 키 [REDACTED])"
 
 
 async def test_key_never_appears_in_errors_or_logs(caplog: pytest.LogCaptureFixture) -> None:
