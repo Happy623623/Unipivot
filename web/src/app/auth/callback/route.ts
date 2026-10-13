@@ -26,7 +26,10 @@ export async function GET(request: Request) {
 
   const supabase = await createServerSupabase();
   const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-  if (error || !data.session) return connectCalendar ? backWith("error") : toLogin("auth");
+  if (error || !data.session) {
+    logFailure("로그인 코드 교환", error ?? "세션 없음");
+    return connectCalendar ? backWith("error") : toLogin("auth");
+  }
   if (!connectCalendar) {
     return (await dropGoogleTokens(supabase)) ? NextResponse.redirect(`${origin}${next}`) : toLogin("auth");
   }
@@ -46,8 +49,10 @@ export async function GET(request: Request) {
       body: JSON.stringify({ provider_token, provider_refresh_token }),
     });
     if (response.ok) result = "connected";
-  } catch {
+    else logFailure("캘린더 토큰 저장", { status: response.status, code: await errorCode(response) });
+  } catch (caught) {
     // 백엔드에 닿지 못해도 로그인 세션은 그대로 두고, 돌아간 화면에서 다시 연결하게 한다
+    logFailure("캘린더 토큰 저장(API 연결)", caught);
   }
   // refresh token을 못 받았을 때(422 GOOGLE_REFRESH_TOKEN_MISSING)도 error로 돌아가 다시 연결을 안내한다
   return (await dropGoogleTokens(supabase)) ? backWith(result) : toLogin("auth");
@@ -59,12 +64,15 @@ async function signedInUserId(): Promise<string | null | undefined> {
   const { data, error } = await (await createReadOnlyServerSupabase()).auth.getUser();
   if (data.user) return data.user.id;
   const gone = isAuthSessionMissingError(error) || (isAuthApiError(error) && error.status < 500 && error.status !== 429);
+  if (error && !gone) logFailure("로그인한 사용자 확인", error);
   return !error || gone ? null : undefined;
 }
 
 // 세션을 새로 받아 Google 토큰이 없는 세션으로 바꾼다. 실패하면 Google 토큰이 남지 않게 이 기기에서 로그아웃한다
 async function dropGoogleTokens(supabase: SupabaseClient): Promise<boolean> {
-  if (!(await supabase.auth.refreshSession()).error) return true;
+  const { error } = await supabase.auth.refreshSession();
+  if (!error) return true;
+  logFailure("세션 새로 받기", error);
   await endSession(supabase);
   return false;
 }
@@ -76,4 +84,23 @@ async function endSession(supabase: SupabaseClient): Promise<void> {
   for (const { name } of cookieStore.getAll()) {
     if (name.startsWith("sb-") && name.includes("-auth-token")) cookieStore.delete(name);
   }
+}
+
+// 실패 이유를 서버 로그(npm run dev 터미널)에 남긴다. 토큰·코드 값은 남기지 않는다.
+// fetch 실패는 cause에 연결 오류 코드(ECONNREFUSED 등)가 있다
+function logFailure(step: string, reason: unknown): void {
+  const fields = typeof reason === "object" && reason !== null ? (reason as Record<string, unknown>) : { message: reason };
+  const cause = fields.cause as { code?: unknown } | undefined;
+  const detail = Object.fromEntries(
+    Object.entries({ name: fields.name, code: fields.code, status: fields.status, message: fields.message, cause: cause?.code })
+      .filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => [key, String(value).slice(0, 200)]),
+  );
+  console.warn(`[auth/callback] ${step} 실패`, detail);
+}
+
+// API 오류 응답의 code(API 명세 13장). 본문을 읽지 못하면 null
+async function errorCode(response: Response): Promise<string | null> {
+  const body = await response.json().catch(() => null);
+  return typeof body?.error?.code === "string" ? body.error.code : null;
 }

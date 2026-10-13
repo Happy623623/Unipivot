@@ -1,19 +1,26 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.auth import auth_settings_problem
 from app.config import Settings, get_settings
 from app.db import create_pools
 from app.errors import UnhandledErrorMiddleware, register_error_handlers
 from app.logging_redact import install_log_redaction
 from app.routers import auth, events, health, me, meta, opportunities
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
+    # 로그인 설정이 틀렸으면 첫 요청을 기다리지 않고 시작할 때 알린다(.env를 고치면 서버를 다시 켠다)
+    if problem := auth_settings_problem(settings):
+        logger.warning("로그인 설정 확인: %s", problem)
     app.state.pool = app.state.log_pool = None
     if settings.database_url:
         app.state.pool, app.state.log_pool = create_pools(settings.database_url)
