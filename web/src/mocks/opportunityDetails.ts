@@ -147,6 +147,7 @@ function makeDetail(item: OpportunityItem): OpportunityDetail {
       prepare_run_id: prepared ? "run-prepare-hanyang" : null,
     },
     reported_by_me: false,
+    my_mark: item.my_mark,
   };
 }
 

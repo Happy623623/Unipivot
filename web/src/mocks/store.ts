@@ -5,6 +5,7 @@ import { mockToday } from "@/mocks/account";
 import type {
   OpportunityItem,
   OpportunityDetail,
+  OpportunityMark,
   PlannerResponse,
   PlannerTask,
   PrepareResult,
@@ -153,6 +154,16 @@ export function setStoredDocumentDone(
   detail.prep.tasks_done = tasks.filter((item) => item.is_done).length;
   detail.prep.tasks_total = tasks.length;
   return detail;
+}
+
+// 관심·숨김 표시(F-45). 피드 항목과 상세에 같이 적어, 상세를 다시 받아도(서류 체크·다시 판정) 표시가 남는다.
+// 없는 공고면 false. 메모리에만 있어 새로고침하면 표시가 없는 목데이터로 돌아간다
+export function setStoredMark(id: string, mark: OpportunityMark | null): boolean {
+  const item = opportunities.find((entry) => entry.id === id);
+  const detail = detailsState[id];
+  if (item) item.my_mark = mark;
+  if (detail) detail.my_mark = mark;
+  return Boolean(item ?? detail);
 }
 
 // 포스터 등록(posterStore.ts)이 만든 공고를 피드 맨 앞과 상세에 넣는다

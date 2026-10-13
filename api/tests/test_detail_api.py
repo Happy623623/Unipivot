@@ -125,7 +125,8 @@ def test_detail_returns_the_judgment_table(
     assert body["eligibility"]["conditions"][0]["unknown_reason"] == "missing_profile"
     assert body["process"]["extraction"][0]["chosen_by"] == "agent"
     assert (body["needs_review"], body["review_reasons"]) == (True, ["읽지 못한 첨부가 있음"])
-    assert set(body) == {  # API 명세 v0.4 5장(S1-6b 보강) · web OpportunityDetail
+    assert body["my_mark"] is None
+    assert set(body) == {  # API 명세 v0.4 5장(S1-6b·F-45 보강) · web OpportunityDetail
         "id",
         "title",
         "organizer",
@@ -148,6 +149,7 @@ def test_detail_returns_the_judgment_table(
         "prep",
         "process",
         "reported_by_me",
+        "my_mark",
     }
 
 

@@ -17,6 +17,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: true,
     is_new: false,
+    my_mark: null,
   },
   {
     id: "youth-capability",
@@ -34,6 +35,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: false,
+    my_mark: null,
   },
   {
     id: "city-idea-contest",
@@ -51,6 +53,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: false,
+    my_mark: null,
   },
   {
     id: "erica-startup-camp",
@@ -68,6 +71,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: true,
+    my_mark: null,
   },
   {
     id: "climate-supporters",
@@ -85,6 +89,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: true,
+    my_mark: null,
   },
   {
     id: "database-hackathon",
@@ -102,6 +107,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: "데이터베이스",
     prepared: false,
     is_new: false,
+    my_mark: null,
   },
   {
     id: "ai-research-intern",
@@ -119,6 +125,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: false,
+    my_mark: null,
   },
   {
     id: "data-certificate",
@@ -136,6 +143,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: false,
+    my_mark: null,
   },
   {
     id: "career-poster",
@@ -153,6 +161,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: false,
+    my_mark: null,
   },
   {
     id: "youth-rent",
@@ -170,6 +179,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: false,
+    my_mark: null,
   },
   {
     id: "global-design-contest",
@@ -187,6 +197,7 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: false,
+    my_mark: null,
   },
   {
     id: "bio-presentation",
@@ -204,5 +215,6 @@ export const opportunities: OpportunityItem[] = [
     course_name: null,
     prepared: false,
     is_new: false,
+    my_mark: null,
   },
 ];

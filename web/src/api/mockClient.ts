@@ -1,7 +1,10 @@
+import { ApiError } from "@/api/http";
 import { getDevScenario } from "@/dev/scenarios";
+import { countItems } from "@/lib/feedCounts";
 import { courseDetails, courses, lmsUpdates, materials, opportunities } from "@/mocks";
 import { mockDepartments, mockNow } from "@/mocks/account";
 import { rejudgeStoredOpportunity } from "@/mocks/rejudge";
+import { setStoredMark } from "@/mocks/store";
 import {
   getStoredNotifications,
   readAllStoredNotifications,
@@ -29,7 +32,6 @@ import type {
   Course,
   CourseDetail,
   Department,
-  FeedCounts,
   FeedResponse,
   IncomeConsentResult,
   LmsConnection,
@@ -37,7 +39,7 @@ import type {
   MaterialDetail,
   Me,
   OpportunityDetail,
-  OpportunityItem,
+  OpportunityMark,
   Profile,
   Settings,
 } from "@/types/api";
@@ -55,8 +57,9 @@ export class MockApiError extends Error {
   }
 }
 
+// 응답이 없는 함수(204처럼 undefined)는 그대로 돌려준다. JSON.parse(undefined)는 오류라 약속이 끝나지 않는다
 function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
+  return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
 }
 
 export function respond<T>(value: T): Promise<T> {
@@ -141,31 +144,25 @@ export function markAllNotificationsRead(): Promise<AppNotification[]> {
 
 // 공고 피드·상세 (client.ts)
 
-// 홈 요약 카드 숫자. 실제 API처럼 카테고리 필터와 상관없이 전체 공고 기준이다
-function feedCounts(items: OpportunityItem[]): FeedCounts {
-  return {
-    eligible: items.filter((item) => item.eligibility.status === "eligible").length,
-    new_eligible: items.filter((item) => item.eligibility.status === "eligible" && item.is_new).length,
-    undetermined: items.filter((item) => item.eligibility.status === "undetermined").length,
-    missing_info: items.filter((item) => item.eligibility.display_status === "missing_info").length,
-    needs_review: items.filter((item) => item.eligibility.display_status === "needs_review").length,
-    ineligible: items.filter((item) => item.eligibility.status === "ineligible").length,
-    deadline_soon: items.filter((item) => item.eligibility.status !== "ineligible" && item.d_day !== null && item.d_day >= 0 && item.d_day <= 3).length,
-  };
-}
-
-export function getFeed(categories: Category[] | null, sort: "deadline" | "recent"): Promise<FeedResponse> {
+// 실제 API처럼 관심 없음 공고는 includeNotInterested일 때만 주고, 요약 카드 숫자(카테고리와 상관없는 전체
+// 기준)에서는 늘 뺀다
+export function getFeed(
+  categories: Category[] | null,
+  sort: "deadline" | "recent",
+  includeNotInterested: boolean,
+): Promise<FeedResponse> {
   if (getDevScenario() === "empty_feed") {
-    return respond({ items: [], next_cursor: null, counts: feedCounts([]) });
+    return respond({ items: [], next_cursor: null, counts: countItems([]) });
   }
-  const items = opportunities.filter((item) => !categories || categories.includes(item.category));
+  const shown = opportunities.filter((item) => item.my_mark !== "not_interested");
+  const items = (includeNotInterested ? opportunities : shown).filter((item) => !categories || categories.includes(item.category));
   items.sort((a, b) =>
     sort === "deadline"
       ? (a.d_day ?? Number.MAX_SAFE_INTEGER) - (b.d_day ?? Number.MAX_SAFE_INTEGER)
       : // 실제 API는 등록 최신순이다. 목데이터에는 등록 시각이 없어 새 공고만 앞으로 보낸다
         Number(b.is_new) - Number(a.is_new),
   );
-  return respond({ items, next_cursor: null, counts: feedCounts(opportunities) });
+  return respond({ items, next_cursor: null, counts: countItems(shown) });
 }
 
 // 정보 입력으로 프로필(목 저장소)이 채워졌으면 그 자리에서 다시 판정한 것처럼 바꿔서 준다
@@ -173,6 +170,14 @@ export function getOpportunity(id: string): Promise<OpportunityDetail> {
   const detail = rejudgeStoredOpportunity(id, getStoredProfile());
   if (!detail) return Promise.reject(new Error("공고를 찾을 수 없어요."));
   return respond(detail);
+}
+
+// 실제 API처럼 없는 공고에 표시를 붙이면 404 NOT_FOUND이고, 지우기는 늘 된다
+export function setOpportunityMark(id: string, mark: OpportunityMark | null): Promise<void> {
+  if (!setStoredMark(id, mark) && mark !== null) {
+    return rejectAfter(new ApiError("NOT_FOUND", "공고를 찾을 수 없어요.", 404));
+  }
+  return respond(undefined);
 }
 
 // LMS (lmsClient.ts)

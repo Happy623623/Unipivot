@@ -19,6 +19,8 @@
 > v0.9 보강(10/12): profiles.degree_program(학위과정), 요건 항목 degree_program
 >
 > v0.9 보강(10/13): 청년정책(온통청년) 행의 값(스키마 변경 없음)
+>
+> v0.9 보강(10/13, F-45): opportunity_marks(관심·관심 없음 표시)
 
 ---
 
@@ -75,6 +77,8 @@ erDiagram
     sources ||--o{ opportunities : "수집"
     files |o--o| opportunities : "포스터 원본"
     opportunities ||--o{ opportunity_views : "조회됨"
+    profiles ||--o{ opportunity_marks : "관심 표시"
+    opportunities ||--o{ opportunity_marks : "표시됨"
     opportunities ||--o{ opportunity_attachments : "첨부"
     departments ||--o{ profiles : "학과"
     profiles ||--o{ usage_events : "사용"
@@ -333,6 +337,12 @@ erDiagram
         timestamptz first_viewed_at "새 공고 판정"
         timestamptz last_viewed_at
     }
+    opportunity_marks {
+        uuid user_id PK, FK
+        uuid opportunity_id PK, FK
+        text mark "interested, not_interested"
+        timestamptz marked_at "표시가 바뀐 시각"
+    }
     eligibility_results {
         uuid user_id PK, FK
         uuid opportunity_id PK, FK
@@ -352,6 +362,8 @@ erDiagram
     opportunities ||--o{ eligibility_results : "has"
     opportunities ||--o{ opportunity_views : "has"
     profiles ||--o{ opportunity_views : "has"
+    opportunities ||--o{ opportunity_marks : "has"
+    profiles ||--o{ opportunity_marks : "has"
 ```
 
 ### 3-4. 실행 · 업로드 · 알림
@@ -541,6 +553,7 @@ erDiagram
 | 공고 | opportunity_documents | 공고별 필요 서류와 발급처·소요 일수 | F-30, F-31 |
 | 공고 | opportunity_reports | 공유 공고 신고 (사용자당 1회) | F-17 |
 | 공고 | opportunity_views | 사용자별 공고 첫 조회·최근 조회 시각. 새 공고 판정과 조회→준비 전환율 지표 | F-40 |
+| 공고 | opportunity_marks | 사용자 × 공고 관심·관심 없음 표시(공고마다 하나). 관심 없음 공고는 피드·홈 요약 숫자·공고 알림에서 뺀다 | F-45 |
 | 판정 | eligibility_results | 사용자 × 공고 판정 결과와 조건별 상세 | F-21, F-22, F-40 |
 | 실행 | prep_plans | "준비하기"를 누른 기록 (사용자 × 공고 1개) | F-31 |
 | 실행 | planner_tasks | 앱 내 플래너 항목 (준비 단계, 강의 일정, LMS 과제, 휴강 등) | F-31, F-43, F-51, F-53 |
@@ -652,6 +665,13 @@ erDiagram
 - 포스터 공유(P1)를 켤 때 이 규칙과 피드 API에 공유 여부를 더한다. 업로더 이름은 표시하지 않으므로 마스킹용 `security definer` 함수는 만들지 않는다. `dedupe_key`·`merged_into_id`(병합)와 `opportunity_reports`(신고)는 그대로 둔다.
 - API는 공개 범위 안의 마감 공고(마감일이 지났거나 expired)도 보여 준다(피드 include_expired, 공고 상세). RLS 정책은 활성 공고와 준비한 공고만 허용하지만 프론트는 DB를 직접 읽지 않는다. 준비한 공고는 병합되거나 수강을 끝낸 과목의 공지여도 본인에게 보인다.
 
+### 관심 공고 (F-45)
+
+- `opportunity_marks`는 사용자 × 공고 한 행에 표시 하나다. `interested`(관심) 또는 `not_interested`(관심 없음, 화면 이름 "숨기기")이고, 표시가 없으면 행이 없다. 다른 표시로 바꾸면 `mark`와 `marked_at`을 바꾸고, 같은 표시를 다시 고르면 `marked_at`을 그대로 둔다.
+- 관심 없음 공고는 피드(API `include_not_interested`가 아니면)와 홈 요약 숫자(10장)에서 뺀다. 알림 배치는 공고 알림(new_eligible, 공고 deadline_soon, profile_needed)을 만들지 않고, 보내기 전에도 다시 본다. 판정은 표시와 상관없이 한다.
+- 표시는 상세를 열 수 있는 공고(위 공개 범위, 준비한 공고 포함)에만 붙인다. 탈퇴(profiles 삭제)와 공고 삭제 때 같이 지워진다(on delete cascade).
+- 표시를 바꾸거나 지우는 요청도 profiles 행을 for no key update로 잠근다. 피드 응답 하나의 목록과 숫자가 같은 표시를 본다.
+
 ### 캘린더 확장성
 
 - `calendar_events.provider`로 google / ics / device를 구분한다. 앱 전환 시 device만 추가하면 된다
@@ -736,6 +756,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | job_status | pending, running, succeeded, failed |
 | run_trigger → text + check (`agent_runs.trigger_type`) | batch_crawl, poster_upload, prepare, syllabus_upload, material_upload, material_translate, lms_sync, notify, eval |
 | notification_type → text + check (`notifications.type`, `user_settings.muted_notification_types`) | new_eligible, new_assignment, new_material, schedule_change, task_due, deadline_soon, profile_needed |
+| opportunity_mark → text + check (`opportunity_marks.mark`) | interested, not_interested |
 | report_reason | wrong_info, duplicate, expired, inappropriate |
 | lms_connection_status | active, error, disconnected |
 | lms_submission_state | unsubmitted, submitted, graded, pending_review |
@@ -748,7 +769,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 스키마 기준은 이 문서가 아니라 `supabase/migrations`의 SQL 파일이다. 이 장에는 DDL 본문을 두지 않는다.
 컬럼·제약을 확인할 때는 아래 파일을 보고, 바꿀 때는 기존 파일을 고치지 않고 새 마이그레이션을 더한다.
 
-적용 순서는 파일 이름(시각) 순이다: v07 → v08 → v09 → 판정 엔진 버전 → 원문 확인 이유 → 학과 seed → 학위과정. 새 마이그레이션은 이름 순으로 맨 뒤에 온다.
+적용 순서는 파일 이름(시각) 순이다: v07 → v08 → v09 → 판정 엔진 버전 → 원문 확인 이유 → 학과 seed → 학위과정 → 관심 표시. 새 마이그레이션은 이름 순으로 맨 뒤에 온다.
 
 | 순서 | 파일 | 내용 |
 | --- | --- | --- |
@@ -759,6 +780,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 5 | `supabase/migrations/20261010000000_opportunity_review_reasons.sql` | opportunities.review_reasons(원문 확인 필요 이유, S1-6b) |
 | 6 | `supabase/migrations/20261010000100_seed_departments.sql` | 학과 목록 seed(ERICA 48개) |
 | 7 | `supabase/migrations/20261012000000_degree_program.sql` | profiles.degree_program(학위과정), requirements.field·eligibility_results.missing_fields 제약에 degree_program 추가 |
+| 8 | `supabase/migrations/20261013000000_opportunity_marks.sql` | opportunity_marks(관심·관심 없음 표시, F-45), opportunity_id 인덱스, RLS 본인 행 읽기 |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -775,7 +797,7 @@ Storage는 SQL로 만들지 않는다. 대시보드에서 버킷을 비공개로
 
 | 테이블 | 읽기 (로그인 사용자) | 쓰기 |
 | --- | --- | --- |
-| profiles, push_subscriptions, lms_courses, lms_assignments, files, opportunity_reports, eligibility_results, syllabi, syllabus_items, prep_plans, planner_tasks, calendar_events, notifications, materials, material_sections, user_settings, opportunity_views | 본인 행만 | 백엔드만 |
+| profiles, push_subscriptions, lms_courses, lms_assignments, files, opportunity_reports, eligibility_results, syllabi, syllabus_items, prep_plans, planner_tasks, calendar_events, notifications, materials, material_sections, user_settings, opportunity_views, opportunity_marks | 본인 행만 | 백엔드만 |
 | lms_module_items, lms_announcements | 그 과목 수강생만 (분반 한정 공지는 제외) | 백엔드만 |
 | opportunities | 공개 범위 규칙(5장) | 백엔드만 |
 | requirements, opportunity_documents, opportunity_attachments | 공고를 볼 수 있으면 | 백엔드만 |
@@ -829,7 +851,7 @@ where e.user_id = :uid
         where c.user_id = e.user_id and c.canvas_course_id = o.visible_canvas_course_id));
 ```
 
-API(GET /opportunities의 counts)는 이 기준에 v0.9 공개 범위(포스터는 올린 본인만, 과목 공지 공고는 is_active인 수강 과목만)를 더하고, 요건 추출에 실패한 공고를 확인 필요(needs_review)로 센다.
+API(GET /opportunities의 counts)는 이 기준에 v0.9 공개 범위(포스터는 올린 본인만, 과목 공지 공고는 is_active인 수강 과목만)를 더하고, 요건 추출에 실패한 공고를 확인 필요(needs_review)로 센다. 관심 없음(F-45)으로 표시한 공고는 세지 않는다(`opportunity_marks`를 left join해 `mark = 'not_interested'`인 공고를 뺀다).
 
 ```sql
 -- 과목 카드 새 자료 수
@@ -845,6 +867,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-10-13): opportunity_marks(관심·관심 없음 표시, F-45)
 - v0.9 보강 (2026-10-13): 청년정책(온통청년) 행의 값, 스키마 변경 없음
 - v0.9 보강 (2026-10-12): profiles.degree_program(학위과정), 요건 항목 degree_program
 - v0.9 보완 (2026-10-09): content_hash 정의, 추출 실패 처리, Vision 첨부, 학교 공지(A안) 설명

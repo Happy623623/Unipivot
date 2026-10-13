@@ -15,6 +15,9 @@
   한 번, 그리고 프로필·요건·엔진 버전이 바뀌면 다시 시도한다).
 - 요건을 추출했는데 판정이 없는 공고(이 요청이 판정한 뒤에 들어온 공고)는 이번 응답에서 뺀다.
 - 공개 범위: 포스터는 올린 본인만, 과목 공지 공고는 수강 중인 과목만, 나머지는 로그인 사용자 모두.
+- 관심 표시(F-45, opportunity_marks): 관심 없음 공고는 피드(include_not_interested가 아니면)와 홈 요약
+  숫자에서 뺀다. 표시는 상세와 같은 공개 범위의 공고에만 붙인다. 판정은 표시와 상관없이 한다. 표시를
+  바꿀 때도 profiles 행을 잠가, 피드 응답 하나의 목록과 숫자가 다른 표시를 보지 않게 한다.
 - 상세(S1-6)는 같은 잠금 아래에서 그 공고를 늘 다시 판정해 저장하고 조회 기록을 남긴다. 활성·마감
   공고는 공개 범위 안이면 보이고(피드의 include_expired와 같은 범위), 준비한 공고는 숨김·병합·수강
   종료가 되어도 본인에게 보인다. 그 밖(숨김·병합·과목 비공개·남의 포스터)은 보이지 않는다(404).
@@ -105,6 +108,8 @@ _VISIBLE = (
     " and (o.visible_canvas_course_id is null or c.id is not null)"
 )
 _RESULT_JOIN = " left join eligibility_results e on e.user_id = %(uid)s and e.opportunity_id = o.id"
+_MARK_JOIN = " left join opportunity_marks m on m.user_id = %(uid)s and m.opportunity_id = o.id"
+_NOT_DISMISSED = " (m.mark is null or m.mark <> 'not_interested')"  # 관심 없음 공고는 뺀다
 # 판정 결과를 쓰는 행: 요건 추출에 성공했고 결과가 있다. 요건 추출에 실패한 공고는 판정 불가로 보인다
 _JUDGED = "(o.extraction_run_id is not null and e.user_id is not null)"
 # 응답에 넣는 행. 요건을 추출했는데 판정이 없으면 이 요청이 판정한 뒤에 들어온 공고라 다음 요청에 보인다
@@ -138,12 +143,15 @@ _COUNTS = (
     " from opportunities o"
     + _COURSE_JOIN
     + _RESULT_JOIN
+    + _MARK_JOIN
     + " where"
     + _ACTIVE
     + " and"
     + _VISIBLE
     + " and"
     + _SHOWN
+    + " and"
+    + _NOT_DISMISSED
     + ")"
     " select count(*) filter (where status = 'eligible') as eligible,"
     " count(*) filter (where status = 'eligible' and created_at >= %(new_since)s and unseen)"
@@ -167,6 +175,8 @@ _REQUIREMENTS_JSON = (
     " from requirements r where r.opportunity_id = o.id), '[]'::jsonb)"
 )
 _PREP_JOIN = " left join prep_plans p on p.user_id = %(uid)s and p.opportunity_id = o.id"
+# 상세를 열 수 있는 공고: 준비한 공고는 상태와 상관없이 본인에게, 그 밖은 활성·마감 공고 중 공개 범위 안
+_OPENABLE = " (p.id is not null or (o.status in ('active', 'expired') and" + _VISIBLE + "))"
 # 상세 한 건: 공고·요건·서류(내 준비 할 일)·첨부·처리 과정·캘린더를 한 문장으로 읽는다
 _DETAIL = (
     "select o.id, o.title, o.organizer, o.category::text as category,"
@@ -210,14 +220,26 @@ _DETAIL = (
     " 'error', s.output->>'error' is not null, 'accepted', s.output->'accepted',"
     " 'forced', s.output->'forced')"
     " order by s.seq, s.id)"
-    " from tool_calls s where s.run_id = o.extraction_run_id), '[]'::jsonb) as steps"
-    " from opportunities o"
+    " from tool_calls s where s.run_id = o.extraction_run_id), '[]'::jsonb) as steps,"
+    " (select m.mark from opportunity_marks m where m.user_id = %(uid)s"
+    " and m.opportunity_id = o.id) as my_mark"
+    " from opportunities o" + _COURSE_JOIN + _PREP_JOIN + " where o.id = %(oid)s and" + _OPENABLE
+)
+# 관심 표시(F-45). 다른 표시로 바꾸면 시각을 새로 쓰고, 같은 표시를 다시 고르면 처음 시각을 둔다
+_MARK_OPENABLE = (
+    "select 1 from opportunities o"
     + _COURSE_JOIN
     + _PREP_JOIN
-    # 준비한 공고는 상태와 상관없이 본인에게 보인다. 그 밖은 활성·마감 공고 중 공개 범위 안
-    + " where o.id = %(oid)s and (p.id is not null or (o.status in ('active', 'expired') and"
-    + _VISIBLE
-    + "))"
+    + " where o.id = %(oid)s and"
+    + _OPENABLE
+)
+_MARK_UPSERT = (
+    "insert into opportunity_marks (user_id, opportunity_id, mark, marked_at)"
+    " values (%(uid)s, %(oid)s, %(mark)s, %(now)s)"
+    " on conflict (user_id, opportunity_id) do update set mark = excluded.mark,"
+    " marked_at = case when opportunity_marks.mark = excluded.mark"
+    " then opportunity_marks.marked_at else excluded.marked_at end"
+    " returning marked_at"
 )
 # 조회 기록. 처음 연 시각은 그대로 두고 마지막 시각은 늦은 쪽을 남긴다. 시각을 고정한 실행(평가
 # 러너·테스트)이 지난 시각으로 열어도 기록이 거꾸로 가지 않는다
@@ -269,8 +291,8 @@ def _feed_sql(where: str, outer: str, order: str) -> str:
         " case when " + _JUDGED + " then e.status::text else 'undetermined' end as eff_status,"
         " case when " + _JUDGED + " then coalesce(e.missing_fields, '{}') else '{}' end"
         " as eff_missing,"
-        " e.reason_text"
-        " from opportunities o" + _COURSE_JOIN + _RESULT_JOIN + " where" + where + ")"
+        " e.reason_text, m.mark as my_mark"
+        " from opportunities o" + _COURSE_JOIN + _RESULT_JOIN + _MARK_JOIN + " where" + where + ")"
         " select * from feed" + outer + " order by " + order + " limit %(limit)s"
     )
 
@@ -290,6 +312,7 @@ class FeedQuery:
     source_types: tuple[str, ...] | None = None
     sort: Sort = "deadline"
     include_expired: bool = False
+    include_not_interested: bool = False  # 관심 없음 공고도 준다(F-45)
     limit: int = 20
     cursor: Cursor | None = None
 
@@ -304,6 +327,7 @@ class FeedQuery:
             _filter_key(self.categories, CATEGORIES),
             _filter_key(self.source_types, SOURCE_TYPES),
             str(self.include_expired),
+            str(self.include_not_interested),
         )
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
@@ -495,6 +519,42 @@ class OpportunityRepository:
                 prepare_run_id=_text(row["prepare_run_id"]),
             ),
             reported_by_me=row["reported_by_me"],
+            my_mark=row["my_mark"],
+        )
+
+    async def set_mark(
+        self,
+        user_id: str,
+        opportunity_id: str,
+        mark: str,
+        *,
+        now: datetime,
+        display_name: str | None = None,
+    ) -> datetime | None:
+        """관심·관심 없음 표시(F-45). 상세를 열 수 있는 공고에만 붙인다. 아니면 None.
+
+        공고마다 표시는 하나다. 다른 표시를 보내면 바꾼다. 프로필 행이 없으면(첫 요청) 만든다.
+        피드처럼 프로필 행을 잠근다: 피드 응답 하나의 목록(my_mark)과 숫자(counts)가 어긋나지 않는다.
+        """
+        await self._lock_profile(user_id, display_name)
+        params = {"uid": user_id, "oid": opportunity_id, "mark": mark, "now": now}
+        if await (await self.conn.execute(_MARK_OPENABLE, params)).fetchone() is None:
+            return None
+        row = await (await self.conn.execute(_MARK_UPSERT, params)).fetchone()
+        assert row is not None
+        return row["marked_at"]
+
+    async def clear_mark(self, user_id: str, opportunity_id: str) -> None:
+        """표시를 지운다. 없으면 아무것도 하지 않는다.
+
+        set_mark처럼 프로필 행을 잠근다. 프로필 행이 없으면 만들지 않는다(지울 표시도 없다).
+        """
+        await self.conn.execute(
+            "select 1 from profiles where id = %s for no key update", (user_id,)
+        )
+        await self.conn.execute(
+            "delete from opportunity_marks where user_id = %s and opportunity_id = %s",
+            (user_id, opportunity_id),
         )
 
     async def feed_page(self, user_id: str, query: FeedQuery, *, now: datetime) -> FeedPage:
@@ -505,6 +565,8 @@ class OpportunityRepository:
             "limit": query.limit + 1,
         }
         where = [_WITH_EXPIRED if query.include_expired else _ACTIVE, _VISIBLE, _SHOWN]
+        if not query.include_not_interested:
+            where.append(_NOT_DISMISSED)
         if query.categories:
             where.append(" o.category::text = any(%(categories)s)")
             params["categories"] = list(query.categories)
@@ -620,6 +682,7 @@ def _item(row: dict[str, Any], today: date) -> OpportunityItem:
         course_name=row["course_name"],
         prepared=row["prepared"],
         is_new=row["is_new"],
+        my_mark=row["my_mark"],
     )
 
 
