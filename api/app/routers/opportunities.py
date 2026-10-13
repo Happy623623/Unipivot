@@ -3,10 +3,11 @@ from dataclasses import replace
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 
 from app.auth import CurrentUserDep
 from app.clock import NowDep
+from app.eligibility import KST
 from app.errors import ApiError
 from app.repositories.opportunities import FeedQuery, OpportunityRepoDep, decode_cursor
 from app.schemas.opportunities import (
@@ -14,6 +15,8 @@ from app.schemas.opportunities import (
     ELIGIBILITY_STATUSES,
     SOURCE_TYPES,
     FeedResponse,
+    MarkRequest,
+    MarkResult,
     OpportunityDetail,
 )
 
@@ -49,14 +52,18 @@ async def read_feed(
     ] = None,
     sort: Literal["deadline", "recent"] = "deadline",
     include_expired: bool = False,
+    include_not_interested: Annotated[
+        bool, Query(description="관심 없음으로 표시한 공고도 준다(F-45). 홈 숨김 탭용")
+    ] = False,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
     cursor: Annotated[
         str | None, Query(description="앞 응답의 next_cursor. 정렬·필터가 같을 때만 쓴다")
     ] = None,
 ) -> FeedResponse:
-    """추천 피드(F-40). 홈은 eligibility=eligible,undetermined로 부르고, 지원 어려움 묶음은 따로 부른다.
+    """추천 피드(F-40). 홈은 eligibility 없이 모두 받아 화면에서 지원 어려움 묶음과 탭으로 나눈다.
 
-    읽기 전에 낡은 판정을 다시 계산한다. counts는 필터와 상관없이 활성 공고 전체 기준이다.
+    읽기 전에 낡은 판정을 다시 계산한다. counts는 필터와 상관없이 활성 공고 전체 기준이고, 관심 없음
+    공고는 세지 않는다. 관심 없음 공고는 include_not_interested일 때만 목록에 나온다.
     """
     errors: dict[str, str] = {}
     statuses = _values("eligibility", eligibility, (*ELIGIBILITY_STATUSES, "all"), errors)
@@ -66,6 +73,7 @@ async def read_feed(
         source_types=_values("source_type", source_type, SOURCE_TYPES, errors),
         sort=sort,
         include_expired=include_expired,
+        include_not_interested=include_not_interested,
         limit=limit,
     )
     if cursor:
@@ -100,3 +108,32 @@ async def read_opportunity(
     if detail is None:
         raise ApiError(404, "NOT_FOUND", "공고를 찾을 수 없어요.")
     return detail
+
+
+@router.put("/{opportunity_id}/mark", response_model=MarkResult)
+async def mark_opportunity(
+    opportunity_id: UUID,
+    body: MarkRequest,
+    user: CurrentUserDep,
+    repo: OpportunityRepoDep,
+    now: NowDep,
+) -> MarkResult:
+    """관심·관심 없음 표시(F-45). 공고마다 하나이고 다른 표시를 보내면 바꾼다.
+
+    상세를 열 수 있는 공고에만 붙인다. 그 밖은 404 NOT_FOUND다.
+    """
+    marked_at = await repo.set_mark(
+        user.id, str(opportunity_id), body.mark, now=now, display_name=user.name
+    )
+    if marked_at is None:
+        raise ApiError(404, "NOT_FOUND", "공고를 찾을 수 없어요.")
+    return MarkResult(mark=body.mark, marked_at=marked_at.astimezone(KST))
+
+
+@router.delete("/{opportunity_id}/mark", status_code=204, response_class=Response)
+async def unmark_opportunity(
+    opportunity_id: UUID, user: CurrentUserDep, repo: OpportunityRepoDep
+) -> Response:
+    """표시를 지운다(F-45). 표시가 없거나 보이지 않는 공고여도 204다(내 행만 지운다)."""
+    await repo.clear_mark(user.id, str(opportunity_id))
+    return Response(status_code=204)

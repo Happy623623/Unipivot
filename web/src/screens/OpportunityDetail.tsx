@@ -1,18 +1,21 @@
 import { useEffect, useState } from "react";
-import { errorMessage, getOpportunity } from "@/api/client";
+import { errorMessage, getOpportunity, setOpportunityMark } from "@/api/client";
 import Button from "@/components/Button";
 import AiProcessPanel from "@/components/AiProcessPanel";
 import Header from "@/components/Header";
 import Modal from "@/components/Modal";
 import OpportunityConditions from "@/components/OpportunityConditions";
 import OpportunityDocuments from "@/components/OpportunityDocuments";
+import OpportunityMarkButtons, { markError, markToast } from "@/components/OpportunityMarkButtons";
 import OpportunityPreparation from "@/components/OpportunityPreparation";
 import ProfileInputModal from "@/components/ProfileInputModal";
 import Skeleton from "@/components/Skeleton";
+import Toast from "@/components/Toast";
 import { getCategoryLabel } from "@/lib/format";
 import useAsyncData from "@/lib/useAsyncData";
+import useToast from "@/lib/useToast";
 import { webUrl } from "@/lib/webUrl";
-import type { OpportunityDetail as OpportunityDetailData, OpportunityStatus } from "@/types/api";
+import type { OpportunityDetail as OpportunityDetailData, OpportunityMark, OpportunityStatus } from "@/types/api";
 import type { Route } from "@/types/route";
 
 interface OpportunityDetailProps {
@@ -58,7 +61,11 @@ export default function OpportunityDetail({
   const [override, setOverride] = useState<OpportunityDetailData | null>(null);
   const [profileOpen, setProfileOpen] = useState(focus === "profile_input");
   const [posterOpen, setPosterOpen] = useState(false);
-  const [toast, setToast] = useState("");
+  // 관심·숨기기(F-45)는 공고 id와 함께 따로 둔다. 상세를 다시 받아도(정보 입력·서류 체크) 마지막으로 바꾼
+  // 표시를 쓰고, 저장 중에 다른 공고로 옮겨 가도 그 공고에 섞이지 않는다
+  const [markChange, setMarkChange] = useState<{ id: string; mark: OpportunityMark | null } | null>(null);
+  const [marking, setMarking] = useState<string | null>(null); // 표시를 저장하는 공고 id
+  const [toast, showToast] = useToast();
 
   useEffect(() => {
     setOverride(null);
@@ -80,10 +87,7 @@ export default function OpportunityDetail({
   // 포스터는 원본 이미지(포스터 업로드 W6부터)를 창으로, 나머지는 원문 주소를 새 탭으로 연다. 둘 다 없으면 원문 보기가 없다
   const originalHref = isPoster ? null : webUrl(detail.original_url);
   const openPoster = isPoster && detail.poster_url ? () => setPosterOpen(true) : null;
-  const showToast = (message: string) => {
-    setToast(message);
-    setTimeout(() => setToast(""), 2200);
-  };
+  const myMark = markChange?.id === detail.id ? markChange.mark : detail.my_mark;
 
   // 정보 입력을 저장한 뒤: 서버가 상세를 줄 때 지금 프로필로 다시 판정한다
   const reloadAfterProfile = async () => {
@@ -95,6 +99,21 @@ export default function OpportunityDetail({
     } catch {
       setProfileOpen(false);
       showToast("저장했어요. 화면을 새로 고치면 다시 판정한 결과가 보여요.");
+    }
+  };
+
+  // 숨겨도 상세는 그대로 보이고, 홈의 숨김 탭에서 다시 볼 수 있다
+  const changeMark = async (next: OpportunityMark | null) => {
+    const target = detail.id;
+    setMarking(target);
+    try {
+      await setOpportunityMark(target, next);
+      setMarkChange({ id: target, mark: next });
+      showToast(markToast(myMark, next));
+    } catch (error) {
+      showToast(markError(error));
+    } finally {
+      setMarking((current) => (current === target ? null : current));
     }
   };
 
@@ -111,11 +130,14 @@ export default function OpportunityDetail({
         title={detail.title}
         subtitle={subtitle}
         action={
-          originalHref ? (
-            <a href={originalHref} target="_blank" rel="noopener noreferrer" className="text-[13px] font-semibold text-[#4f6ef7]">원문 보기</a>
-          ) : openPoster ? (
-            <button type="button" onClick={openPoster} className="text-[13px] font-semibold text-[#4f6ef7]">원문 보기</button>
-          ) : null
+          <div className="flex shrink-0 items-center gap-2">
+            {originalHref ? (
+              <a href={originalHref} target="_blank" rel="noopener noreferrer" className="shrink-0 text-[13px] font-semibold text-[#4f6ef7]">원문 보기</a>
+            ) : openPoster ? (
+              <button type="button" onClick={openPoster} className="shrink-0 text-[13px] font-semibold text-[#4f6ef7]">원문 보기</button>
+            ) : null}
+            <OpportunityMarkButtons mark={myMark} pending={marking === detail.id} onChange={changeMark} />
+          </div>
         }
       />
       {detail.status !== "active" && (
@@ -152,11 +174,7 @@ export default function OpportunityDetail({
       <Modal open={posterOpen} title="포스터 원문" onClose={() => setPosterOpen(false)}>
         {detail.poster_url && <img src={detail.poster_url} alt={`${detail.title} 포스터`} className="mx-auto max-h-[70dvh] rounded-[14px]" />}
       </Modal>
-      {toast && (
-        <div className="fixed bottom-6 left-1/2 z-[90] -translate-x-1/2 rounded-[10px] bg-[#181a20] px-4 py-3 text-[13px] font-semibold text-white">
-          {toast}
-        </div>
-      )}
+      <Toast toast={toast} />
     </>
   );
 }

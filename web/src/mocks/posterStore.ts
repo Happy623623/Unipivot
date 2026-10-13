@@ -56,6 +56,7 @@ export function registerStoredPoster(
     course_name: null,
     prepared: false,
     is_new: true,
+    my_mark: null,
   };
   const detail: OpportunityDetail = {
     id,
@@ -110,6 +111,7 @@ export function registerStoredPoster(
       prepare_run_id: null,
     },
     reported_by_me: false,
+    my_mark: null,
   };
   addStoredOpportunity(item, detail);
   return detail;

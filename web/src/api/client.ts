@@ -17,8 +17,10 @@ import {
 import type {
   Category,
   FeedResponse,
+  MarkResult,
   OpportunityDetail,
   OpportunityItem,
+  OpportunityMark,
   PlannerResponse,
   PlannerTask,
   PosterExtractResult,
@@ -63,13 +65,14 @@ function feedCategories(category: FeedParams["category"]): Category[] | null {
 const FEED_PAGE_SIZE = 50; // API 최대값
 const FEED_MAX_PAGES = 20; // 1,000개까지 받는다. 더 있으면 next_cursor가 남는다
 
-// GET /opportunities. 홈은 판정 결과를 모두 받아 화면에서 묶는다(지원 어려움은 맨 아래 묶음).
-// 다음 쪽(next_cursor)이 없을 때까지 50개씩 이어 받는다. counts는 필터와 상관없는 전체 기준이다
+// GET /opportunities. 홈은 판정 결과를 모두 받아 화면에서 묶는다(지원 어려움은 맨 아래 묶음, 추천·관심·숨김 탭).
+// 숨김 탭을 위해 관심 없음 공고도 받고(include_not_interested), 다음 쪽(next_cursor)이 없을 때까지 50개씩
+// 이어 받는다. counts는 필터와 상관없는 전체 기준이고 관심 없음 공고는 세지 않는다
 export async function getFeed(params: FeedParams = {}): Promise<FeedResponse> {
   const categories = feedCategories(params.category);
   const sort = params.sort ?? "deadline";
-  if (USE_MOCKS) return mock.getFeed(categories, sort);
-  const query = new URLSearchParams({ sort, limit: String(FEED_PAGE_SIZE) });
+  if (USE_MOCKS) return mock.getFeed(categories, sort, true);
+  const query = new URLSearchParams({ sort, limit: String(FEED_PAGE_SIZE), include_not_interested: "true" });
   if (categories) query.set("category", categories.join(","));
   let page = await apiFetch<FeedResponse>(`/opportunities?${query}`);
   const items: OpportunityItem[] = [...page.items];
@@ -93,6 +96,14 @@ export async function getOpportunity(id: string): Promise<OpportunityDetail> {
     }
     throw error;
   }
+}
+
+// PUT·DELETE /opportunities/{id}/mark (F-45). 관심·관심 없음 표시를 바꾸고, null이면 지운다
+export async function setOpportunityMark(id: string, mark: OpportunityMark | null): Promise<void> {
+  if (USE_MOCKS) return mock.setOpportunityMark(id, mark);
+  const path = `/opportunities/${encodeURIComponent(id)}/mark`;
+  if (mark === null) await apiFetch<void>(path, { method: "DELETE" });
+  else await apiFetch<MarkResult>(path, { method: "PUT", body: JSON.stringify({ mark }) });
 }
 
 // 준비하기·서류 체크를 받을지. TODO(api): POST /opportunities/{id}/prepare·PATCH /planner/tasks가 생기면

@@ -136,6 +136,11 @@ class FakeOpportunityRepository:
         self.changed = 0
         self.details: dict[str, OpportunityDetail] = {}  # 공고 id → 상세. 없으면 404
         self.detail_calls: list[tuple[str, str, str | None]] = []  # (user_id, 공고 id, 이름)
+        self.openable: set[str] = set()  # 표시를 붙일 수 있는 공고 id. 없으면 404
+        self.marks: dict[tuple[str, str], tuple[str, datetime]] = {}  # (user, 공고) → (표시, 시각)
+        self.mark_calls: list[
+            tuple[str, str, str | None, str | None]
+        ] = []  # (user_id, 공고 id, 표시, 이름). 지우면 표시·이름이 None
         self.counts = FeedCounts(
             eligible=0,
             new_eligible=0,
@@ -175,3 +180,24 @@ class FakeOpportunityRepository:
     ) -> OpportunityDetail | None:
         self.detail_calls.append((user_id, opportunity_id, display_name))
         return self.details.get(opportunity_id)
+
+    async def set_mark(
+        self,
+        user_id: str,
+        opportunity_id: str,
+        mark: str,
+        *,
+        now: datetime,
+        display_name: str | None = None,
+    ) -> datetime | None:
+        self.mark_calls.append((user_id, opportunity_id, mark, display_name))
+        if opportunity_id not in self.openable:
+            return None
+        old = self.marks.get((user_id, opportunity_id))
+        at = old[1] if old and old[0] == mark else now
+        self.marks[(user_id, opportunity_id)] = (mark, at)
+        return at
+
+    async def clear_mark(self, user_id: str, opportunity_id: str) -> None:
+        self.mark_calls.append((user_id, opportunity_id, None, None))
+        self.marks.pop((user_id, opportunity_id), None)

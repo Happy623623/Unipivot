@@ -95,6 +95,14 @@ export interface FeedEligibility {
   summary: string;                       // 카드의 상태 사유 한 줄
   missing_fields: string[];              // 정보 입력창(F-03)에 띄울 요건 항목
 }
+// 내 표시(F-45): 관심, 관심 없음(숨김). 없으면 null
+export type OpportunityMark = "interested" | "not_interested";
+// PUT /opportunities/{id}/mark 응답. 같은 표시를 다시 보내면 처음 시각을 그대로 준다
+export interface MarkResult {
+  mark: OpportunityMark;
+  marked_at: string;                     // KST 오프셋(+09:00)
+}
+
 export interface OpportunityItem {
   id: string;
   title: string;
@@ -111,8 +119,9 @@ export interface OpportunityItem {
   course_name: string | null;            // 과목 공지에서 온 공고만
   prepared: boolean;
   is_new: boolean;
+  my_mark: OpportunityMark | null;
 }
-// 홈 요약 카드. 카테고리·판정 필터와 상관없이 지금 보이는 활성 공고 전체 기준이다
+// 홈 요약 카드. 카테고리·판정 필터와 상관없이 지금 보이는 활성 공고 전체 기준이다. 관심 없음 공고는 세지 않는다
 export interface FeedCounts {
   eligible: number; new_eligible: number;
   undetermined: number; missing_info: number; needs_review: number;
@@ -212,6 +221,7 @@ export interface OpportunityDetail {
   };
   process: { extraction: ProcessStep[]; evaluated_at: string | null; prepare_run_id: string | null };
   reported_by_me: boolean;               // 신고(P1) 전에는 늘 false
+  my_mark: OpportunityMark | null;
 }
 
 // GET /runs/{id}: 포스터 추출·준비하기 진행 표시

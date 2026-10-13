@@ -61,7 +61,8 @@ export default function Header({ title, subtitle, action }: HeaderProps) {
     <>
       <header className="flex items-center justify-between gap-6">
         <div className="min-w-0">
-          <div className="flex items-center gap-3">
+          {/* 좁은 화면에서 제목과 버튼이 한 줄에 다 들어가지 않으면 버튼을 다음 줄로 내린다 */}
+          <div className="flex items-center gap-3 max-[760px]:flex-wrap max-[760px]:gap-y-1">
             <h1 className="truncate text-[28px] font-bold leading-[1.45] text-[#181a20]">{title}</h1>
             {action}
           </div>

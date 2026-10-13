@@ -24,6 +24,8 @@
 >
 > v0.4 보강(10/13, 시·군·구 선택): 프로필 region_sigungu 값
 >
+> v0.4 보강(10/13, 관심 공고): PUT·DELETE /opportunities/{id}/mark, 피드 include_not_interested, my_mark, counts에서 관심 없음 공고 제외, 알림 규칙
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -113,6 +115,7 @@ sequenceDiagram
 | 내 정보 | `DELETE /me` | 탈퇴(모든 개인 데이터·토큰 삭제) | 7장 | P0 |
 | 공고 | `GET /opportunities` | 추천 피드 | F-40 | P0 |
 | 공고 | `GET /opportunities/{id}` | 공고 상세(조건별 판정표·서류·준비 상태) | F-41 | P0 |
+| 공고 | `PUT /opportunities/{id}/mark` · `DELETE /opportunities/{id}/mark` | 관심·관심 없음(숨기기) 표시와 지우기 | F-45 | P1 |
 | 공고 | `GET /opportunities/{id}/alternatives` | 대체 공고 | F-23 | P1 |
 | 공고 | `POST /opportunities/{id}/reports` | 신고 | F-17 | P1 |
 | 업로드 | `POST /files` | 파일 업로드 → `file_id` | F-13–F-15 | P0 |
@@ -313,6 +316,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 | `source_type` | ERD `source_type` 값, 쉼표로 여러 개 | 전체 |
 | `sort` | `deadline` \| `recent` | `deadline` |
 | `include_expired` | `true` \| `false` | `false` |
+| `include_not_interested` | `true` \| `false`. 관심 없음으로 표시한 공고도 준다(F-45) | `false` |
 | `limit`, `cursor` | 1–50 | 20 |
 
 서버는 `status = active`이고, `visible_canvas_course_id`가 없거나 사용자가 그 과목 수강생인 공고만 내려준다.
@@ -320,6 +324,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `eligibility`는 쉼표로 여러 값을 받는다. 홈은 eligibility 없이 50개씩 next_cursor가 없을 때까지(최대 1,000개) 받아 화면에서 지원 어려움을 맨 아래 묶음으로 나눈다. 묶음 개수가 칩(category)과 맞아야 해서 따로 부르지 않는다
 - `sort=deadline`은 마감일 없는 공고를 맨 뒤로 보낸다
 - `counts`는 카테고리 필터와 상관없이 전체 기준이다(ERD 집계 쿼리)
+- 관심 없음(F-45)으로 표시한 공고는 `include_not_interested=true`일 때만 목록에 나오고, counts에는 늘 넣지 않는다. 홈은 `include_not_interested=true`로 받아 추천 공고·관심·숨김 탭을 화면에서 나눈다
 
 ```json
 {
@@ -344,7 +349,8 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
       "needs_review": false,
       "uploaded_by_me": false,
       "course_name": null,
-      "prepared": false
+      "prepared": false,
+      "my_mark": "interested"
     },
     {
       "id": "uuid",
@@ -375,12 +381,14 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `recommend_reason`(F-24, P1)은 MVP 초기엔 `null`이어도 된다
 - `eligibility.display_status`: `eligible` \| `missing_info` \| `needs_review` \| `ineligible`. 화면 라벨(지원 가능·정보 필요·원문 확인 필요·지원 어려움)에 1:1로 대응한다
 - `easy_summary`는 카드 설명 한 줄, `is_new`는 등록 7일 이내이고 아직 상세를 열지 않은 지원 가능 공고다
+- `my_mark`(F-45): 내 표시. `interested`(관심) \| `not_interested`(관심 없음, 화면 이름 "숨기기") \| null(표시 없음)
 - 응답 전에 그 사용자의 낡은 판정을 다시 계산한다(기준은 ERD 5장).
 - 요건 추출에 실패한 공고의 eligibility는 status undetermined, display_status needs_review, summary "원문 확인 필요: 자격 요건을 정리하지 못함", missing_fields []다. 판정 엔진이 오류를 낸 공고는 summary가 "원문 확인 필요: 조건을 판정하지 못함"이다.
-- counts는 eligibility·category·source_type·include_expired와 상관없이 지금 보이는 활성 공고(마감 전) 전체 기준이다.
+- counts는 eligibility·category·source_type·include_expired·include_not_interested와 상관없이 지금 보이는 활성 공고(마감 전) 전체 기준이고, 관심 없음 공고는 세지 않는다.
 - sort=recent는 등록 최신순이다. 두 정렬 모두 값이 없는 공고가 맨 뒤이고, 값이 같으면 id 순이다.
 - include_expired=true면 마감이 지났거나 expired인 공고도 준다.
 - cursor는 같은 정렬·필터로 다음 페이지를 부를 때만 쓴다. 정렬·필터를 바꾸면 처음부터 다시 부른다. 다르거나 망가진 cursor는 422 VALIDATION_FAILED(details.fields.cursor)다.
+- include_not_interested도 cursor 범위에 들어간다. 값을 바꾸면 처음부터 다시 부른다.
 - 알 수 없는 eligibility·category·source_type 값은 422 VALIDATION_FAILED이고 details.fields에 파라미터별로 한 번에 담는다. eligibility에 all이 섞이면 거르지 않는다.
 - 판정한 뒤 같은 요청 안에서 들어온 공고는 다음 요청부터 보인다.
 
@@ -450,7 +458,8 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
     "evaluated_at": "2026-10-05T09:12:00+09:00",
     "prepare_run_id": null
   },
-  "reported_by_me": false
+  "reported_by_me": false,
+  "my_mark": null
 }
 ```
 
@@ -470,6 +479,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `status`: 공고 상태다. 준비한 공고가 마감·숨김이 되면 화면 위에 "마감된 공고예요" 같은 안내를 띄운다
 - `attachments`: 학교 공지의 첨부다. `extract_status`는 `succeeded` · `failed` · `skipped`(에이전트가 읽지 않음) 중 하나다. 실패한 첨부가 있으면 `needs_review`가 true다
 - `reported_by_me`는 P1이다(신고와 함께)
+- `my_mark`(F-45): 피드와 같은 내 표시. 관심 없음 공고도 상세는 그대로 열린다
 - `missing_fields`는 정보 입력창(F-03)에 띄울 항목이다
 - 서류의 `task_id`·`is_done`은 준비하기 전에는 null이고, 체크는 기존 `PATCH /planner/tasks/{task_id}`로 한다
 - `poster_url`은 포스터 공고의 원본 이미지(Storage 서명 URL, 5분), `course_name`은 과목 공지에서 온 공고의 과목명이다
@@ -483,6 +493,25 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - 형식이 틀린 id는 422 VALIDATION_FAILED(details.fields.opportunity_id)다.
 - 상세를 열면 opportunity_views를 upsert한다. first_viewed_at은 그대로 두고 last_viewed_at은 늦은 쪽을 남긴다. 404면 남기지 않는다.
 - review_reasons(string[]): needs_review를 켠 이유(요건 추출·공지 가져오기)다. 주소를 지우고 공백을 한 칸으로 줄인 한 줄(최대 200자)씩이고, 10줄이 넘으면 앞 10줄 뒤에 '외 N건'이 온다. 첨부는 파일 이름으로 쓴다. 이유가 없거나 S1-6b 전에 추출한 공고는 []다. 화면은 처리 과정(F-42)에 일반 텍스트로 보여 준다(자동 링크·마크다운 없이). 문구는 학생이 읽는 쉬운 말이다(상한·항목 키 이름 없음). 모델이 쓴 이유는 'AI 메모: '로 시작한다.
+
+### `PUT /opportunities/{id}/mark` · `DELETE /opportunities/{id}/mark` (P1)
+
+관심·관심 없음 표시(F-45). 공고마다 내 표시는 하나다.
+
+```json
+// PUT Request
+{ "mark": "not_interested" }
+
+// Response 200
+{ "mark": "not_interested", "marked_at": "2026-10-13T21:30:00+09:00" }
+```
+
+- `mark`: `interested`(관심) \| `not_interested`(관심 없음, 화면 이름 "숨기기"). 다른 표시를 보내면 바꾼다
+- `marked_at`: 표시가 바뀐 시각(KST). 같은 표시를 다시 보내면 처음 시각을 그대로 준다
+- 상세를 열 수 있는 공고(공개 범위 안의 활성·마감 공고, 내가 준비한 공고)에만 붙인다. 그 밖과 없는 공고는 `404 NOT_FOUND`다
+- `DELETE`는 표시를 지우고 `204`다. 표시가 없거나 볼 수 없는 공고여도 `204`다
+- 형식이 틀린 id나 mark는 `422 VALIDATION_FAILED`(details.fields의 opportunity_id·mark)다
+- 관심 없음 공고는 피드(include_not_interested가 아니면)·counts·공고 알림(10장)에서 빠진다. 판정은 표시와 상관없이 한다
 
 ### `GET /opportunities/{id}/alternatives` (P1)
 
@@ -966,6 +995,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 
 - 알림 행은 `(user_id, dedupe_key)`로 upsert한다(키 형식은 ERD 5장). 같은 공고의 마감 임박 알림은 D-3과 D-1에 한 번씩이다
 - 공고 마감이 바뀌면 같은 키의 pending 알림에서 시각만 고친다. 과제를 제출했거나 준비를 취소하면 pending 알림을 지운다
+- 관심 없음(F-45)으로 표시한 공고는 공고 알림(new_eligible, 공고 deadline_soon, profile_needed)을 만들지 않고, 보내기 전에 다시 보고 표시가 있으면 건너뛴다(F-33 배치를 만들 때 적용)
 
 ### `GET /notifications`
 
@@ -1150,8 +1180,9 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | --- | --- |
 | `Me` | `income_info_consented` 추가 |
 | `Profile` | `is_international` 추가, `department`는 목록에서 고르는 값, `degree_program` 추가(10/12) |
-| `OpportunityItem` | `uploader_masked` → `uploaded_by_me` |
-| `OpportunityDetail` | `status`, `uploaded_by_me`, `attachments` 추가. `eligibility`에 `basis_date`, `requirements_version`, `clauses` 추가. review_reasons 추가(S1-6b) |
+| `OpportunityItem` | `uploader_masked` → `uploaded_by_me`. `my_mark` 추가(F-45) |
+| `OpportunityDetail` | `status`, `uploaded_by_me`, `attachments` 추가. `eligibility`에 `basis_date`, `requirements_version`, `clauses` 추가. review_reasons 추가(S1-6b). `my_mark` 추가(F-45) |
+| `OpportunityMark` · `MarkResult` | 새 타입(F-45) |
 | `Condition` | `clause_no`, `unknown_reason` 추가 |
 | `ProcessStep` · `Run.steps` | `chosen_by`, `note` 추가 |
 | `PrepareResult` | `calendar_error` 추가 |
@@ -1165,3 +1196,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 > 10/12 반영: Profile.degree_program, 온보딩·설정의 학위과정 칸, 판정표의 석박사통합 안내.
 
 > 10/13 반영: 온보딩·설정·정보 입력의 거주 시·군·구 선택 상자, 설정 요약의 다시 고르기 표시, 설정 저장 버튼 옆 첫 오류.
+
+> 10/13 반영: OpportunityItem·OpportunityDetail의 my_mark, OpportunityMark·MarkResult 타입, 홈의 추천 공고·관심·숨김 탭, 카드·상세의 관심·숨기기 버튼.
