@@ -20,6 +20,8 @@
 >
 > v0.4 보강(10/13, 로그인 진단): 인증 시계 차이 60초, 서버가 로그인을 확인할 수 없으면 503 AUTH_UNAVAILABLE
 >
+> v0.4 보강(10/13, 청년정책): 처리 과정 단계 이름 2개, 청년정책 판정 기준일, fetch-policies는 배포 때
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -461,7 +463,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
   - `basis_mismatch`: 지역 기준·소득 기준·평점 만점이 달라 비교할 수 없음. 석사·박사 중 하나만 적은 학위과정 조건을 석박사통합 학생에게 판정할 때도 이 값이다(묻지 않는다)
   - `null`: 결과가 충족이나 불충족임
 - `missing_fields`에는 결과가 "모름"인 묶음에서 `missing_profile`인 조건의 항목만 넣는다. 이미 충족한 묶음의 빈 항목은 묻지 않는다(위 예에서는 묶음 2의 학년)
-- `basis_date`: 만 나이·학년·재학 상태를 따진 기준일
+- `basis_date`: 만 나이·학년·재학 상태를 따진 기준일. 공고 기준일 → 마감일 → 판정하는 날이다. 청년정책은 신청할 수 있는 첫날과 마감일 중 결과가 나은 날이고, 신청 기간이 끝났으면 마감일이다(판정엔진_규칙.md 8장)
 - `status`: 공고 상태다. 준비한 공고가 마감·숨김이 되면 화면 위에 "마감된 공고예요" 같은 안내를 띄운다
 - `attachments`: 학교 공지의 첨부다. `extract_status`는 `succeeded` · `failed` · `skipped`(에이전트가 읽지 않음) 중 하나다. 실패한 첨부가 있으면 `needs_review`가 true다
 - `reported_by_me`는 P1이다(신고와 함께)
@@ -1074,7 +1076,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - `note`: 모델이 고른 이유 한 줄이다. 공고 원문에서 온 내용만 담고 프로필 값은 담지 않는다
 - 토큰 수·비용은 사용자 응답에 넣지 않고 내부 지표로만 쓴다
 - 실패 시 `status: "failed"`, `error: { "code": "LLM_TIMEOUT", "message": "..." }`
-- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다.
+- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다.
 - 앞에서 읽은 곳의 뒷부분을 읽은 호출(시작 위치가 0보다 큼, Vision은 PDF 2쪽부터)은 "이어 읽기"다(예: 첨부 '파일명' 이어 읽기).
 - 도구가 오류를 돌려줬거나 제출이 거절된 호출은 status failed다. tool_calls.status에는 succeeded로 남는다.
 - note는 주소를 지우고 공백을 한 칸으로 줄인 한 줄이고 최대 200자다.
@@ -1086,7 +1088,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | 경로 | 호출 주체 | 설명 |
 | --- | --- | --- |
 | `POST /internal/jobs/crawl-notices` | 스케줄러 | 학교 공지 수집 → 요건 추출 → 전체 판정 |
-| `POST /internal/jobs/fetch-policies` | 스케줄러 | 온통청년 정책 수집 (담당 Dev 2) |
+| `POST /internal/jobs/fetch-policies` | 스케줄러 | 온통청년 정책 수집 (담당 Dev 2). 지금은 사람이 `python -m app.youth.cli fetch`로 돌린다. 배포 때 같은 수집 함수(`app/youth/importer.collect`)를 부른다 |
 | `POST /internal/jobs/crawl-contests` | 스케줄러 | 공모전 수집 (P1) |
 | `POST /internal/jobs/lms-sync` | 스케줄러(30분) | LMS 연결된 전체 사용자 동기화 |
 | `POST /internal/jobs/send-notifications` | 스케줄러(5분) | 예약된 알림 발송 |
