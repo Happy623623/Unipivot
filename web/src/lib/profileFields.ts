@@ -1,6 +1,6 @@
-import type { Department, Profile } from "@/types/api";
+import type { DegreeProgram, Department, Profile } from "@/types/api";
 
-// 판정용 프로필 17개 항목을 온보딩 4단계와 설정 화면이 함께 쓴다 (ERD profiles 컬럼과 1:1)
+// 판정용 프로필 18개 항목을 온보딩 4단계와 설정 화면이 함께 쓴다 (ERD profiles 컬럼과 1:1)
 export type ProfileKey = keyof Profile;
 export type ProfileFormValues = Record<ProfileKey, string>;
 export type ProfileErrors = Partial<Record<ProfileKey, string>>;
@@ -34,6 +34,14 @@ const SIDO = [
   "전북특별자치도", "전라남도", "경상북도", "경상남도", "제주특별자치도",
 ];
 
+// 학위과정 이름 (서버 판정표의 학위과정 문구와 같다)
+export const DEGREE_LABELS: Record<DegreeProgram, string> = {
+  bachelor: "학부",
+  master: "석사",
+  doctoral: "박사",
+  integrated: "석박사통합",
+};
+
 // 소득·수급 3항목은 선택 동의(소득·수급 정보)를 해야 저장된다 (동의 없이 값을 보내면 403)
 export function withoutIncome(profile: Profile): Profile {
   return { ...profile, income_bracket: null, median_income_pct: null, welfare_status: null };
@@ -45,7 +53,7 @@ export function buildProfileSteps(departments: Department[]): ProfileStepConfig[
     {
       id: "academic",
       title: "학적",
-      description: "학과·학년·학적 상태 조건을 판정해요.",
+      description: "학과·학위과정·학년·학적 상태 조건을 판정해요.",
       fields: [
         {
           key: "department",
@@ -53,6 +61,13 @@ export function buildProfileSteps(departments: Department[]): ProfileStepConfig[
           kind: "select",
           options: departments.map((department) => ({ value: department.name, label: department.name })),
           hint: departments.length === 0 ? "학과 목록을 불러오지 못했어요. 나중에 설정에서 고를 수 있어요." : undefined,
+        },
+        {
+          key: "degree_program",
+          label: "학위과정",
+          kind: "select",
+          options: Object.entries(DEGREE_LABELS).map(([value, label]) => ({ value, label })),
+          hint: "지금 다니는 과정이에요. 졸업했으면 마지막으로 다닌 과정을 골라요.",
         },
         {
           key: "grade",

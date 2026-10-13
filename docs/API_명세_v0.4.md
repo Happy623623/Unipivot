@@ -16,6 +16,8 @@
 >
 > v0.4 보강(10/12, 공고 화면 실제 연결): 홈 피드 호출 방식, 포스터 카드 표시, profile_prompt_submitted 미결
 >
+> v0.4 보강(10/12, 학위과정): 프로필 degree_program, profile_completion.total 17, basis_mismatch에 석박사통합
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -176,7 +178,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
   "hyin_verified": false,
   "calendar_connected": false,
   "lms": { "status": "active", "last_synced_at": "2026-10-01T10:30:00+09:00" },
-  "profile_completion": { "filled": 6, "total": 16 },
+  "profile_completion": { "filled": 6, "total": 17 },
   "consented": true,
   "income_info_consented": false,
   "unread_notifications": 3
@@ -186,7 +188,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `consented`: 약관·개인정보 동의를 마쳤는지. false면 프론트가 온보딩 동의 단계로 보낸다
 - `unread_notifications`: 헤더 알림 배지 숫자
 - `income_info_consented`: 소득·수급 정보 선택 동의를 했는지. false면 소득 입력란을 열지 않는다
-- `profile_completion.total`에 유학생 여부가 더해져 15에서 16이 된다
+- `profile_completion.total`은 17이다. 유학생 여부로 16, 학위과정으로 17이 됐다. 평점 만점은 세지 않는다
 - `calendar_connected`는 로그인만 한 상태에서는 false다(증분 승인)
 - `hyin_verified`는 F-05가 P2라 MVP에서는 늘 false다
 
@@ -225,7 +227,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 // Response 200
 {
   "profile": {
-    "department": "인공지능학과", "grade": 3, "enrollment_status": "enrolled",
+    "department": "인공지능학과", "degree_program": "bachelor", "grade": 3, "enrollment_status": "enrolled",
     "semesters_completed": 5,
     "credits_total": 98.0, "credits_last_semester": 18.0,
     "gpa_total": 3.71, "gpa_last_semester": 3.62, "gpa_scale": 4.5,
@@ -241,6 +243,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 
 - `department`에는 `GET /meta/departments`의 이름만 쓸 수 있다. 없는 이름은 `422 VALIDATION_FAILED`(`details.fields.department`)
 - `is_international`을 추가한다(boolean, null이면 미입력)
+- `degree_program`(학위과정)을 추가한다. `bachelor` 학부, `master` 석사, `doctoral` 박사, `integrated` 석박사통합이고 null이면 미입력이다. 지금 다니는 과정이고, 졸업했으면 마지막으로 다닌 과정이다. 다른 값은 `422 VALIDATION_FAILED`(`details.fields.degree_program`)
 - 소득 3항목은 선택 동의 전이면 `403 CONSENT_REQUIRED`(`details.consent = "income_info"`)
 - 거주지역(`region_sido`, `region_sigungu`)은 주민등록 주소 기준이다. 입력 화면에 그렇게 적는다
 - 보낸 항목 중 값이 실제로 바뀐 것만 저장하고, 바뀐 값이 있으면 그 사용자의 활성 공고를 모두 다시 판정한다. rejudged.changed는 판정이 있던 공고 중 라벨(display_status)이 바뀐 수이고, eligible·undetermined·ineligible은 GET /opportunities의 counts와 같은 기준이다.
@@ -453,7 +456,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
   - `missing_profile`: 프로필 값이 없음. "정보 필요"로 이어진다
   - `ambiguous`: 요건이 모호함
   - `unsupported_field`: 프로필로 판정할 수 없는 조건
-  - `basis_mismatch`: 지역 기준·소득 기준·평점 만점이 달라 비교할 수 없음
+  - `basis_mismatch`: 지역 기준·소득 기준·평점 만점이 달라 비교할 수 없음. 석사·박사 중 하나만 적은 학위과정 조건을 석박사통합 학생에게 판정할 때도 이 값이다(묻지 않는다)
   - `null`: 결과가 충족이나 불충족임
 - `missing_fields`에는 결과가 "모름"인 묶음에서 `missing_profile`인 조건의 항목만 넣는다. 이미 충족한 묶음의 빈 항목은 묻지 않는다(위 예에서는 묶음 2의 학년)
 - `basis_date`: 만 나이·학년·재학 상태를 따진 기준일
@@ -1138,7 +1141,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | 위치 | 바꿀 것 |
 | --- | --- |
 | `Me` | `income_info_consented` 추가 |
-| `Profile` | `is_international` 추가, `department`는 목록에서 고르는 값 |
+| `Profile` | `is_international` 추가, `department`는 목록에서 고르는 값, `degree_program` 추가(10/12) |
 | `OpportunityItem` | `uploader_masked` → `uploaded_by_me` |
 | `OpportunityDetail` | `status`, `uploaded_by_me`, `attachments` 추가. `eligibility`에 `basis_date`, `requirements_version`, `clauses` 추가. review_reasons 추가(S1-6b) |
 | `Condition` | `clause_no`, `unknown_reason` 추가 |
@@ -1150,3 +1153,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 > 10/11 반영(docs/계정API연결_구현.md): 설정의 HY-in 숨김과 캘린더 연결.
 
 > 10/12 반영(docs/공고API연결_구현.md): OpportunityItem·OpportunityDetail·Condition·ProcessStep·Run.steps 타입, 판정표 묶음·판정 기준일, 카드·상세의 업로더 표시와 신고 버튼 숨김.
+
+> 10/12 반영(docs/학위과정_구현.md): Profile.degree_program, 온보딩·설정의 학위과정 칸, 판정표의 석박사통합 안내.

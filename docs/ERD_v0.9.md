@@ -15,6 +15,8 @@
 > v0.9 보강(10/10): 학과 목록 seed(ERICA 48개)
 >
 > v0.9 보강(10/11, S1-4 후속): tool_calls.output의 forced(스키마 변경 없음)
+>
+> v0.9 보강(10/12): profiles.degree_program(학위과정), 요건 항목 degree_program
 
 ---
 
@@ -116,6 +118,7 @@ erDiagram
         text department FK "departments.name"
         smallint grade
         enum enrollment_status
+        text degree_program "bachelor, master, doctoral, integrated"
         numeric credits_total
         numeric credits_last_semester
         numeric gpa_total
@@ -610,6 +613,12 @@ erDiagram
 - 학과를 지우거나 이름을 바꾸는 마이그레이션은 profiles.department FK(on delete set null, on update cascade)로 프로필이 바뀌므로 같은 파일에서 delete from eligibility_results를 함께 실행한다. 판정은 다음 피드 요청에서 다시 계산된다.
 - 학과 목록은 supabase/migrations/20261010000100_seed_departments.sql로 넣는다. 한양대학교 대학/학과 소개의 ERICA 단과대학 10곳, 학과·학부 48개(2026-10 확인)이고 전공·융합전공은 넣지 않는다. 계열은 교육부 학과 분류의 대계열(공학·자연·의약·인문·사회·예체능)이고 LIONS자율전공학부만 '자율전공'이다. 학과 목록을 바꾸는 마이그레이션은 같은 파일에서 eligibility_results를 비운다.
 
+### 학위과정
+
+- `profiles.degree_program`은 지금 다니는 과정이고, 졸업했으면 마지막으로 다닌 과정이다. 값 목록은 text + check(`profiles_degree_program_chk`)로 둔다. null이면 미입력이다.
+- 학적 상태(`enrollment_status`)와 따로 둔다. "석사 재학(휴학) 이상"은 학위과정 조건과 학적 조건 두 묶음으로 저장한다.
+- 요건 항목 `degree_program`의 판정(석박사통합 포함)은 `docs/판정엔진_규칙.md` 4-6을 따른다. 마이그레이션은 `supabase/migrations/20261012000000_degree_program.sql`이다.
+
 ### 소득·수급 동의
 
 - `income_info_agreed_at`이 null이면 `income_bracket`·`median_income_pct`·`welfare_status`가 모두 null이어야 한다(DB 제약). 동의를 철회할 때는 동의 시각과 세 값을 한 번에 비운다.
@@ -702,11 +711,12 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | source_type | school_notice, youth_policy, contest, poster, lms_announcement |
 | opportunity_category | scholarship, school_program, youth_policy, contest, activity, research, exam, etc |
 | opportunity_status | active, hidden, merged, expired |
-| req_field → text + check (`requirements.field`, `eligibility_results.missing_fields`) | department, grade, enrollment_status, semesters_completed, credits_total, credits_last_semester, gpa_total, gpa_last_semester, age, region, income_bracket, median_income_pct, welfare_status, **is_international**, other (`missing_fields`에는 other 없음) |
+| req_field → text + check (`requirements.field`, `eligibility_results.missing_fields`) | department, grade, enrollment_status, semesters_completed, credits_total, credits_last_semester, gpa_total, gpa_last_semester, age, region, income_bracket, median_income_pct, welfare_status, is_international, **degree_program**, other (`missing_fields`에는 other 없음) |
 | welfare_status | none, near_poverty, basic_livelihood |
 | req_operator | eq, neq, in, not_in, gte, lte, between |
 | eligibility_status | eligible, ineligible, undetermined |
 | enrollment_status | enrolled, on_leave, deferred_graduation, graduated |
+| degree_program → text + check (`profiles.degree_program`) | bachelor, master, doctoral, integrated |
 | file_kind | poster, syllabus, lecture_material |
 | file_origin | upload, lms_attachment |
 | task_source | prep_plan, syllabus, lms_assignment, lms_announcement, manual |
@@ -727,7 +737,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 스키마 기준은 이 문서가 아니라 `supabase/migrations`의 SQL 파일이다. 이 장에는 DDL 본문을 두지 않는다.
 컬럼·제약을 확인할 때는 아래 파일을 보고, 바꿀 때는 기존 파일을 고치지 않고 새 마이그레이션을 더한다.
 
-적용 순서는 파일 이름(시각) 순이다: v07 → v08 → v09 → 판정 엔진 버전 → 원문 확인 이유 → 학과 seed. 새 마이그레이션은 이름 순으로 맨 뒤에 온다.
+적용 순서는 파일 이름(시각) 순이다: v07 → v08 → v09 → 판정 엔진 버전 → 원문 확인 이유 → 학과 seed → 학위과정. 새 마이그레이션은 이름 순으로 맨 뒤에 온다.
 
 | 순서 | 파일 | 내용 |
 | --- | --- | --- |
@@ -737,6 +747,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 4 | `supabase/migrations/20261009000000_eligibility_engine_version.sql` | eligibility_results.engine_version 추가 (S1-5) |
 | 5 | `supabase/migrations/20261010000000_opportunity_review_reasons.sql` | opportunities.review_reasons(원문 확인 필요 이유, S1-6b) |
 | 6 | `supabase/migrations/20261010000100_seed_departments.sql` | 학과 목록 seed(ERICA 48개) |
+| 7 | `supabase/migrations/20261012000000_degree_program.sql` | profiles.degree_program(학위과정), requirements.field·eligibility_results.missing_fields 제약에 degree_program 추가 |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -823,6 +834,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-10-12): profiles.degree_program(학위과정), 요건 항목 degree_program
 - v0.9 보완 (2026-10-09): content_hash 정의, 추출 실패 처리, Vision 첨부, 학교 공지(A안) 설명
 - v0.9 (2026-10-06): 요건 묶음(clause_no)·비교 기준(basis), 판정 기준일·변경 감지·요건 버전, 첨부·학과·사용 이벤트 테이블, 소득 선택 동의 제약, 알림 dedupe_key, 플래너·파일·캘린더 제약, enum 3개 → text + check, FK 인덱스, 전 테이블 RLS
 - v0.8: 알림함 읽음 상태와 profile_needed, user_settings·opportunity_views 신설, 동의 기록, 서류 작성 시간·양식 링크, 서류–할 일 1:1 유니크, 과목 마지막 열람·공지 요약, 파일 원래 이름

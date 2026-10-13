@@ -4,6 +4,7 @@ import {
 import {
   me as initialMe,
   profile as initialProfile,
+  profileCompletion,
   settings as initialSettings,
 } from "@/mocks/account";
 import type {
@@ -71,12 +72,7 @@ export function getStoredLmsConnection(): LmsConnection {
 
 export function updateStoredProfile(profile: Profile): Profile {
   Object.assign(profileState, profile);
-  meState.profile_completion = {
-    filled: Object.values(profileState).filter(
-      (value) => value !== null && value !== "",
-    ).length,
-    total: 15,
-  };
+  meState.profile_completion = profileCompletion(profileState);
   return profileState;
 }
 
@@ -122,4 +118,5 @@ export function deleteStoredAccount(): void {
       profileState[key as keyof Profile] = null as never;
     }
   });
+  meState.profile_completion = profileCompletion(profileState);
 }

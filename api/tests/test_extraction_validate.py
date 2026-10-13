@@ -276,6 +276,49 @@ def test_fixes_are_plain_words(args: dict[str, Any], fix: str) -> None:
     assert submission.fixes == (fix,)
 
 
+def test_degree_program_requirements() -> None:
+    """116702 "석사 재학(휴학) 이상": 학위과정과 학적을 다른 묶음(그리고)으로 받는다."""
+    quote = "석사 재학(휴학) 이상"
+    context = Context(evidence=evidence(quote), attachments={}, posted_on=date(2026, 10, 8))
+    graduate = {
+        "clause_no": 1,
+        "field": "degree_program",
+        "operator": "in",
+        "value_json": '["master", "doctoral", "integrated"]',
+        "evidence_text": quote,
+        "is_ambiguous": False,
+    }
+    enrolled = {
+        **graduate,
+        "clause_no": 2,
+        "field": "enrollment_status",
+        "value_json": '["enrolled", "on_leave"]',
+    }
+    base: dict[str, Any] = {"confidence": 0.9, "needs_review": False}
+
+    submission, problems = check_submission(
+        {**base, "requirements": [graduate, enrolled]}, context, final=False
+    )
+    assert problems == []
+    assert [(r.clause_no, r.field, r.value) for r in submission.requirements] == [
+        (1, "degree_program", ["master", "doctoral", "integrated"]),
+        (2, "enrollment_status", ["enrolled", "on_leave"]),
+    ]
+    # 순서로 비교(gte)하거나 목록에 없는 값을 쓰면 돌려보낸다
+    for bad, problem in (
+        ({**graduate, "operator": "gte", "value_json": '"master"'}, "gte 연산자를 쓸 수 없다"),
+        ({**graduate, "value_json": '["graduate"]'}, "degree_program 값은"),
+    ):
+        rejected, problems = check_submission({**base, "requirements": [bad]}, context, final=False)
+        assert rejected is None and any(problem in item for item in problems), problems
+    # 마지막 제출이면 원문 확인 조건으로 바꾸고, 학생에게는 한글 항목 이름만 보인다
+    fixed, _ = check_submission(
+        {**base, "requirements": [{**graduate, "value_json": '["graduate"]'}]}, context, final=True
+    )
+    assert (fixed.requirements[0].field, fixed.requirements[0].is_ambiguous) == ("other", True)
+    assert fixed.fixes == ("형식이 틀린 학위과정 조건을 원문 확인 조건으로 바꿈",)
+
+
 def test_links_are_removed_from_the_summary() -> None:
     submission, _ = check(
         easy_summary="신청은 https://evil.example/apply 에서 하세요. www.x.kr 참고"
