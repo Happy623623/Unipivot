@@ -1,6 +1,12 @@
 import Button from "@/components/Button";
 import ProfileFieldInput from "@/components/profile/ProfileFieldInput";
-import type { ProfileErrors, ProfileFormValues, ProfileKey, ProfileStepConfig } from "@/lib/profileFields";
+import {
+  resolveField,
+  type ProfileErrors,
+  type ProfileFormValues,
+  type ProfileKey,
+  type ProfileStepConfig,
+} from "@/lib/profileFields";
 
 interface ProfileStepProps {
   step: ProfileStepConfig;
@@ -51,7 +57,7 @@ export default function ProfileStep({
         {step.fields.map((field) => (
           <ProfileFieldInput
             key={field.key}
-            field={field}
+            field={resolveField(field, values)}
             value={values[field.key]}
             error={errors[field.key]}
             onChange={(value) => onChange(field.key, value)}

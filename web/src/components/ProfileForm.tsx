@@ -3,9 +3,12 @@ import Button from "@/components/Button";
 import ProfileFieldInput from "@/components/profile/ProfileFieldInput";
 import {
   buildProfileSteps,
+  changeValue,
   fromFormValues,
+  resolveField,
   toFormValues,
   validateProfile,
+  withoutError,
   withoutIncome,
   type ProfileErrors,
   type ProfileFormValues,
@@ -44,6 +47,9 @@ export default function ProfileForm({
 
   useEffect(() => setValues(toFormValues(profile)), [profile]);
   useEffect(() => setErrors(serverErrors ?? {}), [serverErrors]);
+  // 칸 오류는 칸 아래에 있어 화면 밖일 수 있다. 저장 버튼 옆에도 첫 오류를 쓴다
+  const invalid = editableFields.find((field) => errors[field.key]);
+  const message = error ?? (invalid ? `${invalid.label}: ${errors[invalid.key]}` : null);
 
   return (
     <form
@@ -73,10 +79,13 @@ export default function ProfileForm({
                 {step.fields.map((field) => (
                   <ProfileFieldInput
                     key={field.key}
-                    field={field}
+                    field={resolveField(field, values)}
                     value={values[field.key]}
                     error={errors[field.key]}
-                    onChange={(value) => setValues((current) => ({ ...current, [field.key]: value }))}
+                    onChange={(value) => {
+                      setValues((current) => changeValue(current, field.key, value));
+                      setErrors((current) => withoutError(current, field.key));
+                    }}
                   />
                 ))}
               </div>
@@ -84,7 +93,7 @@ export default function ProfileForm({
           </section>
         ))}
       </div>
-      {error && <p role="alert" className="mt-4 text-[13px] text-[#c53030]">{error}</p>}
+      {message && <p role="alert" className="mt-4 text-[13px] text-[#c53030]">{message}</p>}
       <div className="mt-6 flex justify-end gap-2">
         {onCancel && <Button secondary onClick={onCancel}>취소</Button>}
         <Button type="submit" disabled={saving}>

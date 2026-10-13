@@ -61,8 +61,9 @@ def user_value_text(
             text += f" · 병역 {profile.military_service_months}개월"
         return text
     if field == "region":
-        sido = normalize_sido(profile.region_sido) or profile.region_sido
-        parts = [part for part in (sido, normalize_sigungu(profile.region_sigungu)) if part]
+        sido = normalize_sido(profile.region_sido)
+        sigungu = normalize_sigungu(profile.region_sigungu, sido)
+        parts = [part for part in (sido or profile.region_sido, sigungu) if part]
         return " ".join(parts) or None
     if field == "department":
         if profile.department is None:

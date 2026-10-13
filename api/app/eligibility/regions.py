@@ -38,11 +38,19 @@ def normalize_sido(name: str | None) -> str | None:
     return SIDO_ALIASES.get(name.strip())
 
 
-def normalize_sigungu(name: str | None) -> str | None:
-    """시군구 이름의 공백 정리. 비어 있으면 None."""
+def normalize_sigungu(name: str | None, sido: str | None = None) -> str | None:
+    """시군구 이름의 공백 정리. 비어 있으면 None.
+
+    앞에 프로필 시도 이름(별칭 포함, sido는 정규화한 이름)이 붙어 있으면 뗀다: "서울 중랑구" → "중랑구".
+    다른 시도 이름은 떼지 않는다(경기도 학생의 "광주"는 광주광역시가 아니라 광주시다). 시도 이름만 있으면
+    정식 이름일 때만 뗀다("서울특별시" → 없음). 약칭 하나는 그대로 둔다("제주"는 제주시일 수 있다)."""
     if not name:
         return None
-    return " ".join(name.split()) or None
+    tokens = name.split()
+    if sido is not None and tokens and normalize_sido(tokens[0]) == sido:
+        if len(tokens) > 1 or tokens[0] == sido:
+            tokens = tokens[1:]
+    return " ".join(tokens) or None
 
 
 def parse_region(text: str) -> tuple[str, str | None] | None:

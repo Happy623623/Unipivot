@@ -137,3 +137,17 @@ def test_user_value_texts():
         "gpa": "3.50 (4.3 만점)",
         "degree": "석박사통합",
     }
+
+
+def test_region_shown_without_repeated_sido():
+    """시군구 칸에 시도 이름까지 적었으면 판정표의 내 값에 시도를 두 번 쓰지 않는다. 시도가 없으면 떼지 않는다."""
+    requirements = [req("region", "in", ["서울특별시 중랑구"], basis="unspecified", rid="region")]
+    shown = []
+    for sido in ("서울", None):
+        profile = Profile(region_sido=sido, region_sigungu="서울특별시  중랑구")
+        judgment = check_eligibility(
+            requirements, profile, basis_date=date(2026, 10, 15), departments=DEPARTMENTS
+        )
+        rows = condition_rows(judgment, requirements, profile, DEPARTMENTS)
+        shown += [(row["user_value_text"], row["outcome"]) for row in rows]
+    assert shown == [("서울특별시 중랑구", "pass"), ("서울특별시 중랑구", "unknown")]
