@@ -33,7 +33,8 @@ from app.eligibility.models import (
 # (eligibility_results.engine_version)이 낡은 결과가 되어 피드를 읽을 때 다시 계산된다.
 # 2: 학위과정(degree_program) 항목 (2026-10-12)
 # 3: 프로필 시군구 앞에 붙은 시도 이름을 떼고 비교 (2026-10-13)
-ENGINE_VERSION = 3
+# 4: 광주광역시·전라남도를 전남광주통합특별시로 통합 (2026-07-01 행정구역 개편 반영, 2026-10-14)
+ENGINE_VERSION = 4
 
 __all__ = [
     "ALLOWED_OPERATORS",
