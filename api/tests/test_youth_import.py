@@ -189,6 +189,68 @@ async def test_new_unchanged_updated(monkeypatch: pytest.MonkeyPatch) -> None:
         await cleanup(conn, log_conn)
 
 
+async def test_a_changed_policy_keeps_the_documents_prepare_made() -> None:
+    """바뀐 정책을 다시 받아도 준비하기가 만든 서류와 학생 할 일이 남는다.
+
+    청년정책은 수집이 서류를 주지 않는다(제출 서류는 글이라 준비하기가 읽어서 넣는다). 다시 받을 때
+    서류를 지웠다 넣으면 이미 준비한 학생의 서류 목록이 비고 할 일 연결이 끊긴다.
+    """
+    conn, log_conn = await connect(), await connect(autocommit=True)
+    try:
+        await skip_if_other_youth_policies(conn, PREFIX)
+        await run(conn, log_conn, item("B", **ANSAN))
+        policy_id = (await rows(conn))["B"]["id"]
+        user_id = await make_user(conn, grade=3)
+        # 준비하기가 '제출 서류' 글에서 만들어 넣고 안내까지 채운 서류 둘
+        document = await (
+            await conn.execute(
+                "insert into opportunity_documents (opportunity_id, name, issuer, how_to,"
+                " lead_days) values (%s, '주민등록등본', '정부24', '정부24에서 발급', 0)"
+                " returning id",
+                (policy_id,),
+            )
+        ).fetchone()
+        await conn.execute(  # 할 일이 걸리지 않은 서류도 남아야 한다(다시 묻지 않게)
+            "insert into opportunity_documents (opportunity_id, name, issuer, lead_days)"
+            " values (%s, '신청서', '신청 사이트', 0)",
+            (policy_id,),
+        )
+        plan = await (
+            await conn.execute(
+                "insert into prep_plans (user_id, opportunity_id) values (%s, %s) returning id",
+                (user_id, policy_id),
+            )
+        ).fetchone()
+        await conn.execute(
+            "insert into planner_tasks (user_id, prep_plan_id, document_id, title, due_date,"
+            " source) values (%s, %s, %s, '주민등록등본 준비', current_date, 'prep_plan')",
+            (user_id, plan["id"], document["id"]),
+        )
+
+        changed = await run(conn, log_conn, item("B", **{**ANSAN, "sprtTrgtMaxAge": "39"}))
+        assert changed.counts["updated"] == 1  # 요건은 새로 저장했다
+        assert (await rows(conn))["B"]["requirements_version"] == 2
+        kept = await (
+            await conn.execute(
+                "select d.name, d.issuer, d.lead_days, t.title from opportunity_documents d"
+                " left join planner_tasks t on t.document_id = d.id where d.opportunity_id = %s"
+                " order by d.name",
+                (policy_id,),
+            )
+        ).fetchall()
+        assert kept == [
+            {"name": "신청서", "issuer": "신청 사이트", "lead_days": 0, "title": None},
+            {
+                "name": "주민등록등본",
+                "issuer": "정부24",
+                "lead_days": 0,
+                "title": "주민등록등본 준비",
+            },
+        ]
+    finally:
+        await cleanup(conn, log_conn)
+
+
 async def test_retire_and_restore() -> None:
     """마감된 정책은 만료, 목록에서 사라진 정책은 숨김이다. 다시 나타나면 활성으로 돌린다."""
     conn, log_conn = await connect(), await connect(autocommit=True)

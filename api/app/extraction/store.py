@@ -1,8 +1,9 @@
 """추출 결과 저장 (ERD v0.9). 요건·서류 교체와 공고·첨부 갱신을 한 트랜잭션으로 한다.
 
-- 성공: 요건·서류를 지우고 다시 넣는다. 마감일·신청 시작·기준일·쉬운 설명도 새로 뽑은 값으로 바꾼다
-  (없으면 비운다. 바뀐 공고에서 옛 마감일이 남으면 판정 기준일과 알림이 틀린다).
-- 실패(받은 제출 없음): 요건·서류를 지우고 extraction_run_id를 비운다. 내용이 바뀐 공고를 옛 요건으로
+- 성공: 요건은 지우고 다시 넣는다. 서류는 이름으로 맞춰 갱신한다(_merge_documents: 준비하기가 채운
+  안내와 학생의 할 일 연결이 재수집으로 사라지지 않게 한다). 마감일·신청 시작·기준일·쉬운 설명도
+  새로 뽑은 값으로 바꾼다 (없으면 비운다. 바뀐 공고에서 옛 마감일이 남으면 판정 기준일과 알림이 틀린다).
+- 실패(받은 제출 없음): 요건을 지우고 extraction_run_id를 비운다(서류는 위와 같이 그대로 둔다). 내용이 바뀐 공고를 옛 요건으로
   계속 판정하지 않기 위해서다(판정엔진_규칙.md 8장: 추출에 실패한 공고는 판정하지 않는다).
   원문 확인 필요를 켜고, content_hash를 바꿔 같은 내용으로 다시 돌지 않게 한다.
   LLM 호출 오류로 실행 자체가 실패하면 이 함수를 부르지 않는다(다음 수집 때 다시 돈다).
@@ -14,13 +15,13 @@
 """
 
 import hashlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
 from app.eligibility import Department
-from app.extraction.models import AttachmentInput, ExtractionResult
+from app.extraction.models import AttachmentInput, DocumentDraft, ExtractionResult
 
 
 def content_hash(body: str, attachments: Iterable[AttachmentInput]) -> str:
@@ -140,12 +141,54 @@ async def _replace_children(
                 index,
             ),
         )
-    await conn.execute(
-        "delete from opportunity_documents where opportunity_id = %s", (opportunity_id,)
-    )
-    for document in result.documents:
+    await _merge_documents(conn, opportunity_id, result.documents)
+
+
+async def _merge_documents(
+    conn: AsyncConnection, opportunity_id: str, documents: Sequence[DocumentDraft]
+) -> None:
+    """서류는 지웠다 다시 넣지 않고 이름으로 맞춰 갱신한다.
+
+    서류 행에는 수집이 모르는 값이 붙는다. 준비하기가 채운 안내(issuer·how_to·lead_days·effort_minutes,
+    사전에 없는 서류는 모델에 물어 채운다)와 학생의 플래너 할 일 연결(planner_tasks.document_id)이다.
+    지웠다 다시 넣으면 이미 준비한 학생의 서류 체크가 끊기고 안내도 다시 물어야 한다.
+
+    - 새 목록이 비면 아무것도 건드리지 않는다. 청년정책은 수집이 서류를 주지 않고(제출 서류는 글이라
+      준비하기가 만들어 넣는다), 학교 공지도 서류를 못 찾았다고 이미 있는 서류를 지울 이유는 없다
+    - 이름이 같은 서류는 그대로 두고 is_required·form_url만 맞춘다
+    - 새 목록에 없는 서류는 지우되, 누가 준비해 할 일이 걸린 서류는 남긴다(그 학생 화면이 비지 않게)
+    """
+    if not documents:
+        return
+    rows = await (
+        await conn.execute(
+            "select id, name from opportunity_documents where opportunity_id = %s",
+            (opportunity_id,),
+        )
+    ).fetchall()
+    wanted: dict[str, DocumentDraft] = {}
+    for document in documents:
+        wanted.setdefault(document.name, document)  # 같은 이름이 두 번 오면 처음 것만 쓴다
+    kept: set[str] = set()
+    for row in rows:
+        name, document_id = row["name"], str(row["id"])
+        if name in wanted and name not in kept:
+            kept.add(name)
+            await conn.execute(
+                "update opportunity_documents set is_required = %s, form_url = %s where id = %s",
+                (wanted[name].is_required, wanted[name].form_url, document_id),
+            )
+            continue
+        await conn.execute(
+            "delete from opportunity_documents where id = %s"
+            " and not exists (select 1 from planner_tasks t where t.document_id = %s)",
+            (document_id, document_id),
+        )
+    for name, document in wanted.items():
+        if name in kept:
+            continue
         await conn.execute(
             "insert into opportunity_documents (opportunity_id, name, is_required, form_url)"
             " values (%s, %s, %s, %s)",
-            (opportunity_id, document.name, document.is_required, document.form_url),
+            (opportunity_id, name, document.is_required, document.form_url),
         )
