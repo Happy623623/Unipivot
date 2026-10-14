@@ -21,10 +21,12 @@ from app.extraction import (
     NoticeInput,
     RequirementDraft,
 )
+from app.extraction.models import DocumentDraft
 from app.extraction.prompt import READ_TEXT, SUBMIT
 from app.extraction.store import content_hash, load_departments, save_extraction
 from app.pricing import cost_usd
 from tests import samples
+from tests.db_world import World, make_user
 from tests.llm_fakes import ScriptedLlm, call
 from tests.samples import hp
 
@@ -208,7 +210,8 @@ async def test_extract_log_and_store_round_trip() -> None:
             finished["cost_usd"] == 2 * each
         )  # 단가표로 계산(2026년은 100만 토큰당 0.75/3.75 USD)
 
-        # 다시 추출: 요건·서류·날짜를 새 값으로 바꾸고 버전을 올린다. 새 마감일이 없으면 비운다
+        # 다시 추출: 요건·날짜를 새 값으로 바꾸고 버전을 올린다. 새 마감일이 없으면 비운다.
+        # 서류는 새 목록이 비어 있으면 그대로 둔다(준비하기가 채운 안내와 학생 할 일을 지키려고)
         again = ExtractionResult(
             succeeded=True,
             requirements=(
@@ -227,7 +230,7 @@ async def test_extract_log_and_store_round_trip() -> None:
         (saved,) = await _rows(conn, "select * from opportunities where id = %s", opportunity_id)
         assert (saved["requirements_version"], saved["deadline_at"]) == (2, None)
         assert saved["review_reasons"] == ["자동으로 판정할 수 없는 조건이 있음"]  # 이유도 새 값
-        assert await _counts(conn, opportunity_id) == {"reqs": 1, "docs": 0}
+        assert await _counts(conn, opportunity_id) == {"reqs": 1, "docs": 1}  # 서류는 남는다
 
         # 실패한 추출: 바뀐 공고를 옛 요건으로 판정하지 않게 요건을 비우고 판정 대상에서 뺀다
         failed = ExtractionResult(
@@ -244,7 +247,7 @@ async def test_extract_log_and_store_round_trip() -> None:
             None,
         )
         assert saved["review_reasons"] == ["자격 요건을 정리하지 못함"]
-        assert await _counts(conn, opportunity_id) == {"reqs": 0, "docs": 0}
+        assert await _counts(conn, opportunity_id) == {"reqs": 0, "docs": 1}
     finally:
         await conn.rollback()
         await conn.close()
@@ -291,3 +294,140 @@ async def test_load_departments_for_the_prompt() -> None:
     finally:
         await conn.rollback()
         await conn.close()
+
+
+async def _documents(conn: psycopg.AsyncConnection, opportunity_id: str) -> list[dict]:
+    return await _rows(
+        conn,
+        "select name, issuer, lead_days, is_required, form_url from opportunity_documents"
+        " where opportunity_id = %s order by name",
+        opportunity_id,
+    )
+
+
+async def _recollect(
+    conn: psycopg.AsyncConnection, opportunity_id: str, names: list[str], run_id: str
+) -> None:
+    """이름만 든 서류 목록으로 추출을 다시 저장한다(바뀐 공고를 다시 수집했을 때)."""
+    await save_extraction(
+        conn,
+        opportunity_id,
+        ExtractionResult(
+            succeeded=True,
+            documents=tuple(DocumentDraft(name=name) for name in names),
+        ),
+        run_id=run_id,
+        content_hash="hash-" + ("-".join(names) or "none"),
+    )
+
+
+@pytest.fixture
+async def prepared():
+    """서류 2개 중 '재학증명서'에만 준비하기 안내와 학생 할 일이 붙은 공고.
+
+    (conn, 공고 id, 재학증명서 id, 실행 id)를 준다. 트랜잭션은 끝나고 되돌린다.
+    """
+    conn = await connect()
+    try:
+        world = await World.start(conn)
+        opportunity_id = await world.add("재수집 장학", days=10)
+        user_id = await make_user(conn, grade=3)
+        ids = []
+        for name in ("재학증명서", "성적증명서"):
+            row = await (
+                await conn.execute(
+                    "insert into opportunity_documents (opportunity_id, name) values (%s, %s)"
+                    " returning id",
+                    (opportunity_id, name),
+                )
+            ).fetchone()
+            ids.append(str(row["id"]))
+        await conn.execute(  # 준비하기가 채운 안내(사전 또는 모델)
+            "update opportunity_documents set issuer = %s, how_to = %s, lead_days = %s"
+            " where id = %s",
+            ("한양인 포털", "증명서 발급 메뉴에서 발급", 1, ids[0]),
+        )
+        plan = await (
+            await conn.execute(
+                "insert into prep_plans (user_id, opportunity_id) values (%s, %s) returning id",
+                (user_id, opportunity_id),
+            )
+        ).fetchone()
+        await conn.execute(  # 그 학생의 서류 할 일
+            "insert into planner_tasks (user_id, prep_plan_id, document_id, title, due_date,"
+            " source) values (%s, %s, %s, %s, current_date, 'prep_plan')",
+            (user_id, str(plan["id"]), ids[0], "재학증명서 준비"),
+        )
+        yield conn, opportunity_id, ids[0], world.run_id
+    finally:
+        await conn.rollback()
+        await conn.close()
+
+
+async def _linked(conn: psycopg.AsyncConnection, document_id: str) -> bool:
+    """그 서류에 걸린 할 일이 아직 있나(지워지면 document_id가 null이 된다)."""
+    rows = await _rows(conn, "select 1 from planner_tasks where document_id = %s", document_id)
+    return len(rows) == 1
+
+
+async def test_recollecting_without_documents_keeps_them(prepared) -> None:
+    """서류를 주지 않는 재수집은 서류를 건드리지 않는다(청년정책은 수집이 서류를 모른다)."""
+    conn, opportunity_id, document_id, run_id = prepared
+    before = await _documents(conn, opportunity_id)
+    await _recollect(conn, opportunity_id, [], run_id)
+    assert await _documents(conn, opportunity_id) == before
+    assert await _linked(conn, document_id)
+
+
+async def test_recollecting_keeps_the_guide_of_a_document_that_stays(prepared) -> None:
+    """이름이 그대로면 준비하기가 채운 안내와 할 일 연결을 잃지 않는다(안내를 다시 묻지 않게)."""
+    conn, opportunity_id, document_id, run_id = prepared
+    await _recollect(conn, opportunity_id, ["재학증명서", "자기소개서"], run_id)
+    assert await _documents(conn, opportunity_id) == [
+        {
+            "name": "자기소개서",
+            "issuer": None,
+            "lead_days": None,
+            "is_required": True,
+            "form_url": None,
+        },
+        {
+            "name": "재학증명서",
+            "issuer": "한양인 포털",
+            "lead_days": 1,
+            "is_required": True,
+            "form_url": None,
+        },
+    ]
+    assert await _linked(conn, document_id)
+
+
+async def test_recollecting_drops_a_document_nobody_prepared(prepared) -> None:
+    """새 목록에서 빠진 서류는 지운다. 누가 준비해 할 일이 걸린 서류는 남긴다."""
+    conn, opportunity_id, document_id, run_id = prepared
+    await _recollect(conn, opportunity_id, ["자기소개서"], run_id)
+    names = [row["name"] for row in await _documents(conn, opportunity_id)]
+    assert names == ["자기소개서", "재학증명서"]  # 성적증명서만 빠졌다
+    assert await _linked(conn, document_id)
+
+
+async def test_recollecting_updates_the_form_of_a_document_that_stays(prepared) -> None:
+    """이름이 같은 서류의 양식 주소·필수 여부는 새 추출 값으로 맞춘다."""
+    conn, opportunity_id, _, run_id = prepared
+    await save_extraction(
+        conn,
+        opportunity_id,
+        ExtractionResult(
+            succeeded=True,
+            documents=(
+                DocumentDraft(name="재학증명서", is_required=False, form_url="https://x.test/f"),
+            ),
+        ),
+        run_id=run_id,
+        content_hash="hash-form",
+    )
+    (document,) = [
+        row for row in await _documents(conn, opportunity_id) if row["name"] == "재학증명서"
+    ]
+    assert (document["is_required"], document["form_url"]) == (False, "https://x.test/f")
+    assert document["issuer"] == "한양인 포털"  # 안내는 그대로다
