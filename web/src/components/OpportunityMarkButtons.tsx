@@ -8,14 +8,19 @@ interface OpportunityMarkButtonsProps {
   onChange: (next: OpportunityMark | null) => void;
 }
 
-// 표시를 바꾼 뒤 띄우는 안내. 버튼과 같은 이름을 쓴다(관심, 숨기기, 숨김 풀기)
-export function markToast(before: OpportunityMark | null, next: OpportunityMark | null): string {
+// 표시를 바꾼 뒤 띄우는 안내. 버튼과 같은 이름을 쓴다(관심, 숨기기, 숨김 풀기).
+// 홈은 안내에 "숨김 탭 보기" 버튼이 붙어 숨긴 공고를 어디서 보는지 따로 쓰지 않는다
+export function markToast(
+  before: OpportunityMark | null,
+  next: OpportunityMark | null,
+  where: "home" | "detail" = "detail",
+): string {
   if (next === "interested") {
     return before === "not_interested" ? "숨김을 풀고 관심 공고에 담았어요" : "관심 공고에 담았어요";
   }
   if (next === "not_interested") {
-    const done = before === "interested" ? "관심 공고에서 빼고 숨겼어요." : "숨겼어요.";
-    return `${done} 홈의 숨김 탭에서 다시 볼 수 있어요`;
+    const done = before === "interested" ? "관심 공고에서 빼고 숨겼어요" : "숨겼어요";
+    return where === "home" ? done : `${done}. 홈의 숨김 탭에서 다시 볼 수 있어요`;
   }
   return before === "not_interested" ? "숨김을 풀었어요" : "관심 공고에서 뺐어요";
 }

@@ -102,15 +102,18 @@ export default function OpportunityDetail({
     }
   };
 
-  // 숨겨도 상세는 그대로 보이고, 홈의 숨김 탭에서 다시 볼 수 있다
+  // 숨겨도 상세는 그대로 보이고, 홈의 숨김 탭에서 다시 볼 수 있다. 서버 답을 기다리지 않고 바로 바꾸고,
+  // 저장하지 못하면 되돌린다
   const changeMark = async (next: OpportunityMark | null) => {
     const target = detail.id;
+    const before = myMark;
+    setMarkChange({ id: target, mark: next });
+    showToast(markToast(before, next));
     setMarking(target);
     try {
       await setOpportunityMark(target, next);
-      setMarkChange({ id: target, mark: next });
-      showToast(markToast(myMark, next));
     } catch (error) {
+      setMarkChange((current) => (current?.id === target ? { id: target, mark: before } : current));
       showToast(markError(error));
     } finally {
       setMarking((current) => (current === target ? null : current));
