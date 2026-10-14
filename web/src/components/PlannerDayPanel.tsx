@@ -10,10 +10,20 @@ interface PlannerDayPanelProps {
   date: string;
   tasks: PlannerTask[];
   markers: PlannerMarker[];
-  onToggle: (task: PlannerTask) => void;
+  onToggle: (task: PlannerTask) => Promise<void>;
   onAdd: (title: string, date: string) => Promise<void>;
-  onEdit: (id: string, title: string, date: string) => Promise<void>;
+  onEdit: (task: PlannerTask, title: string, date: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+}
+
+// 고칠 수 있는 범위는 출처가 정한다(API 명세 7장). 직접 추가한 할 일만 제목까지 고치고 지운다.
+// 준비·강의계획서 할 일은 날짜만 옮기고, LMS 할 일은 완료만 바꾼다
+function editable(task: PlannerTask): { title: boolean; date: boolean; remove: boolean } {
+  if (task.source === "manual") return { title: true, date: true, remove: true };
+  if (task.source === "prep_plan" || task.source === "syllabus") {
+    return { title: false, date: true, remove: false };
+  }
+  return { title: false, date: false, remove: false };
 }
 
 export default function PlannerDayPanel({
@@ -31,6 +41,7 @@ export default function PlannerDayPanel({
   const [dueDate, setDueDate] = useState(date);
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [toggling, setToggling] = useState<string | null>(null);
 
   const openForm = (task?: PlannerTask) => {
     setEditing(task ?? null);
@@ -40,13 +51,20 @@ export default function PlannerDayPanel({
     setMenuOpen(null);
   };
 
+  const canEditTitle = !editing || editable(editing).title;
+
   const save = async () => {
-    if (!title.trim()) return;
+    if (canEditTitle && !title.trim()) return;
     setSaving(true);
-    if (editing) await onEdit(editing.id, title.trim(), dueDate);
-    else await onAdd(title.trim(), dueDate);
-    setSaving(false);
-    setModalOpen(false);
+    try {
+      if (editing) await onEdit(editing, title.trim(), dueDate);
+      else await onAdd(title.trim(), dueDate);
+      setModalOpen(false); // 저장하지 못하면(오류가 올라온다) 창을 열어 둔 채 다시 누르게 한다
+    } catch {
+      /* 안내는 화면이 띄운다 */
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -70,7 +88,15 @@ export default function PlannerDayPanel({
                     <input
                       type="checkbox"
                       checked={task.is_done}
-                      onChange={() => onToggle(task)}
+                      disabled={toggling === task.id}
+                      onChange={async () => {
+                        setToggling(task.id); // 연타하면 응답 순서가 엇갈린다
+                        try {
+                          await onToggle(task);
+                        } finally {
+                          setToggling(null);
+                        }
+                      }}
                       className="mt-1 accent-[#4f6ef7]"
                     />
                     <span>
@@ -80,18 +106,22 @@ export default function PlannerDayPanel({
                   </label>
                   <div className="flex items-center gap-2">
                     <Badge tone={meta.tone}>{meta.label}</Badge>
-                    {task.source === "manual" && (
-                      <button type="button" onClick={() => setMenuOpen(menuOpen === task.id ? null : task.id)} className="px-1 text-[18px] text-[#667085]">⋯</button>
+                    {(editable(task).title || editable(task).date) && (
+                      <button type="button" onClick={() => setMenuOpen(menuOpen === task.id ? null : task.id)} aria-label={`${task.title} 더 보기`} className="px-1 text-[18px] text-[#667085]">⋯</button>
                     )}
                   </div>
                 </div>
                 {menuOpen === task.id && (
-                  <div className="absolute right-3 top-11 z-10 w-24 rounded-[10px] border border-[#e5e7eb] bg-white p-1 shadow-lg">
-                    <button type="button" onClick={() => openForm(task)} className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] hover:bg-[#f7f8fa]">수정</button>
-                    <button type="button" onClick={async () => {
-                      await onDelete(task.id);
-                      setMenuOpen(null);
-                    }} className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] text-[#c53030] hover:bg-[#fef2f2]">삭제</button>
+                  <div className="absolute right-3 top-11 z-10 w-28 rounded-[10px] border border-[#e5e7eb] bg-white p-1 shadow-lg">
+                    <button type="button" onClick={() => openForm(task)} className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] hover:bg-[#f7f8fa]">
+                      {editable(task).title ? "수정" : "날짜 옮기기"}
+                    </button>
+                    {editable(task).remove && (
+                      <button type="button" onClick={async () => {
+                        await onDelete(task.id);
+                        setMenuOpen(null);
+                      }} className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] text-[#c53030] hover:bg-[#fef2f2]">삭제</button>
+                    )}
                   </div>
                 )}
               </article>
@@ -111,11 +141,22 @@ export default function PlannerDayPanel({
           </div>
         )}
       </div>
-      <Modal open={modalOpen} title={editing ? "일정 수정" : "일정 추가"} onClose={() => setModalOpen(false)}>
-        <label>
-          <span className="mb-2 block text-[13px] font-semibold">제목</span>
-          <input value={title} onChange={(event) => setTitle(event.target.value)} className="h-[42px] w-full rounded-[10px] border border-[#e5e7eb] px-3 text-[14px] outline-none focus:border-[#4f6ef7]" />
-        </label>
+      <Modal
+        open={modalOpen}
+        title={!editing ? "일정 추가" : canEditTitle ? "일정 수정" : "날짜 옮기기"}
+        onClose={() => setModalOpen(false)}
+      >
+        {canEditTitle ? (
+          <label>
+            <span className="mb-2 block text-[13px] font-semibold">제목</span>
+            <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} className="h-[42px] w-full rounded-[10px] border border-[#e5e7eb] px-3 text-[14px] outline-none focus:border-[#4f6ef7]" />
+          </label>
+        ) : (
+          <div>
+            <p className="text-[14px] font-semibold">{editing?.title}</p>
+            <p className="mt-1 text-[12px] text-[#667085]">공고 준비 일정이라 제목은 바꿀 수 없어요. 날짜만 옮겨요.</p>
+          </div>
+        )}
         <label className="mt-4 block">
           <span className="mb-2 block text-[13px] font-semibold">날짜</span>
           <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} className="h-[42px] w-full rounded-[10px] border border-[#e5e7eb] px-3 text-[14px] outline-none focus:border-[#4f6ef7]" />

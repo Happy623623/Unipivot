@@ -1,4 +1,4 @@
-import { ApiError, apiFetch, notReady, USE_MOCKS, waitForRun } from "@/api/http";
+import { ApiError, apiFetch, USE_MOCKS, waitForRun } from "@/api/http";
 import * as mock from "@/api/mockClient";
 import { MockApiError, rejectAfter, respond } from "@/api/mockClient";
 import { getDevScenario } from "@/dev/scenarios";
@@ -9,6 +9,7 @@ import {
   getStoredPlanner,
   addStoredManualTask,
   deleteStoredManualTask,
+  moveStoredTask,
   prepareStoredOpportunity,
   setStoredPlannerTaskDone,
   setStoredDocumentDone,
@@ -108,36 +109,62 @@ export async function setOpportunityMark(id: string, mark: OpportunityMark | nul
   else await apiFetch<MarkResult>(path, { method: "PUT", body: JSON.stringify({ mark }) });
 }
 
-// 준비하기(F-30·F-31)는 실제 API를 부른다. 그 뒤에 딸린 기능은 각자의 API가 생길 때까지 목이다.
-// TODO(api): PATCH /planner/tasks/{id}(서류 체크·플래너)와 POST /calendar/events(F-32)가 생기면 지운다
-export const TASKS_READY = USE_MOCKS; // 서류 체크
-export const PLANNER_READY = USE_MOCKS; // 플래너 화면
+// 마감일 캘린더 등록(F-32)은 아직이다. TODO(api): POST /calendar/events가 생기면 지운다
 export const CALENDAR_READY = USE_MOCKS; // 마감일을 Google Calendar에 넣기
 export const CALENDAR_NOT_READY = "마감일 캘린더 등록은 아직 준비 중이에요. 준비 일정은 이 화면에서 확인해 주세요.";
 
+// GET /planner/tasks (F-43). 기간 안의 할 일과 마커(준비 중인 공고의 마감일). 날짜는 KST다
 export function getPlanner(from: string, to: string): Promise<PlannerResponse> {
-  const storedPlanner = getStoredPlanner();
-  return respond({
-    items: storedPlanner.items.filter((item) => item.due_date >= from && item.due_date <= to),
-    markers: storedPlanner.markers.filter((marker) => marker.date >= from && marker.date <= to),
-  });
+  if (USE_MOCKS) {
+    const storedPlanner = getStoredPlanner();
+    return respond({
+      items: storedPlanner.items.filter((item) => item.due_date >= from && item.due_date <= to),
+      markers: storedPlanner.markers.filter((marker) => marker.date >= from && marker.date <= to),
+    });
+  }
+  const query = new URLSearchParams({ from, to });
+  return apiFetch<PlannerResponse>(`/planner/tasks?${query}`);
 }
 
+// PATCH /planner/tasks/{id}. 완료 체크는 어느 출처든 할 수 있다
 export function setPlannerTaskDone(id: string, isDone: boolean): Promise<PlannerTask> {
-  return respond(setStoredPlannerTaskDone(id, isDone));
+  if (USE_MOCKS) return respond(setStoredPlannerTaskDone(id, isDone));
+  return patchTask(id, { is_done: isDone });
 }
 
 export function addManualPlannerTask(title: string, dueDate: string): Promise<PlannerTask> {
-  return respond(addStoredManualTask(title, dueDate));
+  if (USE_MOCKS) return respond(addStoredManualTask(title, dueDate));
+  return apiFetch<PlannerTask>("/planner/tasks", {
+    method: "POST",
+    body: JSON.stringify({ title, due_date: dueDate }),
+  });
 }
 
+// 직접 추가한 할 일만 제목까지 고친다
 export function updateManualPlannerTask(id: string, title: string, dueDate: string): Promise<PlannerTask> {
-  return respond(updateStoredManualTask(id, title, dueDate));
+  if (USE_MOCKS) return respond(updateStoredManualTask(id, title, dueDate));
+  return patchTask(id, { title, due_date: dueDate });
+}
+
+// 준비·강의계획서 할 일은 날짜만 옮긴다(제목은 공고의 서류 이름이라 고정)
+export function movePlannerTask(id: string, dueDate: string): Promise<PlannerTask> {
+  if (USE_MOCKS) return respond(moveStoredTask(id, dueDate));
+  return patchTask(id, { due_date: dueDate });
 }
 
 export function deleteManualPlannerTask(id: string): Promise<void> {
-  deleteStoredManualTask(id);
-  return respond(undefined);
+  if (USE_MOCKS) {
+    deleteStoredManualTask(id);
+    return respond(undefined);
+  }
+  return apiFetch<void>(`/planner/tasks/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+function patchTask(id: string, body: Record<string, unknown>): Promise<PlannerTask> {
+  return apiFetch<PlannerTask>(`/planner/tasks/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
 }
 
 export interface PrepareOptions {
@@ -180,14 +207,16 @@ export async function prepareOpportunity(
   return run.result;
 }
 
-// 서류 체크 = 플래너 할 일 완료 (PATCH /planner/tasks/{task_id})
-export function setDocumentDone(
+// 서류 체크 = 그 서류의 플래너 할 일 완료 (PATCH /planner/tasks/{task_id}).
+// 준비하기 전에는 할 일이 없어 taskId가 null이고, 화면이 체크를 막는다
+export async function setDocumentDone(
   opportunityId: string,
-  documentId: string,
+  taskId: string,
   isDone: boolean,
 ): Promise<OpportunityDetail> {
-  if (!TASKS_READY) return notReady("서류 체크는 아직 준비 중이에요.");
-  return respond(setStoredDocumentDone(opportunityId, documentId, isDone));
+  if (USE_MOCKS) return respond(setStoredDocumentDone(opportunityId, taskId, isDone));
+  await setPlannerTaskDone(taskId, isDone);
+  return getOpportunity(opportunityId); // 진행률(tasks_done)을 서버 값으로 다시 받는다
 }
 
 // TODO(api): POST /opportunities/{id}/reports { reason, detail } — 신고(P1). 그 전까지 화면에 신고 버튼이 없다

@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import {
   addManualPlannerTask,
   deleteManualPlannerTask,
+  errorMessage,
   getMe,
   getPlanner,
+  movePlannerTask,
   todayKst,
   setPlannerTaskDone,
   updateManualPlannerTask,
@@ -13,14 +15,21 @@ import Header from "@/components/Header";
 import PlannerCalendar from "@/components/PlannerCalendar";
 import PlannerDayPanel from "@/components/PlannerDayPanel";
 import Skeleton from "@/components/Skeleton";
+import Toast from "@/components/Toast";
 import useAsyncData from "@/lib/useAsyncData";
+import useToast from "@/lib/useToast";
 import type { PlannerResponse, PlannerTask } from "@/types/api";
 import type { Route } from "@/types/route";
 
+// 달력은 그 달 앞뒤의 며칠까지 같이 그린다(6주 42칸). 그 칸의 할 일·마감도 보이도록 넉넉히 받는다
+const GRID_PAD_DAYS = 7;
+
 function monthRange(year: number, month: number) {
-  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
-  const prefix = `${year}-${String(month).padStart(2, "0")}`;
-  return { from: `${prefix}-01`, to: `${prefix}-${String(lastDay).padStart(2, "0")}` };
+  const first = new Date(Date.UTC(year, month - 1, 1));
+  const last = new Date(Date.UTC(year, month, 0));
+  const shift = (base: Date, days: number) =>
+    new Date(base.getTime() + days * 86_400_000).toISOString().slice(0, 10);
+  return { from: shift(first, -GRID_PAD_DAYS), to: shift(last, GRID_PAD_DAYS) };
 }
 
 function PlannerSkeleton() {
@@ -43,6 +52,7 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
   const [selectedDate, setSelectedDate] = useState(todayKst);
   const [plannerOverride, setPlannerOverride] =
     useState<PlannerResponse | null>(null);
+  const [toast, showToast] = useToast();
   const range = monthRange(view.year, view.month);
   const request = useAsyncData(
     () => Promise.all([getPlanner(range.from, range.to), getMe()]),
@@ -75,10 +85,24 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
   const refresh = async () => {
     setPlannerOverride(await getPlanner(range.from, range.to));
   };
-  const toggleTask = async (task: PlannerTask) => {
-    await setPlannerTaskDone(task.id, !task.is_done);
+
+  // 저장하고 목록을 다시 받는다. 실패하면 화면은 그대로 두고 안내를 띄운 뒤 오류를 다시 던진다
+  // (일정 추가·수정 창이 저장된 것처럼 닫히지 않게 한다)
+  const save = async (work: () => Promise<unknown>, fallback: string) => {
+    try {
+      await work();
+    } catch (error) {
+      showToast(errorMessage(error, fallback));
+      throw error;
+    }
     await refresh();
   };
+
+  const toggleTask = (task: PlannerTask) =>
+    save(
+      () => setPlannerTaskDone(task.id, !task.is_done),
+      "할 일을 체크하지 못했어요. 잠시 후 다시 눌러 주세요.",
+    ).catch(() => {});
 
   return (
     <>
@@ -101,19 +125,28 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
           markers={selectedMarkers}
           onToggle={toggleTask}
           onAdd={async (title, date) => {
-            await addManualPlannerTask(title, date);
+            await save(
+              () => addManualPlannerTask(title, date),
+              "일정을 추가하지 못했어요. 잠시 후 다시 눌러 주세요.",
+            );
+            setSelectedDate(date); // 저장이 된 뒤에 그 날을 연다
+          }}
+          onEdit={async (task, title, date) => {
+            await save(
+              () =>
+                task.source === "manual"
+                  ? updateManualPlannerTask(task.id, title, date)
+                  : movePlannerTask(task.id, date), // 준비 할 일은 날짜만 옮긴다
+              "일정을 바꾸지 못했어요. 잠시 후 다시 눌러 주세요.",
+            );
             setSelectedDate(date);
-            await refresh();
           }}
-          onEdit={async (id, title, date) => {
-            await updateManualPlannerTask(id, title, date);
-            setSelectedDate(date);
-            await refresh();
-          }}
-          onDelete={async (id) => {
-            await deleteManualPlannerTask(id);
-            await refresh();
-          }}
+          onDelete={(id) =>
+            save(
+              () => deleteManualPlannerTask(id),
+              "일정을 지우지 못했어요. 잠시 후 다시 눌러 주세요.",
+            ).catch(() => {})
+          }
         />
       </section>
       {/* 캘린더 연결은 설정 한 곳에서 한다(Google 화면을 거쳐 설정으로 돌아온다) */}
@@ -135,6 +168,7 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
           </Button>
         )}
       </section>
+      <Toast toast={toast} />
     </>
   );
 }

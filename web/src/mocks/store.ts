@@ -138,18 +138,30 @@ export function prepareStoredOpportunity(
   };
 }
 
+// 준비·강의계획서 할 일 옮기기(날짜만). 직접 추가한 할 일은 updateStoredManualTask가 제목까지 고친다.
+// LMS 할 일은 완료만 바꿀 수 있어 실제 API처럼 막는다(API 명세 7장)
+export function moveStoredTask(id: string, dueDate: string): PlannerTask {
+  const task = plannerState.items.find((item) => item.id === id);
+  if (!task) throw new Error("할 일을 찾을 수 없어요.");
+  if (task.source === "lms_assignment" || task.source === "lms_announcement") {
+    throw new Error("LMS에서 가져온 할 일은 완료만 바꿀 수 있어요.");
+  }
+  task.due_date = dueDate;
+  return task;
+}
+
 export function setStoredDocumentDone(
   opportunityId: string,
-  documentId: string,
+  taskId: string,
   isDone: boolean,
 ): OpportunityDetail {
   const detail = detailsState[opportunityId];
   if (!detail) throw new Error("공고를 찾을 수 없어요.");
-  const document = detail.documents.find((item) => item.id === documentId);
-  if (!document?.task_id) throw new Error("준비 일정을 먼저 만들어 주세요.");
+  const document = detail.documents.find((item) => item.task_id === taskId);
+  if (!document) throw new Error("준비 일정을 먼저 만들어 주세요.");
 
   document.is_done = isDone;
-  const task = plannerState.items.find((item) => item.id === document.task_id);
+  const task = plannerState.items.find((item) => item.id === taskId);
   if (task) task.is_done = isDone;
   const tasks = tasksForOpportunity(opportunityId);
   detail.prep.tasks_done = tasks.filter((item) => item.is_done).length;

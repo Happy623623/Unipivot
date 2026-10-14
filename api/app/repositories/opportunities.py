@@ -176,8 +176,9 @@ _REQUIREMENTS_JSON = (
 )
 _PREP_JOIN = " left join prep_plans p on p.user_id = %(uid)s and p.opportunity_id = o.id"
 # 준비를 마친 계획(F-31): 준비하기 실행이 성공했거나 실행 기록이 없다. 실행 중·실패한 계획은 준비하지 않은
-# 것으로 본다(다시 누르면 이어 보거나 새로 만든다, app/repositories/prepare.py)
-_PREP_DONE = (
+# 것으로 본다(다시 누르면 이어 보거나 새로 만든다, app/repositories/prepare.py).
+# 플래너의 마감 마커도 같은 기준을 쓴다(app/repositories/planner.py). 두 화면이 어긋나지 않게 한다
+PREP_DONE = (
     "(p.agent_run_id is null or exists(select 1 from agent_runs pr"
     " where pr.id = p.agent_run_id and pr.status = 'succeeded'))"
 )
@@ -194,7 +195,7 @@ _DETAIL = (
     " (select lc.name from lms_courses lc where lc.user_id = %(uid)s"
     " and lc.canvas_course_id = o.visible_canvas_course_id) as course_name,"
     " p.id as prep_plan_id, p.agent_run_id as prepare_run_id,"
-    " (p.id is not null and " + _PREP_DONE + ") as prep_done,"
+    " (p.id is not null and " + PREP_DONE + ") as prep_done,"
     " exists(select 1 from opportunity_reports rp where rp.opportunity_id = o.id"
     " and rp.reporter_id = %(uid)s) as reported_by_me,"
     " " + _REQUIREMENTS_JSON + " as requirements,"
@@ -291,7 +292,7 @@ def _feed_sql(where: str, outer: str, order: str) -> str:
         " o.needs_review, coalesce(o.uploaded_by = %(uid)s, false) as uploaded_by_me,"
         " c.name as course_name,"
         " exists(select 1 from prep_plans p where p.user_id = %(uid)s and p.opportunity_id = o.id"
-        " and " + _PREP_DONE + ") as prepared,"
+        " and " + PREP_DONE + ") as prepared,"
         " coalesce(o.created_at >= %(new_since)s, false) and not exists(select 1"
         " from opportunity_views v where v.user_id = %(uid)s and v.opportunity_id = o.id) as is_new,"
         " " + _JUDGED + " as judged,"

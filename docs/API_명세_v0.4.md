@@ -32,6 +32,8 @@
 >
 > v0.4 보강(10/14, 실행 로그): 로그 연결은 한 줄 쓸 때마다 빌렸다 돌려준다(API 변경 없음)
 >
+> v0.4 보강(10/15, 플래너): 출처별 수정 범위(준비 할 일은 날짜만), 기간 상한 400일, include_done 기본값, 마커는 준비를 마친 공고의 마감일
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -660,6 +662,9 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 `?from=2026-09-29&to=2026-10-12&include_done=false`
 
+- `from`·`to`는 KST 날짜(`YYYY-MM-DD`)다. 끝이 시작보다 앞서거나 기간이 400일을 넘으면 `422 VALIDATION_FAILED`다
+- `include_done`을 빼면 완료한 할 일도 함께 준다(기본 true). 체크한 할 일이 화면에서 사라지지 않게 한다
+
 ```json
 {
   "items": [
@@ -689,7 +694,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 - `link.type`: `opportunity` \| `syllabus_item` \| `lms_assignment` \| `lms_announcement` \| `null`
 - `auto_completed`: LMS 제출로 자동 완료된 항목(F-51)
-- `markers`는 체크할 수 없는 표시 항목이다. 지금은 준비 중인 공고의 마감일(`kind = deadline`)만 있다
+- `markers`는 체크할 수 없는 표시 항목이다. 지금은 **준비를 마친** 공고의 마감일(`kind = deadline`)만 있다. 공고 상세의 `prep.prepared`와 같은 기준이라 준비하는 중이거나 멈춘 계획은 들어가지 않고, 날짜는 `deadline_at`을 KST 날짜로 바꾼 값이다. 마감일이 없는 상시 공고는 마커가 없다
 - `link.category`는 공고에서 온 할 일에만 있고, LMS·강의계획서 할 일은 칩에 과목명(`link.title`)을 쓴다
 - LMS 과제의 `is_done`은 사용자가 바꿀 수 있고, 동기화는 미제출에서 제출로 바뀔 때만 true로 바꾼다
 
@@ -704,8 +709,9 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 { "due_date": "2026-10-11", "title": "재학증명서 발급(포털)" }
 ```
 
-- `source = lms_assignment` 항목은 `is_done`만 수정 가능(제목·날짜는 LMS가 기준). 다른 필드는 `400 FIELD_READ_ONLY`
-- `DELETE`는 `manual` 항목만 가능. 나머지는 `400 TASK_NOT_DELETABLE`
+- 고칠 수 있는 항목은 출처마다 다르다. `manual`은 제목·날짜·완료, `prep_plan`·`syllabus`는 날짜·완료(제목은 공고의 서류 이름·수업 일정이라 고정), `lms_assignment`·`lms_announcement`는 완료만이다(제목·날짜는 LMS가 기준). 막힌 항목이 하나라도 섞이면 `400 FIELD_READ_ONLY`로 아무것도 바꾸지 않고, `details.fields`에 막힌 항목 이름을 담는다
+- 본문이 비었거나 아는 항목이 하나도 없으면 `422`다. 모르는 항목을 보내도 `422`다(`source`·`is_done`을 직접 정해 만들 수 없다)
+- `DELETE`는 `manual` 항목만 가능. 나머지는 `400 TASK_NOT_DELETABLE`. 준비 할 일을 지우려면 그 공고의 준비를 다시 한다
 
 ### `POST /calendar/events`
 
@@ -1217,3 +1223,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 > 10/14 반영: 홈 목록 5개씩 쪽 나누기(지원 어려움 묶음도 따로), 관심·숨기기를 누르면 바로 옮기기, 들어간 탭 강조, 안내의 탭 보기 버튼.
 
 > 10/14 반영: PrepareStarted 타입, PrepareResult.calendar_error, 준비하기 화면의 실행 단계 표시·"그래도 준비하기"·상시 공고 목표일.
+
+> 10/15 반영: 플래너 화면을 실제 API에 연결, 공고 상세의 서류 체크, 준비 할 일은 날짜만 옮기기.
