@@ -28,6 +28,8 @@
 >
 > v0.4 보강(10/14, 홈 쪽 나누기): 홈은 받은 피드를 화면에서 5개씩 쪽으로 나눈다(API 변경 없음)
 >
+> v0.4 보강(10/14, 준비하기): 작업 큐는 TaskRunner, DEADLINE_PASSED 409, 준비하기 단계 label과 실패 이유 규칙, 할 일 제목·역산 규칙
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -99,7 +101,7 @@ sequenceDiagram
 - 접수 응답: `202 { "run_id": "uuid", "status": "running" }`
 - 폴링 간격 1.5초, 60초가 지나도 끝나지 않으면 "백그라운드에서 계속 처리 중" 안내 후 폴링 중단(완료되면 웹 푸시)
 - 같은 작업을 중복 요청하면 진행 중인 `run_id`를 그대로 돌려준다(예: 같은 공고 준비하기 연타)
-- MVP 작업 큐는 FastAPI `BackgroundTasks`로 시작하고, 부하가 생기면 별도 워커로 분리
+- MVP 작업 큐는 요청과 따로 도는 asyncio 작업(`app/background.py`의 `TaskRunner`)이고, 부하가 생기면 별도 워커로 분리. FastAPI `BackgroundTasks`는 요청의 의존성(DB 연결·트랜잭션)이 정리되기 전에 돌아 잠금을 붙잡아서 쓰지 않는다. 서버를 끌 때 돌던 작업을 10초까지 기다리고, 못 끝낸 작업은 다음 요청이 멈춘 실행으로 보고 정리한다
 
 ## 3. 엔드포인트 한눈에 보기
 
@@ -620,6 +622,9 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 { "run_id": "uuid", "status": "running" }
 ```
 
+- 누를 때 공고 상세와 같은 방법으로 지금 프로필로 다시 판정한다. 이미 준비했거나 준비하는 중이면 `200`과 그 실행이다(`run_id`는 실행 기록이 지워진 옛 계획이면 null). 5분 넘게 `running`인 실행은 멈춘 것으로 보고 그 계획을 지운 뒤 새로 만든다. 실패한 실행의 계획은 남지 않아 다시 누르면 새로 만든다. 두 번 눌러도 계획은 하나다
+- 마감이 지났거나 마감 상태인 공고는 `409 DEADLINE_PASSED`. 멈춘·실패한 계획은 이 검사들을 모두 지난 뒤에 지운다(숨김 공고는 준비한 사람에게만 보이기 때문)
+- `register_calendar`·`calendar_provider`는 받기만 하고 등록은 F-32에서 한다. 그 전까지 결과의 `calendar_event`·`calendar_error`는 null이다
 - 판정이 `ineligible`이면 `409 NOT_ELIGIBLE`. 프론트는 "그래도 준비하기"를 누르면 `{"force": true}`로 다시 보낸다
 - `calendar_provider`가 `ics`면 캘린더 API를 부르지 않고 결과에 .ics 링크를 포함
 - 캘린더 연결이 없는데 `register_calendar`가 true이면, 준비 일정은 그대로 만든다. 결과의 `calendar_event`는 null이고 `calendar_error`는 `CALENDAR_NOT_CONNECTED`다. 프론트는 캘린더를 연결(4장)한 뒤 `POST /calendar/events`로 등록한다
@@ -627,8 +632,8 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 ```json
 { "kind": "prepare", "...": "위 result와 같은 형식", "calendar_event": null, "calendar_error": "CALENDAR_NOT_CONNECTED" }
 ```
-- `target_date`는 `deadline_at`이 null인 상시 공고에서 **필수**다. `planner_tasks.due_date`가 NOT NULL이라 화면에서 목표일을 받는다
-- `build_prep_plan` 역산 규칙: 서류 할 일 = 마감 2일 전 − `lead_days`. 오늘보다 앞서면 오늘로 둬서 지난 날짜가 생기지 않게 한다
+- `target_date`는 `deadline_at`이 null인 상시 공고에서 **필수**다. `planner_tasks.due_date`가 NOT NULL이라 화면에서 목표일을 받는다. 오늘보다 앞선 날짜면 `422 VALIDATION_FAILED`이고 `details.fields.target_date`에 이유를 담는다
+- `build_prep_plan` 역산 규칙: 서류 할 일 "○○ 준비" = 마감 2일 전 − `lead_days`(모르면 1일), 마지막 "신청 제출" = 마감 1일 전. 오늘보다 앞서면 오늘로 둬서 지난 날짜가 생기지 않게 한다. 상시 공고는 `target_date`를 마감일처럼 쓴다
 
 완료 시 `result`:
 
@@ -638,12 +643,16 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
   "prep_plan_id": "uuid",
   "documents": [ { "id": "uuid", "name": "재학증명서", "issuer": "한양인 포털", "how_to": "...", "lead_days": 1 } ],
   "tasks": [
-    { "id": "uuid", "title": "재학증명서 발급", "due_date": "2026-10-12", "document_id": "uuid" },
-    { "id": "uuid", "title": "신청서 작성·제출", "due_date": "2026-10-14", "document_id": null }
+    { "id": "uuid", "title": "재학증명서 준비", "due_date": "2026-10-12", "document_id": "uuid" },
+    { "id": "uuid", "title": "신청 제출", "due_date": "2026-10-14", "document_id": null }
   ],
-  "calendar_event": { "id": "uuid", "provider": "google", "external_event_id": "abc123", "starts_at": "2026-10-15T23:59:00+09:00" }
+  "calendar_event": { "id": "uuid", "provider": "google", "external_event_id": "abc123", "starts_at": "2026-10-15T23:59:00+09:00" },
+  "calendar_error": null
 }
 ```
+
+- `get_document_guide`는 내부 서류 사전을 먼저 보고, 사전에 없는 서류만 모델에 한 번 묻는다. 채운 값(`issuer`·`how_to`·`lead_days`·`effort_minutes`)은 `opportunity_documents`에 남아 다른 학생도 같이 쓰고, 이미 채워진 칸은 덮지 않는다
+- 청년정책처럼 서류 행이 없는 공고는 처음 준비할 때 원문의 "제출 서류" 칸을 모델에 주고 서류 목록과 안내를 함께 받아 `opportunity_documents`에 넣는다
 
 ### `GET /planner/tasks`
 
@@ -1111,7 +1120,8 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - `note`: 모델이 고른 이유 한 줄이다. 공고 원문에서 온 내용만 담고 프로필 값은 담지 않는다
 - 토큰 수·비용은 사용자 응답에 넣지 않고 내부 지표로만 쓴다
 - 실패 시 `status: "failed"`, `error: { "code": "LLM_TIMEOUT", "message": "..." }`
-- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다.
+- `error`는 서버가 정한 에러(13장 코드)만 그대로 보여 준다. 그 밖의 예외는 `INTERNAL_ERROR`와 정해진 문구로 바꿔 내부 내용이 나가지 않게 한다
+- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다. 준비하기는 get_document_guide → 필요 서류 확인, build_prep_plan → 마감일에서 거꾸로 일정 짜기, create_calendar_event → 캘린더에 마감일 넣기다(모두 pipeline).
 - 앞에서 읽은 곳의 뒷부분을 읽은 호출(시작 위치가 0보다 큼, Vision은 PDF 2쪽부터)은 "이어 읽기"다(예: 첨부 '파일명' 이어 읽기).
 - 도구가 오류를 돌려줬거나 제출이 거절된 호출은 status failed다. tool_calls.status에는 succeeded로 남는다.
 - note는 주소를 지우고 공백을 한 칸으로 줄인 한 줄이고 최대 200자다.
@@ -1148,6 +1158,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `DAILY_UPLOAD_LIMIT` | 429 | 하루 업로드 한도 초과, `details.reset_at` | 안내 문구 |
 | `REPORT_NOT_ALLOWED` · `ALREADY_REPORTED` | 400 · 409 | 신고 불가·중복 신고 (P1, 신고와 함께) | 토스트 |
 | `NOT_ELIGIBLE` | 409 | 부적격 공고 준비하기 | "그래도 준비하기" 확인 |
+| `DEADLINE_PASSED` | 409 | 마감이 지난 공고 준비하기 | 안내 문구 |
 | `SYLLABUS_EXISTS` | 409 | 과목 계획서 이미 있음 | 교체 여부 확인 |
 | `FIELD_READ_ONLY` · `TASK_NOT_DELETABLE` | 400 | LMS 과제 등 수정·삭제 불가 | 토스트 |
 | `CALENDAR_NOT_CONNECTED` | 409 | 캘린더 연결이 없거나 만료. `details.reason`은 `not_connected` 또는 `expired` | 캘린더 연결(증분 승인) |
@@ -1202,3 +1213,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 > 10/13 반영: OpportunityItem·OpportunityDetail의 my_mark, OpportunityMark·MarkResult 타입, 홈의 추천 공고·관심·숨김 탭, 카드·상세의 관심·숨기기 버튼.
 
 > 10/14 반영: 홈 목록 5개씩 쪽 나누기(지원 어려움 묶음도 따로), 관심·숨기기를 누르면 바로 옮기기, 들어간 탭 강조, 안내의 탭 보기 버튼.
+
+> 10/14 반영: PrepareStarted 타입, PrepareResult.calendar_error, 준비하기 화면의 실행 단계 표시·"그래도 준비하기"·상시 공고 목표일.

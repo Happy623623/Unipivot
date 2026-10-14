@@ -9,6 +9,7 @@ from app.auth import CurrentUserDep
 from app.clock import NowDep
 from app.eligibility import KST
 from app.errors import ApiError
+from app.prepare.service import PrepareServiceDep
 from app.repositories.opportunities import FeedQuery, OpportunityRepoDep, decode_cursor
 from app.schemas.opportunities import (
     CATEGORIES,
@@ -19,6 +20,7 @@ from app.schemas.opportunities import (
     MarkResult,
     OpportunityDetail,
 )
+from app.schemas.prepare import PrepareRequest, PrepareStarted
 
 router = APIRouter(prefix="/opportunities", tags=["공고"])
 
@@ -137,3 +139,61 @@ async def unmark_opportunity(
     """표시를 지운다(F-45). 표시가 없거나 보이지 않는 공고여도 204다(내 행만 지운다)."""
     await repo.clear_mark(user.id, str(opportunity_id))
     return Response(status_code=204)
+
+
+@router.post("/{opportunity_id}/prepare", status_code=202, response_model=PrepareStarted)
+async def prepare_opportunity(
+    opportunity_id: UUID,
+    body: PrepareRequest,
+    user: CurrentUserDep,
+    service: PrepareServiceDep,
+    now: NowDep,
+    response: Response,
+) -> PrepareStarted:
+    """준비하기(F-30·F-31). 서류 안내 → 역산 일정을 뒤에서 만들고 run_id를 먼저 준다(GET /runs/{id}).
+
+    누를 때 지금 프로필로 다시 판정한다. 이미 준비한 공고(또는 준비하는 중)면 200과 그 실행이다.
+    지원 어려움은 force가 아니면 409 NOT_ELIGIBLE, 마감이 지난 공고는 409 DEADLINE_PASSED, 상시 공고는
+    target_date가 필요하다(422). 캘린더 등록(F-32)은 다음 작업이라 register_calendar는 받기만 한다.
+    """
+    oid = str(opportunity_id)
+    detail = await service.judge(user.id, oid, now=now, display_name=user.name)
+    if detail is None:
+        raise ApiError(404, "NOT_FOUND", "공고를 찾을 수 없어요.")
+    plan = await service.plan(user.id, oid)
+    if plan is not None and (plan.done or plan.running):
+        response.status_code = 200
+        return PrepareStarted(run_id=plan.run_id, status="succeeded" if plan.done else "running")
+    # 멈췄거나 실패한 계획은 지우고 다시 만든다. 지우면 그 공고를 다시 열지 못할 수도 있어
+    # (숨김 공고는 준비한 사람에게만 보인다) 아래 거절 검사를 모두 지난 뒤에 지운다
+    stale = plan
+    if detail.status == "expired" or (detail.deadline_at is not None and detail.deadline_at <= now):
+        raise ApiError(409, "DEADLINE_PASSED", "마감이 지난 공고예요. 준비 일정을 만들 수 없어요.")
+    if detail.status != "active":  # 숨김·병합된 공고(준비하지 않았으면 보이지도 않는다)
+        raise ApiError(404, "NOT_FOUND", "공고를 찾을 수 없어요.")
+    if detail.eligibility.status == "ineligible" and not body.force:
+        raise ApiError(
+            409,
+            "NOT_ELIGIBLE",
+            "지원 조건을 충족하지 못한 공고예요. 그래도 준비할지 확인해 주세요.",
+        )
+    today = now.astimezone(KST).date()
+    if detail.deadline_at is not None:
+        deadline = detail.deadline_at.astimezone(KST).date()
+    elif body.target_date is None or body.target_date < today:
+        reason = (
+            "상시 공고는 목표일을 골라 주세요."
+            if body.target_date is None
+            else "목표일은 오늘이나 그 뒤로 골라 주세요."
+        )
+        raise ApiError(
+            422, "VALIDATION_FAILED", "입력값을 확인해 주세요.", {"fields": {"target_date": reason}}
+        )
+    else:
+        deadline = body.target_date
+    if stale is not None:
+        await service.reset(stale)
+    started = await service.begin(user.id, oid, deadline=deadline, today=today)
+    if not started.created:
+        response.status_code = 200
+    return PrepareStarted(run_id=started.run_id, status=started.status)

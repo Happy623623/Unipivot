@@ -175,6 +175,12 @@ _REQUIREMENTS_JSON = (
     " from requirements r where r.opportunity_id = o.id), '[]'::jsonb)"
 )
 _PREP_JOIN = " left join prep_plans p on p.user_id = %(uid)s and p.opportunity_id = o.id"
+# 준비를 마친 계획(F-31): 준비하기 실행이 성공했거나 실행 기록이 없다. 실행 중·실패한 계획은 준비하지 않은
+# 것으로 본다(다시 누르면 이어 보거나 새로 만든다, app/repositories/prepare.py)
+_PREP_DONE = (
+    "(p.agent_run_id is null or exists(select 1 from agent_runs pr"
+    " where pr.id = p.agent_run_id and pr.status = 'succeeded'))"
+)
 # 상세를 열 수 있는 공고: 준비한 공고는 상태와 상관없이 본인에게, 그 밖은 활성·마감 공고 중 공개 범위 안
 _OPENABLE = " (p.id is not null or (o.status in ('active', 'expired') and" + _VISIBLE + "))"
 # 상세 한 건: 공고·요건·서류(내 준비 할 일)·첨부·처리 과정·캘린더를 한 문장으로 읽는다
@@ -188,6 +194,7 @@ _DETAIL = (
     " (select lc.name from lms_courses lc where lc.user_id = %(uid)s"
     " and lc.canvas_course_id = o.visible_canvas_course_id) as course_name,"
     " p.id as prep_plan_id, p.agent_run_id as prepare_run_id,"
+    " (p.id is not null and " + _PREP_DONE + ") as prep_done,"
     " exists(select 1 from opportunity_reports rp where rp.opportunity_id = o.id"
     " and rp.reporter_id = %(uid)s) as reported_by_me,"
     " " + _REQUIREMENTS_JSON + " as requirements,"
@@ -283,8 +290,8 @@ def _feed_sql(where: str, outer: str, order: str) -> str:
         " o.source_type::text as source_type, o.deadline_at, o.created_at, o.easy_summary,"
         " o.needs_review, coalesce(o.uploaded_by = %(uid)s, false) as uploaded_by_me,"
         " c.name as course_name,"
-        " exists(select 1 from prep_plans p where p.user_id = %(uid)s and p.opportunity_id = o.id)"
-        " as prepared,"
+        " exists(select 1 from prep_plans p where p.user_id = %(uid)s and p.opportunity_id = o.id"
+        " and " + _PREP_DONE + ") as prepared,"
         " coalesce(o.created_at >= %(new_since)s, false) and not exists(select 1"
         " from opportunity_views v where v.user_id = %(uid)s and v.opportunity_id = o.id) as is_new,"
         " " + _JUDGED + " as judged,"
@@ -507,8 +514,8 @@ class OpportunityRepository:
             eligibility=eligibility,
             documents=[DocumentItem(**document) for document in row["documents"]],
             prep=Prep(
-                prepared=row["prep_plan_id"] is not None,
-                prep_plan_id=_text(row["prep_plan_id"]),
+                prepared=row["prep_done"],
+                prep_plan_id=_text(row["prep_plan_id"]) if row["prep_done"] else None,
                 tasks_total=row["tasks_total"],
                 tasks_done=row["tasks_done"],
                 calendar_events=[CalendarEventRef(**event) for event in row["calendar_events"]],

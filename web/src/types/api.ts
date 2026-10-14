@@ -248,12 +248,18 @@ export interface PosterExtractResult {
   };
   duplicate_candidate: { opportunity_id: string; title: string } | null;
 }
+// POST /opportunities/{id}/prepare: 202(새 실행)·200(이미 준비했거나 준비 중)
+export interface PrepareStarted {
+  run_id: string | null;                 // 실행 기록이 지워진 옛 계획은 null
+  status: RunStatus;
+}
 export interface PrepareResult {
   kind: "prepare";
   prep_plan_id: string;
   documents: DocumentItem[];
   tasks: { id: string; title: string; due_date: string; document_id: string | null }[];
   calendar_event: { id: string; provider: "google" | "ics"; starts_at: string } | null;
+  calendar_error: string | null;         // 캘린더 등록(F-32) 전까지 null
 }
 
 // GET /planner/tasks
