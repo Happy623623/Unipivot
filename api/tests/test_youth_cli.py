@@ -162,6 +162,8 @@ async def test_db_error_while_saving(
     """넣다가 DB 오류(예: 학위과정 마이그레이션 전이라 요건 제약에 걸림)가 나면 이유 한 줄과 끝 코드 1."""
 
     class Closing:
+        autocommit = True  # 실행 로그 연결은 autocommit이어야 한다(agent_log.using)
+
         async def close(self) -> None:
             return None
 

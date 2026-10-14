@@ -1,11 +1,15 @@
 """에이전트 실행 로깅: agent_runs → tool_calls → llm_calls (ERD 로깅 도메인, PRD 8장 지표의 원천).
 
-async with agent_run(log_conn, trigger="poster_upload", user_id=user.id) as run:
+async with agent_run(connect, trigger="poster_upload", user_id=user.id) as run:
     async with run.tool("extract_from_image", {"file_id": file_id}) as call:
         result = await llm.extract(...)
         await run.record_llm(provider="anthropic", model="...", input_tokens=...,
                              output_tokens=..., latency_ms=..., tool_call=call)
         call.output = {"title": result.title}
+
+connect는 autocommit 연결을 주는 공급자다(app/db.py의 get_log_connect, 풀이 없으면 using(conn)).
+한 줄 쓸 때마다 빌렸다 바로 돌려준다. 실행이 끝날 때까지 연결을 쥐면 로그 풀(max_size) 수만큼만
+동시에 돌 수 있고, 모델을 기다리는 동안 다른 실행이 연결을 못 얻는다.
 
 cost_usd를 빼면 단가표(app/pricing.py)로 비용을 계산한다.
 
@@ -15,8 +19,8 @@ GET /runs/{id}가 학생에게 그대로 보여 준다. 그 밖의 예외는 내
 """
 
 import time
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -28,6 +32,9 @@ from psycopg.types.json import Jsonb
 from app.errors import ApiError
 from app.pricing import cost_usd as priced_cost
 from app.schemas.me import PROFILE_FIELDS
+
+# autocommit 연결을 주는 공급자. 풀이면 pool.connection, 풀이 없으면 using(conn)이다
+LogConnect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 
 SECRET_HINTS = ("token", "secret", "password", "authorization", "api_key")
 # 프로필 값은 LLM에도 로그에도 넣지 않는다(PRD 6장). 실수로 들어와도 여기서 지운다
@@ -61,9 +68,20 @@ class ToolCall:
     output: Any = None
 
 
+def using(conn: AsyncConnection) -> LogConnect:
+    """이미 연 autocommit 연결 하나를 그대로 쓰는 공급자. 풀이 없는 곳(CLI·테스트)에서 쓴다."""
+    _require_autocommit(conn)
+
+    @asynccontextmanager
+    async def connect() -> AsyncIterator[AsyncConnection]:
+        yield conn
+
+    return connect
+
+
 @dataclass
 class AgentRun:
-    conn: AsyncConnection
+    connect: LogConnect
     id: str
     input_tokens: int = 0
     output_tokens: int = 0
@@ -74,22 +92,24 @@ class AgentRun:
     async def tool(self, name: str, input: dict[str, Any] | None = None) -> AsyncIterator[ToolCall]:
         self._seq += 1
         started = time.perf_counter()
-        cursor = await self.conn.execute(
-            "insert into tool_calls (run_id, seq, tool_name, input, status)"
-            " values (%s, %s, %s, %s, 'running') returning id",
-            (self.id, self._seq, name, Jsonb(scrub(input or {}))),
-        )
-        call = ToolCall(id=str((await cursor.fetchone())["id"]))
+        async with self.connect() as conn:
+            cursor = await conn.execute(
+                "insert into tool_calls (run_id, seq, tool_name, input, status)"
+                " values (%s, %s, %s, %s, 'running') returning id",
+                (self.id, self._seq, name, Jsonb(scrub(input or {}))),
+            )
+            call = ToolCall(id=str((await cursor.fetchone())["id"]))
         status = "failed"
         try:
             yield call
             status = "succeeded"
         finally:
             output = Jsonb(scrub(call.output)) if call.output is not None else None
-            await self.conn.execute(
-                "update tool_calls set output = %s, status = %s, latency_ms = %s where id = %s",
-                (output, status, _elapsed_ms(started), call.id),
-            )
+            async with self.connect() as conn:
+                await conn.execute(
+                    "update tool_calls set output = %s, status = %s, latency_ms = %s where id = %s",
+                    (output, status, _elapsed_ms(started), call.id),
+                )
 
     async def record_llm(
         self,
@@ -109,71 +129,78 @@ class AgentRun:
             cost = priced_cost(provider, model, input_tokens, output_tokens, on)
         else:
             cost = Decimal(str(cost_usd))
-        await self.conn.execute(
-            "insert into llm_calls (run_id, tool_call_id, provider, model, input_tokens,"
-            " output_tokens, cost_usd, latency_ms) values (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                self.id,
-                tool_call.id if tool_call else None,
-                provider,
-                model,
-                input_tokens,
-                output_tokens,
-                cost,
-                latency_ms,
-            ),
-        )
+        async with self.connect() as conn:
+            await conn.execute(
+                "insert into llm_calls (run_id, tool_call_id, provider, model, input_tokens,"
+                " output_tokens, cost_usd, latency_ms) values (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    self.id,
+                    tool_call.id if tool_call else None,
+                    provider,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cost,
+                    latency_ms,
+                ),
+            )
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         self.cost_usd += cost
 
 
 async def start_run(
-    conn: AsyncConnection,
+    connect: LogConnect,
     *,
     trigger: str,
     user_id: str | None = None,
     scenario_code: str | None = None,
 ) -> str:
     """실행 행만 만든다(status running). 이어서 agent_run(run_id=...)으로 기록하거나 abandon_run으로 닫는다."""
-    _require_autocommit(conn)
-    cursor = await conn.execute(
-        "insert into agent_runs (user_id, trigger_type, scenario_code) values (%s, %s, %s)"
-        " returning id",
-        (user_id, trigger, scenario_code),
-    )
-    return str((await cursor.fetchone())["id"])
+    async with connect() as conn:
+        _require_autocommit(conn)
+        cursor = await conn.execute(
+            "insert into agent_runs (user_id, trigger_type, scenario_code) values (%s, %s, %s)"
+            " returning id",
+            (user_id, trigger, scenario_code),
+        )
+        return str((await cursor.fetchone())["id"])
 
 
-async def abandon_run(conn: AsyncConnection, run_id: str, error: ApiError) -> None:
+async def abandon_run(connect: LogConnect, run_id: str, error: ApiError) -> None:
     """시작하지 않을 실행을 실패로 닫는다(같은 공고를 그새 다른 요청이 준비하기 시작했을 때 등)."""
-    await conn.execute(
-        "update agent_runs set status = 'failed', finished_at = now(), latency_ms = 0,"
-        " error_message = %s where id = %s and status = 'running'",
-        (error_text(error), run_id),
-    )
+    async with connect() as conn:
+        await conn.execute(
+            "update agent_runs set status = 'failed', finished_at = now(), latency_ms = 0,"
+            " error_message = %s where id = %s and status = 'running'",
+            (error_text(error), run_id),
+        )
 
 
 @asynccontextmanager
 async def agent_run(
-    conn: AsyncConnection,
+    connect: LogConnect,
     *,
     trigger: str,
     user_id: str | None = None,
     scenario_code: str | None = None,
     run_id: str | None = None,
 ) -> AsyncIterator[AgentRun]:
-    """실행 하나를 기록한다. conn은 autocommit이어야 실패한 실행도 남는다(db.get_log_conn).
+    """실행 하나를 기록한다. connect는 autocommit 연결 공급자다(db.get_log_connect, 또는 using(conn)).
 
-    run_id를 주면 start_run으로 만든 행을 이어서 쓴다(latency_ms는 여기부터 잰다).
+    한 줄 쓸 때마다 빌렸다 돌려주므로, 모델을 기다리는 동안 로그 연결을 쥐지 않는다.
+    autocommit이어야 실패한 실행도 남는다. run_id를 주면 start_run으로 만든 행을 이어서 쓴다
+    (latency_ms는 여기부터 잰다).
     """
-    _require_autocommit(conn)
     started = time.perf_counter()
     if run_id is None:
         run_id = await start_run(
-            conn, trigger=trigger, user_id=user_id, scenario_code=scenario_code
+            connect, trigger=trigger, user_id=user_id, scenario_code=scenario_code
         )
-    run = AgentRun(conn=conn, id=run_id)
+    else:
+        async with connect() as conn:
+            _require_autocommit(conn)
+    run = AgentRun(connect=connect, id=run_id)
     try:
         yield run
     except Exception as exc:
@@ -191,20 +218,22 @@ def error_text(exc: BaseException) -> str:
 
 def _require_autocommit(conn: AsyncConnection) -> None:
     if not conn.autocommit:
-        raise RuntimeError("agent_run에는 autocommit 연결(get_log_conn)을 넘겨야 해요.")
+        raise RuntimeError("agent_run에는 autocommit 연결 공급자(get_log_connect)를 넘겨야 해요.")
 
 
 async def _finish(run: AgentRun, started: float, status: str, error: str | None) -> None:
-    await run.conn.execute(
-        "update agent_runs set status = %s, finished_at = now(), latency_ms = %s,"
-        " input_tokens = %s, output_tokens = %s, cost_usd = %s, error_message = %s where id = %s",
-        (
-            status,
-            _elapsed_ms(started),
-            run.input_tokens,
-            run.output_tokens,
-            run.cost_usd,
-            error,
-            run.id,
-        ),
-    )
+    async with run.connect() as conn:
+        await conn.execute(
+            "update agent_runs set status = %s, finished_at = now(), latency_ms = %s,"
+            " input_tokens = %s, output_tokens = %s, cost_usd = %s, error_message = %s"
+            " where id = %s",
+            (
+                status,
+                _elapsed_ms(started),
+                run.input_tokens,
+                run.output_tokens,
+                run.cost_usd,
+                error,
+                run.id,
+            ),
+        )

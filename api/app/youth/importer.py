@@ -24,7 +24,7 @@ from typing import Literal
 
 from psycopg import AsyncConnection
 
-from app.agent_log import agent_run
+from app.agent_log import LogConnect, agent_run
 from app.extraction.models import ExtractionResult
 from app.extraction.store import save_extraction
 from app.youth import BUILD_TOOL, FETCH_TOOL
@@ -70,18 +70,19 @@ async def ensure_source(conn: AsyncConnection) -> str:
 
 async def collect(
     conn: AsyncConnection,
-    log_conn: AsyncConnection,
+    log_connect: LogConnect,
     client: YouthPolicyClient,
     *,
     today: date,
     scenario: str | None = None,
     hide_gone: bool = False,
 ) -> CollectResult:
-    """conn은 데이터(autocommit, 정책마다 트랜잭션), log_conn은 실행 로그용이다. today는 KST 날짜다.
+    """conn은 데이터(autocommit, 정책마다 트랜잭션), log_connect는 실행 로그 연결 공급자다.
+    today는 KST 날짜다.
     온통청년 오류(YouthApiError)는 실행을 실패로 남기고 그대로 올라간다."""
     source_id = await ensure_source(conn)
     table = region_table()
-    async with agent_run(log_conn, trigger="batch_crawl", scenario_code=scenario) as run:
+    async with agent_run(log_connect, trigger="batch_crawl", scenario_code=scenario) as run:
         async with run.tool(FETCH_TOOL, {"page_size": 100, "scope": SCOPE}) as call:
             fetched = await client.fetch_all()
             call.output = fetched.summary()

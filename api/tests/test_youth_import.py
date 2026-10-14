@@ -11,6 +11,7 @@ from typing import Any
 import psycopg
 import pytest
 
+from app.agent_log import using
 from app.eligibility import KST
 from app.repositories.opportunities import FeedQuery, OpportunityRepository
 from app.youth import BUILD_TOOL, FETCH_TOOL, importer
@@ -51,7 +52,7 @@ async def run(
     **kw: Any,
 ) -> CollectResult:
     return await collect(
-        conn, log_conn, FakeClient(list(items), **kw), today=today, scenario=SCENARIO
+        conn, using(log_conn), FakeClient(list(items), **kw), today=today, scenario=SCENARIO
     )
 
 
@@ -317,7 +318,12 @@ async def test_many_missing_policies_are_not_hidden() -> None:
         assert (await rows(conn))["M00"]["status"] == "hidden"
         # 정말 내려갔으면 hide_gone(--hide-gone)으로 숨긴다
         forced = await collect(
-            conn, log_conn, FakeClient(many[1:4]), today=TODAY, scenario=SCENARIO, hide_gone=True
+            conn,
+            using(log_conn),
+            FakeClient(many[1:4]),
+            today=TODAY,
+            scenario=SCENARIO,
+            hide_gone=True,
         )
         assert (forced.gone_kept, forced.counts["hidden"]) == (0, 21)
     finally:

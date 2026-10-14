@@ -30,6 +30,8 @@
 >
 > v0.4 보강(10/14, 준비하기): 작업 큐는 TaskRunner, DEADLINE_PASSED 409, 준비하기 단계 label과 실패 이유 규칙, 할 일 제목·역산 규칙
 >
+> v0.4 보강(10/14, 실행 로그): 로그 연결은 한 줄 쓸 때마다 빌렸다 돌려준다(API 변경 없음)
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -101,7 +103,7 @@ sequenceDiagram
 - 접수 응답: `202 { "run_id": "uuid", "status": "running" }`
 - 폴링 간격 1.5초, 60초가 지나도 끝나지 않으면 "백그라운드에서 계속 처리 중" 안내 후 폴링 중단(완료되면 웹 푸시)
 - 같은 작업을 중복 요청하면 진행 중인 `run_id`를 그대로 돌려준다(예: 같은 공고 준비하기 연타)
-- MVP 작업 큐는 요청과 따로 도는 asyncio 작업(`app/background.py`의 `TaskRunner`)이고, 부하가 생기면 별도 워커로 분리. FastAPI `BackgroundTasks`는 요청의 의존성(DB 연결·트랜잭션)이 정리되기 전에 돌아 잠금을 붙잡아서 쓰지 않는다. 서버를 끌 때 돌던 작업을 10초까지 기다리고, 못 끝낸 작업은 다음 요청이 멈춘 실행으로 보고 정리한다
+- MVP 작업 큐는 요청과 따로 도는 asyncio 작업(`app/background.py`의 `TaskRunner`)이고, 부하가 생기면 별도 워커로 분리. FastAPI `BackgroundTasks`는 요청의 의존성(DB 연결·트랜잭션)이 정리되기 전에 돌아 잠금을 붙잡아서 쓰지 않는다. 서버를 끌 때 돌던 작업을 10초까지 기다리고, 못 끝낸 작업은 다음 요청이 멈춘 실행으로 보고 정리한다. 실행 로그(agent_runs·tool_calls·llm_calls)는 한 줄 쓸 때마다 로그 풀에서 연결을 빌렸다 돌려준다. 실행이 끝날 때까지 쥐고 있으면 모델을 기다리는 동안 풀이 막혀, 동시에 돌 수 있는 작업 수가 풀 크기로 묶인다
 
 ## 3. 엔드포인트 한눈에 보기
 
