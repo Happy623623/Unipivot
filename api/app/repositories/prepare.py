@@ -2,7 +2,7 @@
 
 계획 행은 준비하기를 누를 때(POST) 실행 id와 함께 먼저 만든다. (사용자, 공고) 유니크라 두 번 눌러도 하나다.
 실행이 실패하면 계획을 지워 다시 누를 수 있게 한다. 실행이 성공해야 준비한 공고로 본다
-(app/repositories/opportunities.py의 _PREP_DONE).
+(app/repositories/opportunities.py의 PREP_DONE).
 """
 
 from collections.abc import Sequence

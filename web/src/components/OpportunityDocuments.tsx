@@ -1,4 +1,4 @@
-import { errorMessage, setDocumentDone, TASKS_READY } from "@/api/client";
+import { errorMessage, setDocumentDone } from "@/api/client";
 import { webUrl } from "@/lib/webUrl";
 import type { DocumentItem, OpportunityDetail } from "@/types/api";
 
@@ -22,9 +22,13 @@ function documentInfo(document: DocumentItem): string {
 
 // 공고 상세의 필요 서류(준비하면 플래너 할 일과 같이 체크)와 공고 첨부파일
 export default function OpportunityDocuments({ detail, onChange, onError }: OpportunityDocumentsProps) {
-  // 서류 체크는 준비 일정을 만든 뒤에 한다. 실제 모드는 플래너 API 전까지 체크를 막는다
-  const checkable = detail.prep.prepared && TASKS_READY;
-  const lockedHint = detail.prep.prepared ? "서류 체크는 아직 준비 중이에요" : "준비 일정을 만들면 체크할 수 있어요";
+  // 서류 체크는 그 서류의 플래너 할 일을 완료로 바꾼다. 준비 전에는 할 일이 없어 체크할 수 없다.
+  // 준비한 뒤에 공고에 새로 생긴 서류도 할 일이 없다(다시 준비하면 생긴다)
+  // 준비한 뒤 공고가 바뀌어 새로 생긴 서류에는 할 일이 없다. 다시 준비하는 길이 아직 없어 체크도 못 한다
+  const prepared = detail.prep.prepared;
+  const lockedHint = prepared
+    ? "공고에 나중에 추가된 서류예요. 준비 일정에 없어서 체크할 수 없어요"
+    : "준비 일정을 만들면 체크할 수 있어요";
 
   return (
     <div className="min-h-[400px] rounded-2xl border border-[#e5e7eb] bg-white p-[22px]">
@@ -36,6 +40,8 @@ export default function OpportunityDocuments({ detail, onChange, onError }: Oppo
         )}
         {detail.documents.map((document) => {
           const formUrl = webUrl(document.form_url);
+          const taskId = prepared ? document.task_id : null;
+          const checkable = taskId !== null;
           return (
             <div key={document.id}>
               <label
@@ -47,8 +53,9 @@ export default function OpportunityDocuments({ detail, onChange, onError }: Oppo
                   checked={document.is_done === true}
                   disabled={!checkable}
                   onChange={async (event) => {
+                    if (!taskId) return;
                     try {
-                      onChange(await setDocumentDone(detail.id, document.id, event.target.checked));
+                      onChange(await setDocumentDone(detail.id, taskId, event.target.checked));
                     } catch (caught) {
                       onError(errorMessage(caught, "서류를 체크하지 못했어요. 잠시 후 다시 눌러 주세요."));
                     }
