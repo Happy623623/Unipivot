@@ -1,4 +1,4 @@
-import { ApiError, apiFetch, notReady, USE_MOCKS } from "@/api/http";
+import { ApiError, apiFetch, notReady, USE_MOCKS, waitForRun } from "@/api/http";
 import * as mock from "@/api/mockClient";
 import { MockApiError, rejectAfter, respond } from "@/api/mockClient";
 import { getDevScenario } from "@/dev/scenarios";
@@ -25,12 +25,14 @@ import type {
   PlannerTask,
   PosterExtractResult,
   PrepareResult,
+  PrepareStarted,
+  ProcessStep,
   ReportReason,
 } from "@/types/api";
 
 // 화면이 쓰는 데이터 함수는 모두 이 파일에서 가져간다 (web/CLAUDE.md, 스킬 mock-to-api).
 // 계정·LMS 함수는 accountClient.ts·lmsClient.ts에 두고 여기서 다시 내보낸다.
-// 공고 피드·상세는 실제 API를 부르고, 아래 준비하기·플래너·포스터 함수는 아직 목이다
+// 공고 피드·상세·준비하기는 실제 API를 부르고, 아래 플래너·포스터 함수는 아직 목이다
 export * from "@/api/accountClient";
 export * from "@/api/lmsClient";
 export { ApiError, consentRequired, errorMessage, fieldErrors } from "@/api/http";
@@ -106,10 +108,12 @@ export async function setOpportunityMark(id: string, mark: OpportunityMark | nul
   else await apiFetch<MarkResult>(path, { method: "PUT", body: JSON.stringify({ mark }) });
 }
 
-// 준비하기·서류 체크를 받을지. TODO(api): POST /opportunities/{id}/prepare·PATCH /planner/tasks가 생기면
-// 아래 함수를 바꾸고 지운다. 그 전까지 실제 모드는 "준비 일정 만들기"를 누르면 준비 중이라고 알린다
-export const PREPARE_READY = USE_MOCKS;
-export const PREPARE_NOT_READY = "준비 일정 만들기는 아직 준비 중이에요. 지금은 필요 서류와 마감일을 이 화면에서 확인해 주세요.";
+// 준비하기(F-30·F-31)는 실제 API를 부른다. 그 뒤에 딸린 기능은 각자의 API가 생길 때까지 목이다.
+// TODO(api): PATCH /planner/tasks/{id}(서류 체크·플래너)와 POST /calendar/events(F-32)가 생기면 지운다
+export const TASKS_READY = USE_MOCKS; // 서류 체크
+export const PLANNER_READY = USE_MOCKS; // 플래너 화면
+export const CALENDAR_READY = USE_MOCKS; // 마감일을 Google Calendar에 넣기
+export const CALENDAR_NOT_READY = "마감일 캘린더 등록은 아직 준비 중이에요. 준비 일정은 이 화면에서 확인해 주세요.";
 
 export function getPlanner(from: string, to: string): Promise<PlannerResponse> {
   const storedPlanner = getStoredPlanner();
@@ -136,13 +140,44 @@ export function deleteManualPlannerTask(id: string): Promise<void> {
   return respond(undefined);
 }
 
-export function prepareOpportunity(
+export interface PrepareOptions {
+  force?: boolean; // 지원 어려움 공고를 "그래도 준비하기"로 다시 보낸다
+  onProgress?: (steps: ProcessStep[]) => void; // 실행 단계(GET /runs/{id}의 steps)
+}
+
+// POST /opportunities/{id}/prepare → 202 run_id → GET /runs/{id}로 끝날 때까지 기다린다(API 명세 2·7장).
+// 이미 준비한 공고는 200이고, 그 실행이 남아 있지 않으면 결과도 없다(null: 부른 쪽이 상세를 다시 받는다)
+export async function prepareOpportunity(
   id: string,
   includeCalendar: boolean,
   targetDate?: string,
-): Promise<PrepareResult> {
-  if (!PREPARE_READY) return notReady(PREPARE_NOT_READY);
-  return respond(prepareStoredOpportunity(id, includeCalendar, targetDate));
+  options: PrepareOptions = {},
+): Promise<PrepareResult | null> {
+  if (USE_MOCKS) return respond(prepareStoredOpportunity(id, includeCalendar, targetDate));
+  const started = await apiFetch<PrepareStarted>(
+    `/opportunities/${encodeURIComponent(id)}/prepare`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        register_calendar: includeCalendar && CALENDAR_READY,
+        ...(targetDate ? { target_date: targetDate } : {}),
+        ...(options.force ? { force: true } : {}),
+      }),
+    },
+  );
+  if (!started.run_id) return null; // 실행 기록이 지워진 옛 계획. 상세로 보여 준다
+  const run = await waitForRun<PrepareResult>(started.run_id, (current) =>
+    options.onProgress?.(current.steps),
+  );
+  if (run.status === "failed") {
+    const error = run.error;
+    throw new ApiError(
+      error?.code ?? "INTERNAL_ERROR",
+      error?.message ?? "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요.",
+      0,
+    );
+  }
+  return run.result;
 }
 
 // 서류 체크 = 플래너 할 일 완료 (PATCH /planner/tasks/{task_id})
@@ -151,7 +186,7 @@ export function setDocumentDone(
   documentId: string,
   isDone: boolean,
 ): Promise<OpportunityDetail> {
-  if (!PREPARE_READY) return notReady("서류 체크는 아직 준비 중이에요.");
+  if (!TASKS_READY) return notReady("서류 체크는 아직 준비 중이에요.");
   return respond(setStoredDocumentDone(opportunityId, documentId, isDone));
 }
 

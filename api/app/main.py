@@ -6,11 +6,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import auth_settings_problem
+from app.background import TaskRunner
 from app.config import Settings, get_settings
 from app.db import create_pools
 from app.errors import UnhandledErrorMiddleware, register_error_handlers
 from app.logging_redact import install_log_redaction
-from app.routers import auth, events, health, me, meta, opportunities
+from app.routers import auth, events, health, me, meta, opportunities, runs
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.pool.open()
         await app.state.log_pool.open()
     yield
+    # 돌던 준비하기를 잠깐 기다린다(못 끝내면 다음 요청이 멈춘 실행으로 보고 다시 만든다)
+    await app.state.runner.drain(timeout=10)
     for pool in (app.state.pool, app.state.log_pool):
         if pool is not None:
             await pool.close()
@@ -37,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(title="UNIPIVOT API", version="0.2.0", lifespan=lifespan)
     app.state.settings = settings
+    app.state.runner = TaskRunner()  # 요청이 끝난 뒤 이어서 할 일(준비하기 실행)
     # 나중에 추가한 미들웨어가 바깥이다. 예외로 생긴 500에도 CORS 헤더가 붙게 CORS를 바깥에 둔다
     app.add_middleware(UnhandledErrorMiddleware)
     app.add_middleware(
@@ -48,7 +52,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     register_error_handlers(app)
     app.include_router(health.router)
-    for router in (auth.router, me.router, meta.router, events.router, opportunities.router):
+    for router in (
+        auth.router,
+        me.router,
+        meta.router,
+        events.router,
+        opportunities.router,
+        runs.router,
+    ):
         app.include_router(router, prefix=settings.api_prefix)
     return app
 

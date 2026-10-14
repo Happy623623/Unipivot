@@ -1,4 +1,4 @@
-import { errorMessage, PREPARE_READY, setDocumentDone } from "@/api/client";
+import { errorMessage, setDocumentDone, TASKS_READY } from "@/api/client";
 import { webUrl } from "@/lib/webUrl";
 import type { DocumentItem, OpportunityDetail } from "@/types/api";
 
@@ -23,7 +23,7 @@ function documentInfo(document: DocumentItem): string {
 // 공고 상세의 필요 서류(준비하면 플래너 할 일과 같이 체크)와 공고 첨부파일
 export default function OpportunityDocuments({ detail, onChange, onError }: OpportunityDocumentsProps) {
   // 서류 체크는 준비 일정을 만든 뒤에 한다. 실제 모드는 플래너 API 전까지 체크를 막는다
-  const checkable = detail.prep.prepared && PREPARE_READY;
+  const checkable = detail.prep.prepared && TASKS_READY;
   const lockedHint = detail.prep.prepared ? "서류 체크는 아직 준비 중이에요" : "준비 일정을 만들면 체크할 수 있어요";
 
   return (
@@ -59,6 +59,7 @@ export default function OpportunityDocuments({ detail, onChange, onError }: Oppo
               </label>
               <p className="ml-5 text-[12px] text-[#667085]">
                 {documentInfo(document)}
+                {document.how_to && <span className="block">{document.how_to}</span>}
                 {formUrl && (
                   <a href={formUrl} target="_blank" rel="noopener noreferrer" className="ml-2 font-semibold text-[#4f6ef7]">양식 내려받기</a>
                 )}

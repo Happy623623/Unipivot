@@ -5,7 +5,8 @@ from typing import Any
 import pytest
 
 from app import pricing
-from app.agent_log import AgentRun, agent_run, scrub
+from app.agent_log import AgentRun, abandon_run, agent_run, error_text, scrub
+from app.errors import ApiError
 from app.pricing import Price, cost_usd
 
 TEST_PRICES = {
@@ -101,3 +102,35 @@ async def test_record_llm_prices_from_table(monkeypatch: pytest.MonkeyPatch) -> 
     )
     assert conn.calls[0][1][6] == Decimal("0.002700")
     assert (run.input_tokens, run.output_tokens, run.cost_usd) == (2200, 300, Decimal("0.003700"))
+
+
+def test_error_text_keeps_api_errors_for_students() -> None:
+    """ApiError는 "코드: 문구"(GET /runs/{id}가 보여 준다), 그 밖은 내부 기록이다."""
+    assert (
+        error_text(ApiError(502, "LLM_ERROR", "다시 눌러 주세요."))
+        == "LLM_ERROR: 다시 눌러 주세요."
+    )
+    assert error_text(ValueError("x")) == "ValueError('x')"
+    assert len(error_text(ValueError("가" * 900))) == 500
+
+
+@pytest.mark.anyio
+async def test_agent_run_continues_a_started_run() -> None:
+    """start_run으로 만든 실행은 run_id로 이어 쓴다(새 행을 만들지 않는다). 실패하면 이유를 남긴다."""
+    conn = RecordingConnection()
+    with pytest.raises(ApiError):
+        async with agent_run(conn, trigger="prepare", run_id="run-7") as run:  # type: ignore[arg-type]
+            assert run.id == "run-7"
+            raise ApiError(502, "LLM_ERROR", "다시 눌러 주세요.")
+    assert len(conn.calls) == 1 and conn.calls[0][0].startswith("update agent_runs")
+    status, *_, error, run_id = conn.calls[0][1]
+    assert (status, error, run_id) == ("failed", "LLM_ERROR: 다시 눌러 주세요.", "run-7")
+
+
+@pytest.mark.anyio
+async def test_abandon_run_closes_a_run_that_never_started() -> None:
+    conn = RecordingConnection()
+    await abandon_run(conn, "run-8", ApiError(409, "INTERNAL_ERROR", "이미 준비하고 있어요."))  # type: ignore[arg-type]
+    query, params = conn.calls[0]
+    assert "status = 'failed'" in query and "status = 'running'" in query
+    assert params == ("INTERNAL_ERROR: 이미 준비하고 있어요.", "run-8")
