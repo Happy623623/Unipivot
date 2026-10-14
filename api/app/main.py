@@ -11,7 +11,7 @@ from app.config import Settings, get_settings
 from app.db import create_pools
 from app.errors import UnhandledErrorMiddleware, register_error_handlers
 from app.logging_redact import install_log_redaction
-from app.routers import auth, events, health, me, meta, opportunities, runs
+from app.routers import auth, events, health, me, meta, opportunities, planner, runs
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         meta.router,
         events.router,
         opportunities.router,
+        planner.router,
         runs.router,
     ):
         app.include_router(router, prefix=settings.api_prefix)

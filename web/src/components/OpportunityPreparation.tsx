@@ -5,7 +5,6 @@ import {
   errorMessage,
   fieldErrors,
   getOpportunity,
-  PLANNER_READY,
   prepareOpportunity,
   todayKst,
 } from "@/api/client";
@@ -138,11 +137,9 @@ export default function OpportunityPreparation({
         <div className="w-[210px]">
           <div className="flex justify-between text-[12px] font-semibold">
             <span>서류 {detail.prep.tasks_done}/{detail.prep.tasks_total} 완료</span>
-            {PLANNER_READY && (
-              <button type="button" onClick={() => navigate({ name: "planner" })} className="text-[#4f6ef7]">
-                플래너에서 보기
-              </button>
-            )}
+            <button type="button" onClick={() => navigate({ name: "planner" })} className="text-[#4f6ef7]">
+              플래너에서 보기
+            </button>
           </div>
           <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#e5e7eb]">
             <div className="h-full rounded-full bg-[#4f6ef7]" style={{ width: `${progress}%` }} />
@@ -232,11 +229,9 @@ export default function OpportunityPreparation({
       {completed && (
         <div className="fixed bottom-6 left-1/2 z-[90] flex -translate-x-1/2 items-center gap-3 rounded-[10px] bg-[#181a20] px-4 py-3 text-[13px] font-semibold text-white">
           준비 일정을 만들었어요
-          {PLANNER_READY && (
-            <button type="button" onClick={() => navigate({ name: "planner" })} className="text-[#cfd7ff]">
-              플래너에서 보기
-            </button>
-          )}
+          <button type="button" onClick={() => navigate({ name: "planner" })} className="text-[#cfd7ff]">
+            플래너에서 보기
+          </button>
         </div>
       )}
       <Modal open={confirmOpen} title="그래도 준비하기" onClose={() => setConfirmOpen(false)}>
