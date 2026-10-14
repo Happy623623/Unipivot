@@ -476,6 +476,25 @@ def _raw_text(policy: Mapping[str, Any]) -> str:
     return "\n".join(sections)
 
 
+def raw_section(raw_text: str | None, name: str) -> str | None:
+    """원문(_raw_text)에서 한 칸의 내용. 다음 칸 이름("신청 사이트: " 등)이 나오기 전까지다. 없으면 None.
+
+    준비하기가 청년정책의 "제출 서류" 칸을 읽어 서류 목록을 만들 때 쓴다(app/prepare).
+    """
+    heads = tuple(f"{label}: " for _, label in _RAW_SECTIONS)
+    collected: list[str] | None = None
+    for line in (raw_text or "").splitlines():
+        if line.startswith(heads):
+            if collected is not None:
+                break
+            if line.startswith(f"{name}: "):
+                collected = [line[len(name) + 2 :]]
+        elif collected is not None:
+            collected.append(line)
+    text = "\n".join(collected or []).strip()
+    return text or None
+
+
 def _meaningful(value: Any) -> str | None:
     """빈 값·"-"·"해당없음" 같은 글은 None이다. 공백·줄바꿈은 한 칸으로 줄인다."""
     text = _text(value)

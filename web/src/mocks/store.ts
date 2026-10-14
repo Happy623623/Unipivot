@@ -63,8 +63,8 @@ export function prepareStoredOpportunity(
       return {
         id: taskId,
         title: `${document.name} 준비`,
-        // 제출 2일 전까지 서류를 갖추도록 발급 소요일만큼 앞당긴다
-        due_date: clampToToday(subtractDays(deadline, 2 + (document.lead_days ?? 0))),
+        // 마감 2일 전까지 서류를 갖추도록 발급 소요일만큼 앞당긴다(모르면 하루, API와 같다)
+        due_date: clampToToday(subtractDays(deadline, 2 + (document.lead_days ?? 1))),
         is_done: false,
         source: "prep_plan",
         link: {
@@ -77,8 +77,8 @@ export function prepareStoredOpportunity(
     });
     const submitTask: PlannerTask = {
       id: `task-${id}-submit`,
-      title: "신청서 제출",
-      due_date: deadline,
+      title: "신청 제출",
+      due_date: clampToToday(subtractDays(deadline, 1)), // 신청은 마감 하루 전에 낸다
       is_done: false,
       source: "prep_plan",
       link: {
@@ -134,6 +134,7 @@ export function prepareStoredOpportunity(
             starts_at: detail.deadline_at,
           }
         : null,
+    calendar_error: null,
   };
 }
 

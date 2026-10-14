@@ -8,6 +8,10 @@ async with agent_run(log_conn, trigger="poster_upload", user_id=user.id) as run:
         call.output = {"title": result.title}
 
 cost_usd를 빼면 단가표(app/pricing.py)로 비용을 계산한다.
+
+202와 run_id를 먼저 돌려주는 작업(준비하기)은 start_run으로 실행 행만 만들고, 뒤에서
+agent_run(run_id=...)으로 이어서 기록한다. 실패 이유가 ApiError면 "코드: 문구"로 남겨
+GET /runs/{id}가 학생에게 그대로 보여 준다. 그 밖의 예외는 내부 기록이라 보여 주지 않는다.
 """
 
 import time
@@ -21,6 +25,7 @@ from typing import Any
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
+from app.errors import ApiError
 from app.pricing import cost_usd as priced_cost
 from app.schemas.me import PROFILE_FIELDS
 
@@ -123,6 +128,32 @@ class AgentRun:
         self.cost_usd += cost
 
 
+async def start_run(
+    conn: AsyncConnection,
+    *,
+    trigger: str,
+    user_id: str | None = None,
+    scenario_code: str | None = None,
+) -> str:
+    """실행 행만 만든다(status running). 이어서 agent_run(run_id=...)으로 기록하거나 abandon_run으로 닫는다."""
+    _require_autocommit(conn)
+    cursor = await conn.execute(
+        "insert into agent_runs (user_id, trigger_type, scenario_code) values (%s, %s, %s)"
+        " returning id",
+        (user_id, trigger, scenario_code),
+    )
+    return str((await cursor.fetchone())["id"])
+
+
+async def abandon_run(conn: AsyncConnection, run_id: str, error: ApiError) -> None:
+    """시작하지 않을 실행을 실패로 닫는다(같은 공고를 그새 다른 요청이 준비하기 시작했을 때 등)."""
+    await conn.execute(
+        "update agent_runs set status = 'failed', finished_at = now(), latency_ms = 0,"
+        " error_message = %s where id = %s and status = 'running'",
+        (error_text(error), run_id),
+    )
+
+
 @asynccontextmanager
 async def agent_run(
     conn: AsyncConnection,
@@ -130,23 +161,37 @@ async def agent_run(
     trigger: str,
     user_id: str | None = None,
     scenario_code: str | None = None,
+    run_id: str | None = None,
 ) -> AsyncIterator[AgentRun]:
-    """실행 하나를 기록한다. conn은 autocommit이어야 실패한 실행도 남는다(db.get_log_conn)."""
-    if not conn.autocommit:
-        raise RuntimeError("agent_run에는 autocommit 연결(get_log_conn)을 넘겨야 해요.")
+    """실행 하나를 기록한다. conn은 autocommit이어야 실패한 실행도 남는다(db.get_log_conn).
+
+    run_id를 주면 start_run으로 만든 행을 이어서 쓴다(latency_ms는 여기부터 잰다).
+    """
+    _require_autocommit(conn)
     started = time.perf_counter()
-    cursor = await conn.execute(
-        "insert into agent_runs (user_id, trigger_type, scenario_code) values (%s, %s, %s)"
-        " returning id",
-        (user_id, trigger, scenario_code),
-    )
-    run = AgentRun(conn=conn, id=str((await cursor.fetchone())["id"]))
+    if run_id is None:
+        run_id = await start_run(
+            conn, trigger=trigger, user_id=user_id, scenario_code=scenario_code
+        )
+    run = AgentRun(conn=conn, id=run_id)
     try:
         yield run
     except Exception as exc:
-        await _finish(run, started, "failed", repr(exc)[:500])
+        await _finish(run, started, "failed", error_text(exc))
         raise
     await _finish(run, started, "succeeded", None)
+
+
+def error_text(exc: BaseException) -> str:
+    """agent_runs.error_message. ApiError는 "코드: 문구", 그 밖은 내부 기록(repr)이다."""
+    if isinstance(exc, ApiError):
+        return f"{exc.code}: {exc.message}"[:500]
+    return repr(exc)[:500]
+
+
+def _require_autocommit(conn: AsyncConnection) -> None:
+    if not conn.autocommit:
+        raise RuntimeError("agent_run에는 autocommit 연결(get_log_conn)을 넘겨야 해요.")
 
 
 async def _finish(run: AgentRun, started: float, status: str, error: str | None) -> None:
