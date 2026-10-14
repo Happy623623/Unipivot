@@ -244,6 +244,19 @@ def test_age_missing_birth_date():
         (["서울특별시 중랑구"], "unspecified", "서울특별시", "중랑구 서울", "pass", None),
         (["제주특별자치도 제주시"], "unspecified", "제주특별자치도", "제주", "pass", None),
         (["경기도 광주시"], "unspecified", "경기도", "광주 오포읍", "pass", None),
+        # 2026-07-01 광주광역시 + 전라남도 → 전남광주통합특별시
+        (
+            ["전남광주통합특별시 목포시"],
+            "unspecified",
+            "전남광주통합특별시",
+            "목포시",
+            "pass",
+            None,
+        ),
+        (["전라남도 목포시"], "unspecified", "전남광주통합특별시", "목포시", "pass", None),
+        (["전남광주통합특별시 북구"], "unspecified", "광주광역시", "북구", "pass", None),
+        (["전라남도"], "unspecified", "광주광역시", "북구", "pass", None),
+        (["전남광주통합특별시"], "unspecified", "경기도", "광주시", "fail", None),
     ],
     ids=[
         "sigungu-prefix",
@@ -267,6 +280,11 @@ def test_age_missing_birth_date():
         "sido-not-first",
         "lone-alias-kept",
         "other-sido-name-kept-with-more",
+        "merged-sido",
+        "merged-pre-merge-req",
+        "merged-pre-merge-profile",
+        "merged-gwangju-matches-jeonnam",
+        "merged-not-gyeonggi-gwangju",
     ],
 )
 def test_region(value, basis, sido, sigungu, outcome, reason):
@@ -597,3 +615,19 @@ def test_from_db_rows_to_storage():
     assert json.loads(json.dumps(row))["status"] == "eligible"
     assert row["condition_results"][0]["requirement_id"] == str(requirement_rows[0]["id"])
     assert row["condition_results"][0]["user_value"] == 3.75
+
+
+def test_region_merged_sido_from_youth_api():
+    """온통청년 수집이 만드는 거주지역 값(전남광주통합특별시 …)을 판정 엔진이 읽는다.
+
+    2026-10-13에 온통청년 수집(app/youth/region_codes.py)이 통합 이름을 쓰기 시작했는데 판정 엔진은
+    통합 전 이름만 알아서, 전남·광주 대상 정책이 전부 '원문 확인 필요'로 빠졌다. 그 회귀를 막는다."""
+    from app.eligibility.regions import parse_region
+
+    for value in ("전남광주통합특별시", "전남광주통합특별시 목포시", "전남광주통합특별시 광산구"):
+        assert parse_region(value) is not None, value
+
+    requirement = [req(1, "region", "in", ["전남광주통합특별시 목포시"], basis="unspecified")]
+    judgment = judge(requirement, region_sido="전남광주통합특별시", region_sigungu="목포시")
+    assert judgment.status == "eligible"
+    assert judgment.conditions[0].unknown_reason is None
