@@ -8,3 +8,4 @@ update profiles
  where region_sido in ('광주광역시', '전라남도');
 
 -- 저장된 판정은 engine_version이 낡아져 피드를 읽을 때 다시 계산된다(app/eligibility/__init__.py).
+

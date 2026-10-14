@@ -502,7 +502,7 @@ erDiagram
         uuid run_id FK
         smallint seq
         text tool_name
-        jsonb input "토큰·비밀값 제외"
+        jsonb input "토큰·비밀값·프로필 값 제외"
         jsonb output
         enum status
         int latency_ms
@@ -650,6 +650,7 @@ erDiagram
 ### LMS 연동
 
 - **토큰 보관**: 점검 결과 LearningX 개인 토큰은 학생 계정으로 발급되며, 만료·범위 제한 없이 계정 전체 권한을 가질 수 있다. `lms_connections.access_token`은 암호화 저장하고 백엔드만 복호화한다. 화면에는 `token_last4`만 보여준다. `tool_calls.input`에 토큰이 들어가지 않게 한다
+- **프로필 값 미기록**: 자격 판정은 코드가 하므로 프로필 값을 LLM에 보낼 이유가 없다(PRD 6장). `tool_calls.input`에도 넣지 않아, 외부로 나가는 범위와 로그에 남는 범위를 둘 다 공고 원문으로 한정한다. `app/agent_log.py`의 `scrub`가 키 이름으로 한 번 더 지운다
 - `oauth_tokens`·`lms_connections`의 토큰은 백엔드가 Fernet(AES-128-CBC + HMAC-SHA256, 인증 암호화)으로 암호화한다. 키는 DB 밖 환경변수에 둔다. 키 교체는 MultiFernet으로 한다(새 키로 암호화하고 옛 키로도 복호화). 그래서 `key_version` 컬럼은 두지 않는다. v0.7 주석 "Supabase Vault 등"은 마이그레이션 17번 주석으로 바로잡았다.
 - **개인 vs 과목 공통**: 과제는 제출 상태가 사람마다 달라서 `lms_assignments`를 사용자별로 둔다. 주차학습 항목과 과목 공지는 수강생 모두에게 같으므로 `canvas_course_id` 기준으로 한 번만 저장하고, 공지 분류(LLM)도 과목당 한 번만 한다. 수강 여부는 `lms_courses`로 판단한다
 - **새 자료 감지**: 동기화 때 `canvas_item_id`가 처음 보이면 `lms_module_items`에 넣고, 그 과목 수강생에게 `new_material` 알림을 만든다. 같은 제목의 항목이 여러 개인 과목이 있어서(영상·슬라이드 추정) 비교 기준은 제목이 아니라 ID다
