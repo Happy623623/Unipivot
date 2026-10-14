@@ -9,8 +9,10 @@ import uuid
 import psycopg
 import pytest
 from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 
-from app.agent_log import agent_run
+from app.agent_log import abandon_run, agent_run, start_run, using
+from app.errors import ApiError
 from app.repositories.meta import MetaRepository
 from app.repositories.profiles import ProfileRepository
 
@@ -137,7 +139,7 @@ async def test_agent_run_logs_success_and_failure() -> None:
     conn = await connect(autocommit=True)
     run_ids: list[str] = []
     try:
-        async with agent_run(conn, trigger="eval", scenario_code="TEST-LOG") as run:
+        async with agent_run(using(conn), trigger="eval", scenario_code="TEST-LOG") as run:
             run_ids.append(run.id)
             async with run.tool(
                 "extract_requirements",
@@ -155,7 +157,7 @@ async def test_agent_run_logs_success_and_failure() -> None:
                 call.output = {"requirements": 3}
 
         with pytest.raises(ValueError):
-            async with agent_run(conn, trigger="eval", scenario_code="TEST-LOG") as failed:
+            async with agent_run(using(conn), trigger="eval", scenario_code="TEST-LOG") as failed:
                 run_ids.append(failed.id)
                 async with failed.tool("crawl_board", {"board": "scholarship"}):
                     raise ValueError("게시판 응답 없음")
@@ -197,3 +199,75 @@ async def test_agent_run_logs_success_and_failure() -> None:
     finally:
         await conn.execute("delete from agent_runs where id = any(%s::uuid[])", (run_ids,))
         await conn.close()
+
+
+async def test_a_long_run_does_not_hold_a_log_connection() -> None:
+    """모델을 기다리는 동안 로그 연결을 쥐지 않는다. 쥐면 풀만큼만 동시에 돌 수 있다.
+
+    로그 풀을 1칸으로 만들고, 실행 한가운데(모델을 부르는 자리)에서 다른 쪽이 연결을 빌려 본다.
+    실행이 연결을 들고 있으면 여기서 PoolTimeout이 난다.
+    """
+    pool = AsyncConnectionPool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=1,
+        open=False,
+        kwargs={"row_factory": dict_row, "autocommit": True, "prepare_threshold": None},
+    )
+    await pool.open()
+    run_ids: list[str] = []
+    try:
+        async with agent_run(pool.connection, trigger="eval", scenario_code="TEST-POOL") as run:
+            run_ids.append(run.id)
+            async with run.tool("get_document_guide", {"opportunity_id": "x"}) as call:
+                # 모델에 묻는 중이라고 치고, 그 사이 다른 요청이 로그 연결을 빌린다
+                async with pool.connection(timeout=2) as other:
+                    assert (await (await other.execute("select 1 as ok")).fetchone())["ok"] == 1
+                call.output = {"documents": 0}
+        async with pool.connection() as conn:
+            (row,) = await (
+                await conn.execute(
+                    "select status::text as status from agent_runs where id = %s", (run_ids[0],)
+                )
+            ).fetchall()
+            assert row["status"] == "succeeded"
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute("delete from agent_runs where id = any(%s::uuid[])", (run_ids,))
+        await pool.close()
+
+
+async def test_start_run_and_finish_share_no_connection() -> None:
+    """start_run으로 만든 실행을 나중에 이어 써도(준비하기) 그 사이 연결을 쥐지 않는다."""
+    pool = AsyncConnectionPool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=1,
+        open=False,
+        kwargs={"row_factory": dict_row, "autocommit": True, "prepare_threshold": None},
+    )
+    await pool.open()
+    run_id = ""
+    try:
+        run_id = await start_run(pool.connection, trigger="prepare")
+        async with pool.connection(timeout=2) as other:  # 202를 돌려주고 일을 띄우기 전
+            (row,) = await (
+                await other.execute(
+                    "select status::text as status from agent_runs where id = %s", (run_id,)
+                )
+            ).fetchall()
+            assert row["status"] == "running"
+        await abandon_run(pool.connection, run_id, ApiError(500, "INTERNAL_ERROR", "멈췄어요."))
+        async with pool.connection() as conn:
+            (row,) = await (
+                await conn.execute(
+                    "select status::text as status, error_message from agent_runs where id = %s",
+                    (run_id,),
+                )
+            ).fetchall()
+            assert row["status"] == "failed"
+            assert row["error_message"] == "INTERNAL_ERROR: 멈췄어요."
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute("delete from agent_runs where id = %s", (run_id,))
+        await pool.close()

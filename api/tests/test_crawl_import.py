@@ -13,6 +13,7 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 
+from app.agent_log import using
 from app.crawl.importer import RETRY_HINT, ImportOptions, ensure_source, import_notice
 from app.crawl.saved import load_folder
 from app.eligibility import KST
@@ -112,7 +113,7 @@ async def test_new_unchanged_and_modified_notice(tmp_path: Path) -> None:
         saved = load_folder(folder)
         first = await import_notice(
             conn,
-            log_conn,
+            using(log_conn),
             source_id,
             saved,
             agent(
@@ -176,7 +177,7 @@ async def test_new_unchanged_and_modified_notice(tmp_path: Path) -> None:
         assert first.cost_usd == run["cost_usd"] > 0
 
         # 같은 폴더를 다시 가져오면 모델을 부르지 않는다(답을 준비하지 않은 가짜 모델)
-        again = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
+        again = await import_notice(conn, using(log_conn), source_id, load_folder(folder), agent())
         assert (again.status, again.opportunity_id, again.unjudged) == (
             "unchanged",
             first.opportunity_id,
@@ -189,7 +190,9 @@ async def test_new_unchanged_and_modified_notice(tmp_path: Path) -> None:
             page("<p>신청 기간: 10. 24.(금) 18:00까지</p>", title="[ERICA] ○○장학생 선발 안내"),
             {},
         )
-        renamed = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
+        renamed = await import_notice(
+            conn, using(log_conn), source_id, load_folder(folder), agent()
+        )
         assert renamed.status == "unchanged"
         (row,) = await _rows(
             conn, "select title from opportunities where id = %s", first.opportunity_id
@@ -200,7 +203,7 @@ async def test_new_unchanged_and_modified_notice(tmp_path: Path) -> None:
         save_notice(folder, page("<p>신청 기간: 10. 31.(금) 18:00까지(연장)</p>"), {})
         changed = await import_notice(
             conn,
-            log_conn,
+            using(log_conn),
             source_id,
             load_folder(folder),
             agent(
@@ -233,7 +236,7 @@ async def test_new_unchanged_and_modified_notice(tmp_path: Path) -> None:
         # --force: 내용이 같아도 다시 추출한다
         forced = await import_notice(
             conn,
-            log_conn,
+            using(log_conn),
             source_id,
             load_folder(folder),
             agent(*read_and_submit("2026-10-31T18:00")),
@@ -251,7 +254,7 @@ async def test_campus_and_missing_file_rules(tmp_path: Path) -> None:
         seoul = save_notice(
             tmp_path / "서울", page("<p>서울캠퍼스 학생</p>", entry_id=1, campus="서울"), {}
         )
-        result = await import_notice(conn, log_conn, source_id, load_folder(seoul), agent())
+        result = await import_notice(conn, using(log_conn), source_id, load_folder(seoul), agent())
         assert (result.status, result.message) == ("skipped", "서울캠퍼스 공지라 건너뜀")
 
         unmarked = save_notice(
@@ -260,11 +263,13 @@ async def test_campus_and_missing_file_rules(tmp_path: Path) -> None:
             {},
             {"poster.jpg": POSTER},
         )
-        result = await import_notice(conn, log_conn, source_id, load_folder(unmarked), agent())
+        result = await import_notice(
+            conn, using(log_conn), source_id, load_folder(unmarked), agent()
+        )
         assert result.status == "skipped" and "--include-unmarked" in result.message
         result = await import_notice(
             conn,
-            log_conn,
+            using(log_conn),
             source_id,
             load_folder(unmarked),
             agent(no_requirements()),
@@ -274,7 +279,12 @@ async def test_campus_and_missing_file_rules(tmp_path: Path) -> None:
         # 한 번 가져온 공지는 그 뒤로 플래그 없이도 따라간다(수정된 글)
         save_notice(unmarked, page("<p>본문 수정</p>", entry_id=2, campus="안함", files=()), {})
         result = await import_notice(
-            conn, log_conn, source_id, load_folder(unmarked), agent(no_requirements()), options()
+            conn,
+            using(log_conn),
+            source_id,
+            load_folder(unmarked),
+            agent(no_requirements()),
+            options(),
         )
         assert result.status == "updated"
 
@@ -284,11 +294,13 @@ async def test_campus_and_missing_file_rules(tmp_path: Path) -> None:
             {"1. 선발요강.hwpx": GUIDE},
             {"poster.jpg": POSTER},
         )
-        result = await import_notice(conn, log_conn, source_id, load_folder(partial), agent())
+        result = await import_notice(
+            conn, using(log_conn), source_id, load_folder(partial), agent()
+        )
         assert result.status == "error" and "2. 신청서.hwp(폴더에 없어요)" in result.message
         result = await import_notice(
             conn,
-            log_conn,
+            using(log_conn),
             source_id,
             load_folder(partial),
             agent(*read_and_submit("2026-10-24")),
@@ -322,7 +334,7 @@ async def test_campus_and_missing_file_rules(tmp_path: Path) -> None:
             "가져오지 못해 읽지 않은 첨부: 2. 신청서.hwp" in row["review_reasons"]
         )  # 상세에 보일 이유
         # 그 뒤 평소처럼(플래그 없이) 가져와도 내용이 같으면 오류가 아니다
-        again = await import_notice(conn, log_conn, source_id, load_folder(partial), agent())
+        again = await import_notice(conn, using(log_conn), source_id, load_folder(partial), agent())
         assert again.status == "unchanged"
     finally:
         await cleanup(conn, log_conn)
@@ -341,7 +353,12 @@ async def test_status_follows_the_board(tmp_path: Path) -> None:
             {"poster.jpg": POSTER},
         )
         first = await import_notice(
-            conn, log_conn, source_id, load_folder(folder), agent(no_requirements()), options()
+            conn,
+            using(log_conn),
+            source_id,
+            load_folder(folder),
+            agent(no_requirements()),
+            options(),
         )
         assert first.status == "new"
 
@@ -351,7 +368,7 @@ async def test_status_follows_the_board(tmp_path: Path) -> None:
         )
         save_notice(folder, reposted, {"1. 선발요강(재게시).hwpx": GUIDE})
         (folder / "1. 선발요강.hwpx").unlink()
-        result = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
+        result = await import_notice(conn, using(log_conn), source_id, load_folder(folder), agent())
         assert result.status == "unchanged"
         (row,) = await _rows(
             conn,
@@ -379,7 +396,12 @@ async def test_status_follows_the_board(tmp_path: Path) -> None:
         save_notice(folder, page("<p>문의처 변경</p>", entry_id=5, **dated), {})
         past = (today - timedelta(days=30)).isoformat()
         result = await import_notice(
-            conn, log_conn, source_id, load_folder(folder), agent(*read_and_submit(past)), options()
+            conn,
+            using(log_conn),
+            source_id,
+            load_folder(folder),
+            agent(*read_and_submit(past)),
+            options(),
         )
         assert result.status == "updated" and "다시 보이게" not in result.message
         assert await _status(conn, first.opportunity_id) == "expired"
@@ -388,7 +410,7 @@ async def test_status_follows_the_board(tmp_path: Path) -> None:
         future = (today + timedelta(days=30)).isoformat()
         result = await import_notice(
             conn,
-            log_conn,
+            using(log_conn),
             source_id,
             load_folder(folder),
             agent(*read_and_submit(future)),
@@ -399,7 +421,7 @@ async def test_status_follows_the_board(tmp_path: Path) -> None:
 
         # 캠퍼스가 서울로 바뀌면 숨긴다. 다음부터는 그냥 건너뛴다
         save_notice(folder, page("<p>마감 연장</p>", entry_id=5, **{**dated, "campus": "서울"}), {})
-        result = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
+        result = await import_notice(conn, using(log_conn), source_id, load_folder(folder), agent())
         assert (result.status, result.message) == (
             "skipped",
             "서울캠퍼스 공지로 바뀌어 피드에서 숨김(status = hidden)",
@@ -408,11 +430,11 @@ async def test_status_follows_the_board(tmp_path: Path) -> None:
             conn, "select status::text from opportunities where id = %s", first.opportunity_id
         )
         assert row["status"] == "hidden"
-        result = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
+        result = await import_notice(conn, using(log_conn), source_id, load_folder(folder), agent())
         assert result.message == "서울캠퍼스 공지라 건너뜀"
         # 다시 공통(한양)으로 돌아왔다. 내용이 숨기기 전과 같아도 다시 보이게 한다
         save_notice(folder, page("<p>마감 연장</p>", entry_id=5, **dated), {})
-        result = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
+        result = await import_notice(conn, using(log_conn), source_id, load_folder(folder), agent())
         assert result.status == "unchanged" and "다시 보이게 함" in result.message
         assert await _status(conn, first.opportunity_id) == "active"
     finally:
@@ -431,12 +453,17 @@ async def test_unchanged_import_leaves_expired_alone(tmp_path: Path) -> None:
             {"poster.jpg": POSTER},
         )
         first = await import_notice(
-            conn, log_conn, source_id, load_folder(folder), agent(no_requirements()), options()
+            conn,
+            using(log_conn),
+            source_id,
+            load_folder(folder),
+            agent(no_requirements()),
+            options(),
         )
         await conn.execute(
             "update opportunities set status = 'expired' where id = %s", (first.opportunity_id,)
         )
-        result = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
+        result = await import_notice(conn, using(log_conn), source_id, load_folder(folder), agent())
         assert result.message == "내용이 같아 다시 추출하지 않음"
         assert await _status(conn, first.opportunity_id) == "expired"
     finally:
@@ -455,7 +482,12 @@ async def test_reordered_identical_attachments_keep_unique_urls(tmp_path: Path) 
             {"poster.jpg": POSTER},
         )
         first = await import_notice(
-            conn, log_conn, source_id, load_folder(folder), agent(no_requirements()), options()
+            conn,
+            using(log_conn),
+            source_id,
+            load_folder(folder),
+            agent(no_requirements()),
+            options(),
         )
         html = page("<p>양식</p>", entry_id=7, files=("대학원 신청서.hwp", "학부 신청서.hwp"))
         save_notice(
@@ -465,7 +497,7 @@ async def test_reordered_identical_attachments_keep_unique_urls(tmp_path: Path) 
             .replace("uuid-x", "uuid-2"),
             {},
         )
-        result = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
+        result = await import_notice(conn, using(log_conn), source_id, load_folder(folder), agent())
         assert result.status == "unchanged"
         rows = await _rows(
             conn,
@@ -498,7 +530,12 @@ async def test_failed_extraction_is_reported_until_forced(tmp_path: Path) -> Non
         )
         # 모델이 끝까지 제출하지 않았다(글로만 두 번 답함)
         failed = await import_notice(
-            conn, log_conn, source_id, load_folder(folder), agent("요건은…", "그러니까…"), options()
+            conn,
+            using(log_conn),
+            source_id,
+            load_folder(folder),
+            agent("요건은…", "그러니까…"),
+            options(),
         )
         assert (failed.status, failed.unjudged, failed.message) == ("new", True, RETRY_HINT)
         assert not failed.extraction.succeeded
@@ -506,12 +543,12 @@ async def test_failed_extraction_is_reported_until_forced(tmp_path: Path) -> Non
             conn, "select review_reasons from opportunities where id = %s", failed.opportunity_id
         )
         assert "자격 요건을 정리하지 못함" in row["review_reasons"]  # 실패한 추출도 이유가 남는다
-        again = await import_notice(conn, log_conn, source_id, load_folder(folder), agent())
+        again = await import_notice(conn, using(log_conn), source_id, load_folder(folder), agent())
         assert (again.status, again.unjudged) == ("unchanged", True)
         assert again.message == f"내용이 같아 다시 추출하지 않음. {RETRY_HINT}"
         forced = await import_notice(
             conn,
-            log_conn,
+            using(log_conn),
             source_id,
             load_folder(folder),
             agent(*read_and_submit("2026-10-24")),
@@ -548,7 +585,7 @@ async def test_llm_error_writes_nothing(tmp_path: Path) -> None:
         with pytest.raises(RuntimeError, match="RESOURCE_EXHAUSTED"):
             await import_notice(
                 conn,
-                log_conn,
+                using(log_conn),
                 source_id,
                 load_folder(folder),
                 ExtractionAgent(FailingLlm(), model=MODEL),

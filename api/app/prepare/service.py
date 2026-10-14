@@ -7,6 +7,7 @@ POST /opportunities/{id}/prepare(라우터)가 판정·확인을 마치면 begin
 잠금을 쥐지 않는다. 쓰기(서류 안내 + 할 일)는 공고를 잠근 한 트랜잭션이고, 잠근 뒤 서류를 다시 읽어 그새
 다른 학생이 넣거나 채운 값을 그대로 쓴다. 실패하면 아무것도 남지 않고 계획 행을 지워 다시 누를 수 있다.
 실행 기록(agent_runs·tool_calls·llm_calls)은 실패해도 남고, running으로 남지 않게 닫는다.
+로그 연결은 한 줄 쓸 때마다 빌렸다 돌려준다(agent_log). 모델을 기다리는 동안 쥐고 있지 않는다.
 """
 
 import logging
@@ -75,7 +76,7 @@ class PrepareService:
         runner: TaskRunner,
     ) -> None:
         self.transaction = transaction  # 블록이 끝나면 커밋하는 연결(요청 트랜잭션과 따로)
-        self.log_connection = log_connection  # autocommit 연결(agent_run)
+        self.log_connection = log_connection  # autocommit 연결 공급자(agent_run이 쓸 때마다 빌린다)
         self.llm = llm
         self.model = model
         self.runner = runner
@@ -107,8 +108,7 @@ class PrepareService:
         self, user_id: str, opportunity_id: str, *, deadline: date, today: date
     ) -> Started:
         """실행 행과 계획 행을 만들고 일을 띄운다. 그새 다른 요청이 계획을 만들었으면 그 계획을 준다."""
-        async with self.log_connection() as log_conn:
-            run_id = await start_run(log_conn, trigger="prepare", user_id=user_id)
+        run_id = await start_run(self.log_connection, trigger="prepare", user_id=user_id)
         try:
             async with self.transaction() as conn:
                 plan_id = await PrepareRepository(conn).create_plan(user_id, opportunity_id, run_id)
@@ -135,11 +135,10 @@ class PrepareService:
     async def execute(self, job: PrepareJob) -> None:
         """서류 안내 → 역산 일정. 실패하면 계획을 지운다(실행은 실패로 남는다)."""
         try:
-            async with self.log_connection() as log_conn:
-                async with agent_run(
-                    log_conn, trigger="prepare", user_id=job.user_id, run_id=job.run_id
-                ) as run:
-                    await self._prepare(run, job)
+            async with agent_run(
+                self.log_connection, trigger="prepare", user_id=job.user_id, run_id=job.run_id
+            ) as run:
+                await self._prepare(run, job)
         except Exception:
             logger.exception("준비하기 실행 실패: run %s", job.run_id)
             await self._give_up(job)
@@ -159,8 +158,7 @@ class PrepareService:
         닫지 못해도 다음 누름이 멈춘 실행으로 보고 지운다(repositories/prepare.py의 STALE_AFTER).
         """
         try:
-            async with self.log_connection() as log_conn:
-                await abandon_run(log_conn, run_id, ApiError(500, "INTERNAL_ERROR", message))
+            await abandon_run(self.log_connection, run_id, ApiError(500, "INTERNAL_ERROR", message))
         except Exception:
             logger.exception("준비하기 실행을 닫지 못했어요: run %s", run_id)
 

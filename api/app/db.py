@@ -5,6 +5,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from app.agent_log import LogConnect
 from app.errors import ApiError
 
 
@@ -34,7 +35,13 @@ async def get_conn(request: Request) -> AsyncIterator[AsyncConnection]:
         yield conn
 
 
-async def get_log_conn(request: Request) -> AsyncIterator[AsyncConnection]:
-    """agent_run()에 넘기는 autocommit 연결."""
-    async for conn in _connection(request.app.state.log_pool):
-        yield conn
+def get_log_connect(request: Request) -> LogConnect:
+    """agent_run()에 넘기는 autocommit 연결 공급자.
+
+    연결 하나가 아니라 공급자를 준다. 로깅은 한 줄 쓸 때마다 빌렸다 돌려줘서, 모델을 기다리는
+    오래 걸리는 실행이 로그 풀(max_size)을 붙잡지 않는다(app/agent_log.py).
+    """
+    log_pool = getattr(request.app.state, "log_pool", None)
+    if log_pool is None:
+        raise ApiError(503, "DB_UNAVAILABLE", "데이터베이스에 연결할 수 없어요.")
+    return log_pool.connection

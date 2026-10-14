@@ -15,6 +15,7 @@ from datetime import date, datetime
 
 import psycopg
 
+from app.agent_log import using
 from app.config import Settings
 from app.crawl.cli import _connect
 from app.eligibility import KST, Requirement, condition_text, label
@@ -71,7 +72,7 @@ async def main(argv: Sequence[str], *, make_client: ClientFactory = YouthPolicyC
     try:
         result = await collect(
             conn,
-            log_conn,
+            using(log_conn),
             client,
             today=today,
             scenario=args.scenario,
