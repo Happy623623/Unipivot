@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from psycopg import AsyncConnection
 
-from app.agent_log import agent_run
+from app.agent_log import LogConnect, agent_run
 from app.crawl.hanyang import BOARD_URL, SOURCE_NAME
 from app.crawl.saved import SavedNotice
 from app.extraction.agent import ExtractionAgent
@@ -82,13 +82,13 @@ async def mark_collected(conn: AsyncConnection, source_id: str) -> None:
 
 async def import_notice(
     conn: AsyncConnection,
-    log_conn: AsyncConnection,
+    log_connect: LogConnect,
     source_id: str,
     saved: SavedNotice,
     agent: ExtractionAgent,
     options: ImportOptions | None = None,
 ) -> ImportResult:
-    """conn은 데이터, log_conn은 실행 로그(autocommit)용이다. LLM 호출 오류는 그대로 올라간다."""
+    """conn은 데이터, log_connect는 실행 로그 연결 공급자(autocommit)다. LLM 호출 오류는 그대로 올라간다."""
     options = options or ImportOptions()
     page = saved.page
     existing = await _existing(conn, source_id, page.entry_id)
@@ -127,7 +127,7 @@ async def import_notice(
             f"가져오지 못한 파일: {names}. 고치고 다시 실행하거나, 없이 가져오려면 --allow-missing",
         )
 
-    async with agent_run(log_conn, trigger="batch_crawl", scenario_code=options.scenario) as run:
+    async with agent_run(log_connect, trigger="batch_crawl", scenario_code=options.scenario) as run:
         extraction = await agent.run(notice, run)
     if saved.missing:
         extraction = _note_missing(extraction, saved)

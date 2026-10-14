@@ -17,7 +17,7 @@
 - 에러는 `ApiError(status, code, message, details)`만 던진다. `code`는 명세 13장 표에 있는 것만 쓰고, 새 코드는 명세에 먼저 추가한다. 메시지는 해요체로, 사용자가 무엇을 하면 되는지 쓴다.
 - 사용자 API는 모두 `CurrentUserDep`으로 인증한다. 서버는 서비스 권한으로 DB에 붙어 RLS가 막아주지 않으므로, SQL에는 항상 `user_id` 조건을 건다.
 - SQL은 `repositories/`에만 쓴다. 값은 항상 파라미터로 넘기고, 동적 컬럼 이름은 `psycopg.sql.Identifier`로 만든다.
-- LLM·외부 도구 호출은 `agent_run` → `run.tool` → `run.record_llm` 안에서만 한다. 로그용 autocommit 연결(`get_log_conn`)을 넘겨야 실패한 실행도 남는다.
+- LLM·외부 도구 호출은 `agent_run` → `run.tool` → `run.record_llm` 안에서만 한다. `agent_run`에는 연결이 아니라 autocommit 연결 **공급자**를 넘긴다(API는 `app/db.py`의 `get_log_connect`, 풀이 없는 CLI·테스트는 `agent_log.using(conn)`). 로깅은 한 줄 쓸 때마다 빌렸다 돌려주므로, 모델을 기다리는 동안 로그 연결을 쥐지 않는다. autocommit이어야 실패한 실행도 남는다.
 - 토큰은 `crypto.encrypt`로 암호화해 저장하고, 로그·응답·`tool_calls.input`에 넣지 않는다(`scrub`가 키 이름으로 한 번 더 지운다).
 - 오래 걸리는 작업(포스터 추출, 준비하기 등)은 202와 `run_id`로 응답하고, 진행은 `GET /runs/{id}`로 보여준다(명세 2장).
 - 시간은 `timestamptz`(UTC)로 저장한다. 날짜 계산(D-day, 만 나이)은 KST 기준이다.

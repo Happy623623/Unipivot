@@ -14,7 +14,7 @@ import psycopg
 import pytest
 from psycopg.types.json import Jsonb
 
-from app.agent_log import agent_run
+from app.agent_log import agent_run, using
 from app.config import Settings, get_settings
 from app.db import get_conn
 from app.eligibility import KST
@@ -699,7 +699,7 @@ async def test_detail_process_from_an_extraction_run() -> None:
             call(SUBMIT, requirements=[requirement], confidence=0.9, needs_review=False),
         )
         agent = ExtractionAgent(llm, model="gemini-3.8-flash", limits=Limits(max_read_chars=20))
-        async with agent_run(log_conn, trigger="batch_crawl") as run:
+        async with agent_run(using(log_conn), trigger="batch_crawl") as run:
             run_ids.append(run.id)
             result = await agent.run(notice, run)
         assert result.succeeded
@@ -770,7 +770,7 @@ async def test_detail_shows_a_forced_submission_as_pipeline() -> None:
             call(SUBMIT, requirements=[requirement], confidence=0.9, needs_review=False),
         )
         agent = ExtractionAgent(llm, model="gemini-3.8-flash", limits=Limits(max_reads=1))
-        async with agent_run(log_conn, trigger="batch_crawl") as run:
+        async with agent_run(using(log_conn), trigger="batch_crawl") as run:
             run_ids.append(run.id)
             result = await agent.run(notice, run)
         assert llm.requests[2].force_tool == SUBMIT  # 제출만 부를 수 있게 한 요청

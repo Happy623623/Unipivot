@@ -14,8 +14,10 @@ from typing import Any
 import httpx
 import psycopg
 import pytest
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 
-from app.background import InlineRunner
+from app.background import InlineRunner, TaskRunner
 from app.config import Settings, get_settings
 from app.db import create_pools
 from app.eligibility import KST
@@ -603,3 +605,92 @@ async def test_a_document_guided_without_lead_days_is_not_asked_again(
         assert second.status_code == 202 and len(llm.requests) == 1  # 다시 묻지 않았다
         run = (await client(world.other).get(f"/api/v1/runs/{second.json()['run_id']}")).json()
         assert run["status"] == "succeeded"
+
+
+@asynccontextmanager
+async def narrow_api(
+    settings: Settings, llm: Any
+) -> AsyncIterator[Callable[[str], httpx.AsyncClient]]:
+    """로그 풀이 1칸이고 일을 진짜로 띄우는(TaskRunner) 앱. 로그 연결 경합을 본다."""
+    app = create_app(settings)
+    pool = AsyncConnectionPool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=10,
+        open=False,
+        kwargs={"row_factory": dict_row, "prepare_threshold": None},
+    )
+    log_pool = AsyncConnectionPool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=1,
+        open=False,
+        kwargs={"row_factory": dict_row, "autocommit": True, "prepare_threshold": None},
+    )
+    await pool.open()
+    await log_pool.open()
+    runner = TaskRunner()
+    app.state.pool, app.state.log_pool, app.state.runner = pool, log_pool, runner
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_llm] = lambda: llm
+    clients: list[httpx.AsyncClient] = []
+
+    def client(user_id: str) -> httpx.AsyncClient:
+        http = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {make_token(sub=user_id)}"},
+        )
+        clients.append(http)
+        return http
+
+    try:
+        yield client
+    finally:
+        await runner.drain(timeout=10)
+        for http in clients:
+            await http.aclose()
+        await pool.close()
+        await log_pool.close()
+
+
+class GatedLlm(ScriptedLlm):
+    """첫 호출은 풀어 줄 때까지 모델 안에서 기다린다(느린 모델)."""
+
+    def __init__(self, *replies: Any) -> None:
+        super().__init__(*replies)
+        self.asked = asyncio.Event()  # 모델에 들어왔다
+        self.release = asyncio.Event()  # 이제 답해도 된다
+
+    async def generate(self, **kwargs: Any) -> Any:
+        self.asked.set()
+        await self.release.wait()
+        return await super().generate(**kwargs)
+
+
+async def test_a_slow_model_does_not_block_another_student(settings: Settings) -> None:
+    """모델을 기다리는 실행이 로그 연결을 쥐지 않아, 로그 풀이 1칸이어도 다른 학생이 바로 시작한다.
+
+    실행이 연결을 들고 있으면 둘째 요청의 start_run이 연결을 못 얻어 기다리다 500이 된다.
+    """
+    llm = GatedLlm(guide_reply, guide_reply)
+    async with committed() as world, narrow_api(settings, llm) as client:
+        oid = world.ids["준비 장학"]
+        started = await client(world.user).post(f"/api/v1/opportunities/{oid}/prepare", json={})
+        assert started.status_code == 202
+        await asyncio.wait_for(llm.asked.wait(), timeout=5)  # 첫 실행이 모델 안에서 기다린다
+
+        other = await asyncio.wait_for(  # 그 사이 다른 학생이 같은 공고를 준비한다
+            client(world.other).post(f"/api/v1/opportunities/{oid}/prepare", json={}), timeout=5
+        )
+        assert other.status_code == 202
+
+        llm.release.set()
+        for user_id, response in ((world.user, started), (world.other, other)):
+            http, run_id = client(user_id), response.json()["run_id"]
+            for _ in range(100):
+                run = (await http.get(f"/api/v1/runs/{run_id}")).json()
+                if run["status"] != "running":
+                    break
+                await asyncio.sleep(0.1)
+            assert run["status"] == "succeeded"  # 둘 다 끝까지 간다

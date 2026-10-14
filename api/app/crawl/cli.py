@@ -21,6 +21,7 @@ from psycopg import AsyncConnection
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 
+from app.agent_log import using
 from app.attachments import KIND_LABELS, AttachmentText
 from app.config import Settings
 from app.crawl.fetch import decode_html
@@ -251,7 +252,9 @@ async def import_folders(
             for note in _notes(saved):
                 print(f"    {note}")
             try:
-                result = await import_notice(conn, log_conn, source_id, saved, agent, options)
+                result = await import_notice(
+                    conn, using(log_conn), source_id, saved, agent, options
+                )
             except Exception as exc:  # LLM·DB 오류. 공고에는 쓰지 않았고 다음에 다시 돈다
                 print(f"    오류: 요건 추출 실패 — {type(exc).__name__}: {str(exc)[:200]}")
                 counts["error"] += 1

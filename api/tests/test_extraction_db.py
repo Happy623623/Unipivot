@@ -12,7 +12,7 @@ import psycopg
 import pytest
 from psycopg.rows import dict_row
 
-from app.agent_log import agent_run
+from app.agent_log import agent_run, using
 from app.eligibility import KST, Department
 from app.extraction import (
     AttachmentInput,
@@ -126,7 +126,7 @@ async def test_extract_log_and_store_round_trip() -> None:
                 needs_review=False,
             ),
         )
-        async with agent_run(log_conn, trigger="batch_crawl") as run:
+        async with agent_run(using(log_conn), trigger="batch_crawl") as run:
             run_ids.append(run.id)
             result = await ExtractionAgent(llm, model="gemini-3.8-flash").run(notice, run)
         digest = content_hash(notice.body, notice.attachments)

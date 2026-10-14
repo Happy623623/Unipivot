@@ -170,7 +170,7 @@ async def _run_with_db(
     import psycopg
     from psycopg.rows import dict_row
 
-    from app.agent_log import agent_run
+    from app.agent_log import agent_run, using
     from app.extraction.store import load_departments
 
     async with await psycopg.AsyncConnection.connect(
@@ -178,7 +178,9 @@ async def _run_with_db(
     ) as conn:
         departments = await load_departments(conn)
         agent = make_agent(settings, departments=departments, fetch_page=fetcher, model=args.model)
-        async with agent_run(conn, trigger="eval", scenario_code=args.scenario) as logged_run:
+        async with agent_run(
+            using(conn), trigger="eval", scenario_code=args.scenario
+        ) as logged_run:
             print(
                 f"모델 {agent.model} · 학과 {len(departments)}개 · agent_runs.id = {logged_run.id}"
             )
