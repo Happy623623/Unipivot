@@ -26,6 +26,8 @@
 >
 > v0.4 보강(10/13, 관심 공고): PUT·DELETE /opportunities/{id}/mark, 피드 include_not_interested, my_mark, counts에서 관심 없음 공고 제외, 알림 규칙
 >
+> v0.4 보강(10/14, 홈 쪽 나누기): 홈은 받은 피드를 화면에서 5개씩 쪽으로 나눈다(API 변경 없음)
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -321,7 +323,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 
 서버는 `status = active`이고, `visible_canvas_course_id`가 없거나 사용자가 그 과목 수강생인 공고만 내려준다.
 
-- `eligibility`는 쉼표로 여러 값을 받는다. 홈은 eligibility 없이 50개씩 next_cursor가 없을 때까지(최대 1,000개) 받아 화면에서 지원 어려움을 맨 아래 묶음으로 나눈다. 묶음 개수가 칩(category)과 맞아야 해서 따로 부르지 않는다
+- `eligibility`는 쉼표로 여러 값을 받는다. 홈은 eligibility 없이 50개씩 next_cursor가 없을 때까지(최대 1,000개) 받아 화면에서 지원 어려움을 맨 아래 묶음으로 나눈다. 묶음 개수가 칩(category)과 맞아야 해서 따로 부르지 않는다. 목록과 지원 어려움 묶음은 화면에서 5개씩 쪽으로 나눈다(F-40). 쪽을 넘길 때 API를 다시 부르지 않는다
 - `sort=deadline`은 마감일 없는 공고를 맨 뒤로 보낸다
 - `counts`는 카테고리 필터와 상관없이 전체 기준이다(ERD 집계 쿼리)
 - 관심 없음(F-45)으로 표시한 공고는 `include_not_interested=true`일 때만 목록에 나오고, counts에는 늘 넣지 않는다. 홈은 `include_not_interested=true`로 받아 추천 공고·관심·숨김 탭을 화면에서 나눈다
@@ -1198,3 +1200,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 > 10/13 반영: 온보딩·설정·정보 입력의 거주 시·군·구 선택 상자, 설정 요약의 다시 고르기 표시, 설정 저장 버튼 옆 첫 오류.
 
 > 10/13 반영: OpportunityItem·OpportunityDetail의 my_mark, OpportunityMark·MarkResult 타입, 홈의 추천 공고·관심·숨김 탭, 카드·상세의 관심·숨기기 버튼.
+
+> 10/14 반영: 홈 목록 5개씩 쪽 나누기(지원 어려움 묶음도 따로), 관심·숨기기를 누르면 바로 옮기기, 들어간 탭 강조, 안내의 탭 보기 버튼.

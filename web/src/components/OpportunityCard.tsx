@@ -15,13 +15,14 @@ const statusMarks: Record<DisplayStatus, string> = {
 interface OpportunityCardProps {
   item: OpportunityItem; // my_mark는 화면에서 바꾼 표시까지 반영한 값
   pending: boolean; // 표시를 저장하는 중
+  found?: boolean; // 안내의 "…보기"로 찾아온 카드. 잠깐 주색 테두리로 감싼다
   navigate: (route: Route) => void;
   onMark: (item: OpportunityItem, next: OpportunityMark | null) => void;
 }
 
 // 홈 공고 카드. 카드를 누르면 상세로 가고, 오른쪽 아래 관심·숨기기는 카드 버튼과 따로 눌린다.
 // data-card는 표시를 바꿔 카드가 탭에서 빠질 때 홈이 다음 카드로 초점을 옮기는 데 쓴다
-export default function OpportunityCard({ item, pending, navigate, onMark }: OpportunityCardProps) {
+export default function OpportunityCard({ item, pending, found = false, navigate, onMark }: OpportunityCardProps) {
   const displayStatus = item.eligibility.display_status;
   const reasonTone =
     displayStatus === "eligible"
@@ -43,7 +44,7 @@ export default function OpportunityCard({ item, pending, navigate, onMark }: Opp
   const titleId = `opportunity-title-${item.id}`;
 
   return (
-    <div className="opportunity-card relative w-full rounded-2xl border border-[#e5e7eb] bg-white transition-all duration-300 hover:-translate-y-1 hover:border-[#cfd7ff] hover:shadow-[0_14px_36px_rgba(79,110,247,0.11)]">
+    <div className={`opportunity-card ${found ? "card-arrive " : ""}relative w-full rounded-2xl border border-[#e5e7eb] bg-white transition-all duration-300 hover:-translate-y-1 hover:border-[#cfd7ff] hover:shadow-[0_14px_36px_rgba(79,110,247,0.11)]`}>
       <button
         type="button"
         data-card={item.id}

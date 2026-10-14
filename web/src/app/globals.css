@@ -65,6 +65,34 @@ button {
   transform: scale(0.96);
 }
 
+/* 관심·숨기기로 공고가 들어간 홈 탭(F-45)을 잠깐 주색으로 키운다 */
+@keyframes tab-arrive {
+  35% {
+    color: #4f6ef7;
+    transform: scale(1.15);
+  }
+}
+
+.tab-arrive {
+  display: inline-block;
+  animation: tab-arrive 700ms ease-out;
+}
+
+/* 안내의 "…보기"로 찾아간 공고 카드(F-45)를 잠깐 주색 테두리로 감싼다. 카드가 나타나는 움직임과 순서별 지연은 그대로 둔다 */
+@keyframes card-arrive {
+  20%,
+  60% {
+    box-shadow: 0 0 0 2px #4f6ef7;
+  }
+}
+
+.opportunity-card.card-arrive {
+  animation-name: opportunity-enter, card-arrive;
+  animation-duration: 360ms, 1400ms;
+  animation-timing-function: ease-out;
+  animation-fill-mode: both, none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -73,5 +101,10 @@ button {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* 움직임을 줄여도 찾아간 카드는 강조가 남는 동안(1.6초) 테두리로 보인다 */
+  .opportunity-card.card-arrive {
+    box-shadow: 0 0 0 2px #4f6ef7;
   }
 }
