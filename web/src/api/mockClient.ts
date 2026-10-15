@@ -50,7 +50,7 @@ const WAIT_MS = 300;
 
 export class MockApiError extends Error {
   constructor(
-    public code: "poster_read_failed" | "upload_limit" | "lms_invalid",
+    public code: "poster_read_failed" | "lms_invalid",
     message: string,
   ) {
     super(message);
