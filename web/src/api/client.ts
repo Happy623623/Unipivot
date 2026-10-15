@@ -1,10 +1,8 @@
 import { ApiError, apiFetch, USE_MOCKS, waitForRun } from "@/api/http";
 import * as mock from "@/api/mockClient";
-import { MockApiError, rejectAfter, respond } from "@/api/mockClient";
-import { getDevScenario } from "@/dev/scenarios";
+import { MockApiError, respond } from "@/api/mockClient";
 import { getKstDateKey } from "@/lib/format";
-import { duplicatePosterExtractResult, mockNow, mockToday, posterExtractResult } from "@/mocks";
-import { registerStoredPoster } from "@/mocks/posterStore";
+import { mockNow, mockToday } from "@/mocks";
 import {
   getStoredPlanner,
   addStoredManualTask,
@@ -27,7 +25,6 @@ import type {
   OpportunityMark,
   PlannerResponse,
   PlannerTask,
-  PosterExtractResult,
   PrepareResult,
   PrepareStarted,
   ProcessStep,
@@ -35,10 +32,11 @@ import type {
 } from "@/types/api";
 
 // 화면이 쓰는 데이터 함수는 모두 이 파일에서 가져간다 (web/CLAUDE.md, 스킬 mock-to-api).
-// 계정·LMS 함수는 accountClient.ts·lmsClient.ts에 두고 여기서 다시 내보낸다.
-// 공고 피드·상세·준비하기는 실제 API를 부르고, 아래 플래너·포스터 함수는 아직 목이다
+// 계정·LMS·포스터 함수는 accountClient.ts·lmsClient.ts·posterClient.ts에 두고 여기서 다시 내보낸다.
+// 공고 피드·상세·준비하기는 실제 API를 부르고, 아래 플래너 함수는 아직 목이다
 export * from "@/api/accountClient";
 export * from "@/api/lmsClient";
+export * from "@/api/posterClient";
 export { ApiError, consentRequired, errorMessage, fieldErrors } from "@/api/http";
 export { MockApiError };
 
@@ -55,12 +53,6 @@ export function todayKst(): string {
 export function nowIso(): string {
   return USE_MOCKS ? mockNow : new Date().toISOString();
 }
-
-export type PosterPreviewState =
-  | { status: "idle"; result: null }
-  | { status: "failure"; result: null }
-  | { status: "limit"; result: null }
-  | { status: "duplicate"; result: PosterExtractResult };
 
 // "기타" 칩은 연구·시험·기타 세 카테고리를 함께 고른다
 function feedCategories(category: FeedParams["category"]): Category[] | null {
@@ -243,45 +235,4 @@ export function reportOpportunity(
   _detail: string,
 ): Promise<{ reported: boolean; hidden: boolean }> {
   return respond({ reported: true, hidden: false });
-}
-
-// 포스터 등록을 받을지. TODO(api): POST /files·/posters/extract·/posters/confirm(W6)이 생기면 아래 포스터 함수를
-// 바꾸고 지운다. 그 전까지 실제 모드는 포스터 등록 화면에서 준비 중이라고 알린다(목 공고는 실제 상세에서 열리지 않는다)
-export const POSTER_READY = USE_MOCKS;
-
-export function getPosterPreviewState(): Promise<PosterPreviewState> {
-  const scenario = getDevScenario();
-  if (scenario === "poster_failure") return respond({ status: "failure", result: null });
-  if (scenario === "upload_limit") return respond({ status: "limit", result: null });
-  if (scenario === "poster_duplicate") {
-    return respond({ status: "duplicate", result: duplicatePosterExtractResult });
-  }
-  return respond({ status: "idle", result: null });
-}
-
-// TODO(api): 포스터 추출 run 생성 API와 연결되면 File 대신 업로드된 file_id를 전달한다.
-export function extractPoster(_file: File): Promise<PosterExtractResult> {
-  const scenario = getDevScenario();
-  if (scenario === "poster_failure") {
-    return rejectAfter(
-      new MockApiError("poster_read_failed", "포스터에서 글자를 읽지 못했어요."),
-    );
-  }
-  if (scenario === "upload_limit") {
-    return rejectAfter(
-      new MockApiError("upload_limit", "오늘 업로드 한도를 초과했어요."),
-    );
-  }
-  return respond(
-    scenario === "poster_duplicate"
-      ? duplicatePosterExtractResult
-      : posterExtractResult,
-  );
-}
-
-// TODO(api): 실제 공고 등록 API가 확정되면 draft 등록 요청으로 교체한다.
-export function registerPosterOpportunity(
-  draft: PosterExtractResult["draft"],
-): Promise<OpportunityDetail> {
-  return respond(registerStoredPoster(draft));
 }

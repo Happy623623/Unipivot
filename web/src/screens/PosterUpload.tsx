@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  ApiError,
+  errorMessage,
   extractPoster,
   getPosterPreviewState,
-  MockApiError,
-  POSTER_READY,
+  POSTER_EXTRACT_READY,
   registerPosterOpportunity,
+  uploadPosterFile,
 } from "@/api/client";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import Header from "@/components/Header";
+import PosterAnalyzing, { type StepStatus } from "@/components/PosterAnalyzing";
+import PosterDropzone from "@/components/PosterDropzone";
 import PosterExtractForm from "@/components/PosterExtractForm";
-import PosterNotReady from "@/components/PosterNotReady";
+import PosterSourcePreview from "@/components/PosterSourcePreview";
+import PosterStored from "@/components/PosterStored";
 import Skeleton from "@/components/Skeleton";
 import { validatePosterFile } from "@/lib/posterFile";
 import useAsyncData from "@/lib/useAsyncData";
@@ -23,38 +28,23 @@ interface PosterUploadProps {
 
 type UploadStatus =
   | "idle"
+  | "uploading"
   | "analyzing"
+  | "stored"
   | "complete"
   | "duplicate"
   | "failure"
   | "limit";
-type StepStatus = "idle" | "running" | "done";
+
+const READ_FAILED = "글자를 읽지 못했어요. 포스터 전체가 보이게 밝은 곳에서 다시 찍어 주세요";
+const UPLOAD_FAILED = "파일을 올리지 못했어요. 잠시 후 다시 시도해 주세요";
+// 실제 모드는 아직 올려 두기만 한다. 올리기 전에 미리 알려 준다(올린 뒤에 말하면 속은 느낌이 든다)
+const SUBTITLE = POSTER_EXTRACT_READY
+  ? "포스터를 올리면 AI가 제목, 마감일, 지원 조건을 자동으로 정리해요."
+  : "지금은 포스터를 올려 두기만 해요. 제목·마감일을 자동으로 정리하는 기능은 준비 중이에요.";
 
 const wait = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
-
-function SourcePreview({
-  previewUrl,
-  fileName,
-  isPdf,
-}: {
-  previewUrl: string;
-  fileName: string;
-  isPdf: boolean;
-}) {
-  return (
-    <section className="flex min-h-[520px] items-center justify-center overflow-hidden rounded-[18px] border border-[#e5e7eb] bg-white p-5">
-      {isPdf ? (
-        <div className="text-center">
-          <div className="mx-auto flex size-20 items-center justify-center rounded-[14px] bg-[#fef2f2] text-[18px] font-bold text-[#c53030]">PDF</div>
-          <p className="mt-3 text-[13px] text-[#667085]">{fileName}</p>
-        </div>
-      ) : (
-        <img src={previewUrl || "/assets/mock-opportunity-poster.svg"} alt="업로드한 포스터 미리보기" className="max-h-[640px] rounded-[14px] object-contain" />
-      )}
-    </section>
-  );
-}
 
 export default function PosterUpload({ navigate }: PosterUploadProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -62,11 +52,7 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
   const objectUrlRef = useRef<string | null>(null);
   const scenario = useAsyncData(getPosterPreviewState, []);
   const [status, setStatus] = useState<UploadStatus>("idle");
-  const [steps, setSteps] = useState<[StepStatus, StepStatus, StepStatus]>([
-    "idle",
-    "idle",
-    "idle",
-  ]);
+  const [steps, setSteps] = useState<StepStatus[]>(["idle", "idle", "idle"]);
   const [result, setResult] = useState<PosterExtractResult | null>(null);
   const [draft, setDraft] = useState<PosterExtractResult["draft"] | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
@@ -74,9 +60,14 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
   const [isPdf, setIsPdf] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [toast, setToast] = useState("");
-  const [failureMessage, setFailureMessage] = useState(
-    "글자를 읽지 못했어요. 포스터 전체가 보이게 밝은 곳에서 다시 찍어 주세요",
-  );
+  const [failureMessage, setFailureMessage] = useState(READ_FAILED);
+  const [failureBadge, setFailureBadge] = useState("분석 실패");
+
+  const fail = (message: string, badge: string) => {
+    setFailureMessage(message);
+    setFailureBadge(badge);
+    setStatus("failure");
+  };
 
   useEffect(() => {
     if (!scenario.data) return;
@@ -107,17 +98,25 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
     setPreviewUrl("");
     setFileName("");
     setIsPdf(false);
-    setFailureMessage(
-      "글자를 읽지 못했어요. 포스터 전체가 보이게 밝은 곳에서 다시 찍어 주세요",
-    );
+    setFailureMessage(READ_FAILED);
+    setFailureBadge("분석 실패");
+  };
+
+  const runSteps = async () => {
+    for (let index = 0; index < 3; index += 1) {
+      setSteps((current) => current.map((step, at) => (
+        at < index ? "done" : at === index ? "running" : step
+      )));
+      await wait(600);
+      setSteps((current) => current.map((step, at) => (at === index ? "done" : step)));
+    }
   };
 
   const analyze = async (file?: File) => {
     if (!file) return;
     const validationError = await validatePosterFile(file);
     if (validationError) {
-      setFailureMessage(validationError);
-      setStatus("failure");
+      fail(validationError, "올릴 수 없는 파일");
       return;
     }
 
@@ -129,31 +128,33 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
       objectUrlRef.current = URL.createObjectURL(file);
       setPreviewUrl(objectUrlRef.current);
     }
+
+    setStatus("uploading");
+    let fileId: string;
+    try {
+      fileId = (await uploadPosterFile(file)).file_id;
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "DAILY_UPLOAD_LIMIT") {
+        setStatus("limit");
+        return;
+      }
+      fail(errorMessage(error, UPLOAD_FAILED), "올리지 못했어요");
+      return;
+    }
+    if (!POSTER_EXTRACT_READY) {
+      setStatus("stored");
+      return;
+    }
+
     setStatus("analyzing");
-    const extraction = extractPoster(file)
+    const extraction = extractPoster(fileId)
       .then((value) => ({ value, error: null }))
       .catch((error: unknown) => ({ value: null, error }));
-
-    for (let index = 0; index < 3; index += 1) {
-      setSteps((current) => current.map((step, stepIndex) => (
-        stepIndex < index ? "done" : stepIndex === index ? "running" : step
-      )) as [StepStatus, StepStatus, StepStatus]);
-      await wait(600);
-      setSteps((current) => current.map((step, stepIndex) => (
-        stepIndex === index ? "done" : step
-      )) as [StepStatus, StepStatus, StepStatus]);
-    }
+    await runSteps();
 
     const extracted = await extraction;
     if (extracted.error) {
-      setFailureMessage(
-        "글자를 읽지 못했어요. 포스터 전체가 보이게 밝은 곳에서 다시 찍어 주세요",
-      );
-      setStatus(
-        extracted.error instanceof MockApiError && extracted.error.code === "upload_limit"
-          ? "limit"
-          : "failure",
-      );
+      fail(READ_FAILED, "분석 실패");
       return;
     }
     if (!extracted.value) return;
@@ -170,7 +171,11 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
     setTimeout(() => navigate({ name: "opportunity", id: detail.id }), 700);
   };
 
-  if (!POSTER_READY) return <PosterNotReady navigate={navigate} />;
+  const pickAgain = () => {
+    reset();
+    setTimeout(() => fileInputRef.current?.click());
+  };
+
   if (scenario.loading) {
     return (
       <>
@@ -180,71 +185,64 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
     );
   }
 
-  const uploadInputs = (
-    <>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".jpg,.jpeg,.png,.webp,.heic,.pdf"
-        className="hidden"
-        onChange={(event) => analyze(event.target.files?.[0])}
-      />
-      <input
-        ref={cameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={(event) => analyze(event.target.files?.[0])}
-      />
-    </>
+  const preview = (
+    <PosterSourcePreview previewUrl={previewUrl} fileName={fileName} isPdf={isPdf} />
   );
 
   return (
     <>
-      <Header title="포스터로 공고 등록" subtitle="포스터를 올리면 AI가 제목, 마감일, 지원 조건을 자동으로 정리해요." />
-      {uploadInputs}
+      <Header title="포스터로 공고 등록" subtitle={SUBTITLE} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".jpg,.jpeg,.png,.webp,.pdf"
+        className="hidden"
+        onChange={(event) => {
+          const picked = event.target.files?.[0];
+          event.target.value = "";  // 같은 파일을 다시 골라도 change가 뜨게 비운다
+          analyze(picked);
+        }}
+      />
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        capture="environment"
+        className="hidden"
+        onChange={(event) => {
+          const picked = event.target.files?.[0];
+          event.target.value = "";
+          analyze(picked);
+        }}
+      />
       {status === "idle" && (
-        <section
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => {
-            event.preventDefault();
-            analyze(event.dataTransfer.files[0]);
-          }}
-          className="flex h-[310px] flex-col items-center justify-center gap-3 rounded-[18px] border border-dashed border-[#e5e7eb] bg-white"
-        >
-          <span className="text-[34px] font-bold text-[#4f6ef7]">↑</span>
-          <p className="text-[18px] font-semibold">이미지 또는 PDF를 업로드해주세요</p>
-          <p className="text-[13px] text-[#667085]">JPG · PNG · WEBP · HEIC 또는 2쪽 이하 PDF · 20MB 이하</p>
-          <div className="flex gap-2">
-            <Button onClick={() => fileInputRef.current?.click()}>파일 선택</Button>
-            <span className="hidden max-[760px]:inline-flex">
-              <Button secondary onClick={() => cameraInputRef.current?.click()}>사진 찍기</Button>
-            </span>
-          </div>
+        <PosterDropzone
+          onDropFile={analyze}
+          onChooseFile={() => fileInputRef.current?.click()}
+          onUseCamera={() => cameraInputRef.current?.click()}
+        />
+      )}
+      {status === "uploading" && (
+        <section className="flex min-h-[310px] flex-col items-center justify-center gap-3 rounded-[18px] border border-[#e5e7eb] bg-white p-8 text-center" role="status">
+          <p className="text-[18px] font-semibold">포스터를 올리고 있어요</p>
+          <p className="text-[13px] text-[#667085]">{fileName}</p>
         </section>
       )}
       {status === "analyzing" && (
         <div className="grid grid-cols-[1fr_1fr] gap-5 max-[900px]:grid-cols-1">
-          <SourcePreview previewUrl={previewUrl} fileName={fileName} isPdf={isPdf} />
-          <section className="rounded-[18px] border border-[#e5e7eb] bg-white p-6">
-            <h2 className="text-[20px] font-bold">포스터를 분석하고 있어요</h2>
-            <div className="mt-5 flex flex-col gap-3">
-              {["포스터에서 글자·날짜 읽기", "지원 자격 정리", "내 프로필과 비교"].map((label, index) => (
-                <div key={label} className="flex items-center justify-between rounded-[12px] bg-[#f7f8fa] p-4 text-[14px]">
-                  <span>{label}</span>
-                  <Badge tone={steps[index] === "done" ? "green" : "blue"}>
-                    {steps[index] === "done" ? "완료" : steps[index] === "running" ? "진행 중" : "대기"}
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          </section>
+          {preview}
+          <PosterAnalyzing steps={steps} />
+        </div>
+      )}
+      {status === "stored" && (
+        <div className="grid grid-cols-[1fr_1fr] gap-5 max-[900px]:grid-cols-1">
+          {preview}
+          <PosterStored onHome={() => navigate({ name: "home" })} onPickAgain={pickAgain} />
         </div>
       )}
       {status === "complete" && result && draft && (
         <div className="grid grid-cols-[0.85fr_1.15fr] gap-5 max-[900px]:grid-cols-1">
-          <SourcePreview previewUrl={previewUrl} fileName={fileName} isPdf={isPdf} />
+          {preview}
           <PosterExtractForm
             result={result}
             draft={draft}
@@ -256,7 +254,7 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
       )}
       {status === "duplicate" && result?.duplicate_candidate && (
         <div className="grid grid-cols-[1fr_1fr] gap-5 max-[900px]:grid-cols-1">
-          <SourcePreview previewUrl={previewUrl} fileName={fileName} isPdf={isPdf} />
+          {preview}
           <section className="flex min-h-[300px] flex-col items-center justify-center rounded-[18px] border border-[#e5e7eb] bg-white p-8 text-center">
             <Badge tone="yellow">중복 공고</Badge>
             <h2 className="mt-4 text-[22px] font-bold">이미 등록된 공고예요</h2>
@@ -271,22 +269,19 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
       )}
       {(status === "failure" || status === "limit") && (
         <section className="flex min-h-[310px] flex-col items-center justify-center rounded-[18px] border border-[#e5e7eb] bg-white p-8 text-center">
-          <Badge tone="red">{status === "limit" ? "업로드 한도 초과" : "분석 실패"}</Badge>
+          <Badge tone="red">{status === "limit" ? "업로드 한도 초과" : failureBadge}</Badge>
           <h2 className="mt-4 text-[20px] font-bold">
             {status === "limit"
               ? "오늘은 더 올릴 수 없어요. 내일 0시부터 다시 올릴 수 있어요"
               : failureMessage}
           </h2>
-          {status === "failure" && (
-            <div className="mt-5">
-              <Button onClick={() => {
-                reset();
-                setTimeout(() => fileInputRef.current?.click());
-              }}>
-                다시 올리기
-              </Button>
-            </div>
-          )}
+          <div className="mt-5">
+            {status === "failure" ? (
+              <Button onClick={pickAgain}>다시 올리기</Button>
+            ) : (
+              <Button onClick={() => navigate({ name: "home" })}>홈으로</Button>
+            )}
+          </div>
         </section>
       )}
       {toast && (

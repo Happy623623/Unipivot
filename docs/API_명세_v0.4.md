@@ -34,6 +34,8 @@
 >
 > v0.4 보강(10/15, 플래너): 출처별 수정 범위(준비 할 일은 날짜만), 기간 상한 400일, include_done 기본값, 마커는 준비를 마친 공고의 마감일
 >
+> v0.4 보강(10/15, 포스터 업로드): `POST /files`는 지금 포스터만 받는다(HEIC 미지원), 하루 한도 20개 확정, 응답에 `reused`, 저장소 오류 `STORAGE_API_ERROR`
+>
 > v0.4 보강(10/15, 캘린더): 마감일 등록은 준비하기와 따로 한다(prepare에서 register_calendar 삭제), 마감 1시간 전 시작, 일정 번호를 서버가 정해 중복을 막는다
 >
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
@@ -556,14 +558,22 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 ```
 
 ```json
-// Response 201
-{ "file_id": "uuid", "kind": "lecture_material", "page_count": 42, "duplicate_of": null }
+// Response 201 (새 파일)
+{ "file_id": "uuid", "kind": "poster", "page_count": 2, "duplicate_of": null, "reused": false }
+
+// Response 200 (같은 파일을 다시 올림)
+{ "file_id": "기존 id", "kind": "poster", "page_count": 2, "duplicate_of": "기존 id", "reused": true }
 ```
 
-- 같은 사용자가 같은 파일(sha256)을 같은 kind로 다시 올리면 새로 저장하지 않고 `200 { "file_id": "기존 id", "reused": true }`를 준다. 새 파일은 `201`이다(`duplicate_of`로도 알려준다)
-- 에러: `FILE_TOO_LARGE`(413), `PAGE_LIMIT_EXCEEDED`(413), `UNSUPPORTED_FILE_TYPE`(400), `DAILY_UPLOAD_LIMIT`(429)
-- 허용 형식: poster는 jpg·png·webp·heic와 **2쪽 이하 PDF**, syllabus·lecture_material은 pdf. 포스터 PDF가 3쪽 이상이면 `413 PAGE_LIMIT_EXCEEDED`
-- 업로드한 파일 이름을 `files.original_name`에 저장한다
+- 같은 사용자가 같은 파일(sha256)을 같은 kind로 다시 올리면 새로 저장하지 않고 `200`과 기존 `file_id`를 준다. 다섯 필드는 두 경우 모두 있다
+- 에러: `FILE_TOO_LARGE`(413), `PAGE_LIMIT_EXCEEDED`(413), `UNSUPPORTED_FILE_TYPE`(400), `DAILY_UPLOAD_LIMIT`(429, `details.reset_at`은 한도가 풀리는 KST 내일 0시), `STORAGE_API_ERROR`(502)
+- 허용 형식: poster는 jpg·png·webp와 **2쪽 이하 PDF**, syllabus·lecture_material은 pdf. 포스터 PDF가 3쪽 이상이면 `413 PAGE_LIMIT_EXCEEDED`. 크기는 20MB까지다
+- 형식은 파일 이름·Content-Type이 아니라 **앞부분 바이트**로 가린다. 이름만 `.jpg`로 바꾼 파일은 `400 UNSUPPORTED_FILE_TYPE`이다
+- HEIC(아이폰 기본 사진 형식)는 **아직 받지 않는다**. `400 UNSUPPORTED_FILE_TYPE`과 함께 JPG로 바꿔 올리라고 안내한다(W6 2차 이후에 연다)
+- 지금은 `kind = poster`만 받는다. `syllabus`·`lecture_material`은 그 기능(F-14·F-15)과 함께 열고, 그때까지는 `422 VALIDATION_FAILED`(`details.fields.kind`)다. `lms_course_id`·`lms_module_item_id`도 그때 받는다
+- 하루 한도는 사용자당 **20개**다(KST 하루, 저장한 파일만 센다). 이미 올린 파일을 다시 올리는 것은 저장하지 않으므로 한도를 다 썼어도 `200`이다
+- 업로드한 파일 이름은 경로를 떼고 `files.original_name`에 저장한다
+- 파일은 비공개 Storage 버킷의 `<user_id>/<kind>/<file_id>.<확장자>`에 둔다. 저장소에 먼저 올리고 그다음에 기록을 남긴다(거꾸로 하면 끊겼을 때 없는 파일을 "이미 있어요"라고 가리킨다)
 
 ### `POST /posters/extract`
 
@@ -1173,7 +1183,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `GOOGLE_REFRESH_TOKEN_MISSING` | 422 | 로그인 시 refresh token 못 받음 | 재로그인(동의 화면 다시) |
 | `LMS_NOT_CONNECTED` | 404 | LMS 미연결 | 연결 가이드로 이동 |
 | `LMS_TOKEN_INVALID` | 422 | 토큰 검증 실패·폐기됨 | 재연결 안내 |
-| `GOOGLE_API_ERROR` · `LMS_API_ERROR` · `YOUTH_API_ERROR` | 502 | 외부 서비스 오류 | 잠시 후 재시도 |
+| `GOOGLE_API_ERROR` · `LMS_API_ERROR` · `YOUTH_API_ERROR` · `STORAGE_API_ERROR` | 502 | 외부 서비스 오류(`STORAGE_API_ERROR`는 파일 저장소) | 잠시 후 재시도 |
 | `LLM_TIMEOUT` · `LLM_ERROR` | 502 | LLM 호출 실패(실행 결과의 error로도 전달) | 재시도 버튼 |
 | `RATE_LIMITED` | 429 | 같은 작업 과다 요청 | 잠시 후 재시도 |
 | `DB_UNAVAILABLE` | 503 | DB 연결 실패 | 잠시 후 재시도 |
@@ -1185,7 +1195,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 ## 14. 결정이 필요한 것
 
 - [ ] 강의자료 토큰 상한 (P1 축소판) — 실제 강의자료로 측정
-- [ ] 일일 업로드 한도 — 제안: 사용자당 하루 20개
+- [x] **일일 업로드 한도 — 사용자당 하루 20개로 확정** (10/15). KST 하루 기준이고 저장한 파일만 센다. 넘으면 `429 DAILY_UPLOAD_LIMIT`과 `details.reset_at`(KST 내일 0시)
 - [ ] 작업 큐 — MVP는 FastAPI `BackgroundTasks`로 시작하고, 동기화 배치가 무거워지면 별도 워커로 분리할지
 - [ ] 실행 상태 전달 — 폴링을 유지한다. Supabase Realtime으로 바꿔도 RLS 읽기 정책이 이미 있어 그대로 쓸 수 있다
 - [ ] 요건 추출 에이전트 상한 — 공고당 도구 호출 4회와 입력 토큰 상한을 W2–3 실제 공지로 정한다
