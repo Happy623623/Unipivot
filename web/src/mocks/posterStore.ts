@@ -103,10 +103,8 @@ export function registerStoredPoster(
       calendar_events: [],
     },
     process: {
-      extraction: [
-        step(1, "extract_from_image", "포스터에서 글자·날짜 읽기", 380),
-        step(2, "extract_requirements", "지원 자격 정리", 240),
-      ],
+      // 실제 추출은 Vision 한 번이라 단계도 하나다(api/app/posters/service.py)
+      extraction: [step(1, "submit_poster", "포스터에서 글자·날짜 읽기", 8100)],
       evaluated_at: EVALUATED_AT,
       prepare_run_id: null,
     },
