@@ -34,6 +34,8 @@
 >
 > v0.4 보강(10/15, 플래너): 출처별 수정 범위(준비 할 일은 날짜만), 기간 상한 400일, include_done 기본값, 마커는 준비를 마친 공고의 마감일
 >
+> v0.4 보강(10/15, 포스터 추출): Vision 한 번 호출로 `POST /posters/extract`, 초안 요건에 `clause_no`, 중복 기준(제목+마감일 같은 날), 읽기 실패 `POSTER_READ_FAILED`
+>
 > v0.4 보강(10/15, 포스터 업로드): `POST /files`는 지금 포스터만 받는다(HEIC 미지원), 하루 한도 20개 확정, 응답에 `reused`, 저장소 오류 `STORAGE_API_ERROR`
 >
 > v0.4 보강(10/15, 캘린더): 마감일 등록은 준비하기와 따로 한다(prepare에서 register_calendar 삭제), 마감 1시간 전 시작, 일정 번호를 서버가 정해 중복을 막는다
@@ -581,9 +583,17 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 // Request
 { "file_id": "uuid" }
 
-// Response 202
+// Response 202 (Location: /runs/{run_id})
 { "run_id": "uuid", "status": "running" }
 ```
+
+- `file_id`는 `POST /files`로 올린 **내 포스터**다. 남의 파일·다른 종류(`syllabus` 등)는 `404 NOT_FOUND`
+- Vision 모델을 **한 번만** 부른다. 포스터는 사진 한 장이라 더 읽을 첨부가 없어서, 글자를 옮기는 일과 요건을 뽑는 일을 한 호출에서 함께 받는다. 그래서 `steps`는 한 줄이다
+- 요건 항목·연산자·값 규칙은 공지 요건 추출과 **같은 규칙**이다(`docs/판정엔진_규칙.md` 10장). 근거 문장(`evidence_text`)은 모델이 옮겨 적은 포스터 글자에 있는지 검사한다 — 포스터에는 대조할 다른 원문이 없다
+- 연도 없는 날짜("10. 20.까지")는 **사진을 올린 날(KST)** 뒤에 오는 가장 가까운 날로 읽는다. 올린 날보다 앞선 마감일은 연도를 잘못 읽은 것으로 보고 버린다
+- 글자를 읽지 못했거나 공고 이름을 찾지 못하면 실행이 `422 POSTER_READ_FAILED`로 실패한다(실행의 `error`로 전달). 모델이 멈추면 `502 LLM_TIMEOUT`, 저장소에서 파일을 받지 못하면 `502 STORAGE_API_ERROR`다
+- 초안은 따로 저장하지 않는다. 그 실행 기록에 남아 `GET /runs/{run_id}`가 다시 읽어 준다. 실행 기록이 지워지면 `result`는 null이다
+- 확인 화면에서 고친 값으로 공고를 만드는 `POST /posters/confirm`은 아직이다(W6 3차)
 
 완료 시 `GET /runs/{run_id}`의 `result`:
 
@@ -598,7 +608,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
     "deadline_at": "2026-10-20T18:00:00+09:00",
     "easy_summary": "...",
     "requirements": [
-      { "field": "enrollment_status", "operator": "in", "value": ["enrolled", "on_leave"], "condition_text": "재학생 또는 휴학생", "evidence_text": "국내 대학 재학생 및 휴학생", "is_ambiguous": false }
+      { "clause_no": 1, "field": "enrollment_status", "operator": "in", "value": ["enrolled", "on_leave"], "condition_text": "재학·휴학", "evidence_text": "국내 대학 재학생 및 휴학생", "is_ambiguous": false }
     ],
     "documents": [ { "name": "참가신청서", "issuer": "주최측 홈페이지", "lead_days": 2, "effort_minutes": 60, "form_url": null } ],
     "extraction_confidence": 0.71,
@@ -608,9 +618,11 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 }
 ```
 
-- `low_confidence_fields`는 확인 화면에서 강조 표시
-- 확인 화면은 요건을 `condition_text` 문장으로 보여주고 행 단위로 지울 수 있다
-- `duplicate_candidate`가 있으면 "이미 등록된 공고예요" 안내 후 그 공고로 이동 선택지 제공
+- `low_confidence_fields`는 확인 화면에서 강조 표시. 값은 `title`·`organizer`·`category`·`apply_start_at`·`deadline_at`·`requirements`·`documents` 중에서 고른다. 모델이 고른 항목에, 코드가 보기에 확인이 필요한 항목(마감일을 못 읽음, 신뢰도가 0.6 미만, 모호한 조건이 있음, 코드가 고쳐서 받음, 제목이 너무 짧음, 종류를 못 읽어 `etc`로 둠)을 더한다
+- `clause_no`는 요건 묶음 번호다(같은 번호끼리 "또는", 다른 번호끼리 "그리고"). 확인 화면은 보여주지 않지만 등록할 때 그대로 돌려보낸다
+- 확인 화면은 요건을 `condition_text` 문장으로 보여주고 행 단위로 지울 수 있다. `condition_text`는 공고 상세와 같은 방법으로 만든 문장이다
+- `documents`의 발급처·소요 일수·작성 시간은 준비하기와 같은 서류 사전에서 채운다. 사전에 없는 서류는 null이고 준비하기가 모델에 묻는다
+- `duplicate_candidate`가 있으면 "이미 등록된 공고예요" 안내 후 그 공고로 이동 선택지 제공. 같은 공고로 보는 기준은 **제목을 정규화해 같고**(소문자·숫자·한글만 남김) **마감일이 같은 KST 날짜**다. 마감일을 읽지 못했으면 아직 마감하지 않은 공고 중 제목이 같은 것을 본다. 내가 볼 수 있는 공고만 본다(남이 올린 포스터 공고는 보지 않는다)
 
 ### `POST /posters/confirm`
 
@@ -1117,14 +1129,14 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   "finished_at": "2026-10-01T10:40:09+09:00",
   "latency_ms": 8120,
   "steps": [
-    { "seq": 1, "tool": "extract_from_image", "label": "포스터에서 글자·날짜 읽기", "status": "succeeded", "latency_ms": 5210 },
-    { "seq": 2, "tool": "extract_requirements", "label": "지원 자격 정리", "status": "succeeded", "latency_ms": 2340 },
-    { "seq": 3, "tool": "check_eligibility", "label": "내 프로필과 비교", "status": "succeeded", "latency_ms": 12 }
+    { "seq": 1, "tool": "submit_poster", "label": "포스터에서 글자·날짜 읽기", "status": "succeeded", "latency_ms": 8100, "chosen_by": "pipeline", "note": null }
   ],
   "result": { "kind": "poster_extract", "...": "작업별 결과(6–9장)" },
   "error": null
 }
 ```
+
+`result`는 `kind`로 가린다: 준비하기는 `prepare`(7장), 포스터 추출은 `poster_extract`(6장)다. 아직 돌고 있거나 실패한 실행은 null이다.
 
 단계마다 모델이 고른 도구를 구분해 보여준다. 공고 상세의 `process.extraction`도 같은 형식이다.
 
@@ -1139,7 +1151,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - 토큰 수·비용은 사용자 응답에 넣지 않고 내부 지표로만 쓴다
 - 실패 시 `status: "failed"`, `error: { "code": "LLM_TIMEOUT", "message": "..." }`
 - `error`는 서버가 정한 에러(13장 코드)만 그대로 보여 준다. 그 밖의 예외는 `INTERNAL_ERROR`와 정해진 문구로 바꿔 내부 내용이 나가지 않게 한다
-- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다. 준비하기는 get_document_guide → 필요 서류 확인, build_prep_plan → 마감일에서 거꾸로 일정 짜기다(둘 다 pipeline). 마감일 캘린더 등록은 준비하기 단계가 아니라 따로 부르는 API다(7장).
+- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다. 준비하기는 get_document_guide → 필요 서류 확인, build_prep_plan → 마감일에서 거꾸로 일정 짜기다(둘 다 pipeline). 마감일 캘린더 등록은 준비하기 단계가 아니라 따로 부르는 API다(7장). 포스터 추출은 submit_poster → 포스터에서 글자·날짜 읽기 한 줄이다(pipeline).
 - 앞에서 읽은 곳의 뒷부분을 읽은 호출(시작 위치가 0보다 큼, Vision은 PDF 2쪽부터)은 "이어 읽기"다(예: 첨부 '파일명' 이어 읽기).
 - 도구가 오류를 돌려줬거나 제출이 거절된 호출은 status failed다. tool_calls.status에는 succeeded로 남는다.
 - note는 주소를 지우고 공백을 한 칸으로 줄인 한 줄이고 최대 200자다.
@@ -1173,6 +1185,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `PAGE_LIMIT_EXCEEDED` | 413 | 포스터 PDF 쪽수 초과(2쪽까지) | 안내 문구 |
 | `MATERIAL_TOO_LONG` | 413 | 강의자료 토큰 상한 초과, `details.suggested_ranges` 제공 | 쪽 범위 선택 화면 |
 | `UNSUPPORTED_FILE_TYPE` | 400 | 허용되지 않은 형식 | 안내 문구 |
+| `POSTER_READ_FAILED` | 422 | 포스터에서 글자·공고 이름을 읽지 못함(실행 결과의 error로 전달) | 다시 찍어 올리기 안내 |
 | `DAILY_UPLOAD_LIMIT` | 429 | 하루 업로드 한도 초과, `details.reset_at` | 안내 문구 |
 | `REPORT_NOT_ALLOWED` · `ALREADY_REPORTED` | 400 · 409 | 신고 불가·중복 신고 (P1, 신고와 함께) | 토스트 |
 | `NOT_ELIGIBLE` | 409 | 부적격 공고 준비하기 | "그래도 준비하기" 확인 |

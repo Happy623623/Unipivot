@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from app.auth import CurrentUserDep
 from app.errors import ApiError
 from app.repositories.runs import RunRepoDep
-from app.schemas.prepare import RunView
+from app.schemas.prepare import RunResult, RunView
 
 router = APIRouter(prefix="/runs", tags=["실행"])
 
@@ -14,16 +14,19 @@ router = APIRouter(prefix="/runs", tags=["실행"])
 async def read_run(run_id: UUID, user: CurrentUserDep, repo: RunRepoDep) -> RunView:
     """실행 진행·결과(API 명세 11장). 본인 실행만 본다. 배치 실행은 403, 남의 실행·없는 실행은 404다.
 
-    steps는 처리 과정(F-42)이고, 끝나면 result(준비하기는 계획·서류·할 일)나 error(코드·문구)가 붙는다.
+    steps는 처리 과정(F-42)이고, 끝나면 result나 error(코드·문구)가 붙는다. result는 kind로 가린다:
+    준비하기는 계획·서류·할 일(prepare), 포스터 추출은 공고 초안과 중복 후보(poster_extract)다.
     """
     run = await repo.run(str(run_id))
     if run is not None and run.user_id is None:
         raise ApiError(403, "FORBIDDEN", "이 실행은 볼 수 없어요.")
     if run is None or run.user_id != user.id:
         raise ApiError(404, "NOT_FOUND", "실행을 찾을 수 없어요.")
-    result = None
+    result: RunResult | None = None
     if run.status == "succeeded" and run.trigger_type == "prepare":
         result = await repo.prepare_result(user.id, run.id)
+    elif run.status == "succeeded" and run.trigger_type == "poster_upload":
+        result = await repo.poster_result(user.id, run.id)
     return RunView(
         id=run.id,
         trigger_type=run.trigger_type,

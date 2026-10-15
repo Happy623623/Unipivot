@@ -21,6 +21,7 @@ from app.routers import (
     meta,
     opportunities,
     planner,
+    posters,
     runs,
 )
 
@@ -77,6 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         events.router,
         opportunities.router,
         planner.router,
+        posters.router,
         runs.router,
     ):
         app.include_router(router, prefix=settings.api_prefix)

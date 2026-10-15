@@ -8,8 +8,10 @@ interface PosterExtractFormProps {
   result: PosterExtractResult;
   draft: PosterExtractResult["draft"];
   registering: boolean;
+  registerReady: boolean; // 등록(POST /posters/confirm)이 아직이면 안내만 보여 준다
   onDraftChange: (draft: PosterExtractResult["draft"]) => void;
   onRegister: () => void;
+  onPickAgain: () => void;
 }
 
 const categories: Category[] = [
@@ -35,12 +37,21 @@ export default function PosterExtractForm({
   result,
   draft,
   registering,
+  registerReady,
   onDraftChange,
   onRegister,
+  onPickAgain,
 }: PosterExtractFormProps) {
   const [editing, setEditing] = useState(false);
   const isLowConfidence = (field: string) =>
     result.draft.low_confidence_fields.includes(field);
+  // 요건·서류는 칸 하나가 아니라 묶음이라 테두리로 강조한다(명세 6장 low_confidence_fields)
+  const sectionClass = (field: string) =>
+    `mt-5 ${isLowConfidence(field) ? "rounded-[10px] border border-[#b7791f] bg-[#fff8e1] p-3" : ""}`;
+  const checkMark = (field: string) =>
+    isLowConfidence(field) ? (
+      <span className="ml-2 text-[11px] font-normal text-[#b7791f]">확인해 주세요</span>
+    ) : null;
   const fieldClass = (field: string) =>
     `rounded-[10px] border p-3 ${
       isLowConfidence(field)
@@ -116,8 +127,16 @@ export default function PosterExtractForm({
           </label>
         </div>
       </div>
-      <div className="mt-5">
-        <h3 className="text-[14px] font-semibold">지원 자격</h3>
+      {draft.easy_summary && (
+        <div className="mt-5">
+          <h3 className="text-[14px] font-semibold">쉬운 설명</h3>
+          <p className="mt-2 rounded-[10px] bg-[#f7f8fa] p-3 text-[13px] text-[#344054]">
+            {draft.easy_summary}
+          </p>
+        </div>
+      )}
+      <div className={sectionClass("requirements")}>
+        <h3 className="text-[14px] font-semibold">지원 자격{checkMark("requirements")}</h3>
         <div className="mt-2 flex flex-col gap-2">
           {draft.requirements.map((requirement, index) => (
             <div key={`${requirement.field}-${index}`} className="flex items-center gap-2 rounded-[10px] bg-[#f7f8fa] p-3">
@@ -144,8 +163,8 @@ export default function PosterExtractForm({
           ))}
         </div>
       </div>
-      <div className="mt-5">
-        <h3 className="text-[14px] font-semibold">필요 서류</h3>
+      <div className={sectionClass("documents")}>
+        <h3 className="text-[14px] font-semibold">필요 서류{checkMark("documents")}</h3>
         <div className="mt-2 flex flex-wrap gap-2">
           {draft.documents.map((document, index) => (
             <input
@@ -163,15 +182,23 @@ export default function PosterExtractForm({
         </div>
       </div>
       <p className="mt-5 rounded-[10px] bg-[#eef2ff] p-3 text-[12px] text-[#344054]">
-        등록하면 다른 학생 피드에도 공개되고, 이름은 김*지처럼 가려져요.
+        {registerReady
+          ? "등록한 포스터 공고는 올린 본인에게만 보여요."
+          : "확인한 내용으로 공고를 등록하는 기능은 준비 중이에요. 지금은 읽어 온 내용만 보여 드려요."}
       </p>
       <div className="mt-4 flex justify-end gap-2">
-        <Button secondary onClick={() => setEditing((value) => !value)}>
-          {editing ? "수정 완료" : "정보 수정"}
-        </Button>
-        <Button onClick={onRegister} disabled={registering}>
-          {registering ? "등록 중" : "공고 등록하고 자격 확인"}
-        </Button>
+        {registerReady ? (
+          <>
+            <Button secondary onClick={() => setEditing((value) => !value)}>
+              {editing ? "수정 완료" : "정보 수정"}
+            </Button>
+            <Button onClick={onRegister} disabled={registering}>
+              {registering ? "등록 중" : "공고 등록하고 자격 확인"}
+            </Button>
+          </>
+        ) : (
+          <Button secondary onClick={onPickAgain}>다른 포스터 올리기</Button>
+        )}
       </div>
     </section>
   );

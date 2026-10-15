@@ -3,6 +3,7 @@
 결과는 따로 저장하지 않고 실행이 만든 행에서 다시 읽는다. 준비하기는 그 실행의 계획(prep_plans)·서류·할 일이다.
 """
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,10 +11,13 @@ from typing import Annotated, Any
 
 from fastapi import Depends
 from psycopg import AsyncConnection
+from pydantic import ValidationError
 
 from app.db import get_conn
 from app.eligibility import KST
+from app.posters.prompt import SUBMIT as POSTER_TOOL
 from app.schemas.opportunities import DocumentItem, ProcessStep
+from app.schemas.posters import DuplicateCandidate, PosterDraft, PosterExtractResult
 from app.schemas.prepare import PrepareResult, PrepTask, RunError
 
 # 준비하기 단계 이름(화면의 처리 과정). 정해진 순서로 도는 단계라 chosen_by는 pipeline이다.
@@ -22,8 +26,11 @@ PREPARE_LABELS = {
     "get_document_guide": "필요 서류 확인",
     "build_prep_plan": "마감일에서 거꾸로 일정 짜기",
 }
+# 포스터 추출 단계 이름. Vision 한 번이라 단계도 하나다(app/posters/service.py)
+POSTER_LABELS = {POSTER_TOOL: "포스터에서 글자·날짜 읽기"}
 FAILED_MESSAGE = "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요."
 _CODED = re.compile(r"^([A-Z][A-Z_]+): (.+)$", re.S)  # agent_log.error_text의 "코드: 문구"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,11 @@ class RunRow:
         if self.error_message and (match := _CODED.match(self.error_message)):
             return RunError(code=match.group(1), message=match.group(2))
         return RunError(code="INTERNAL_ERROR", message=FAILED_MESSAGE)
+
+
+def _label(tool_name: str) -> str:
+    """화면에 보이는 단계 이름. 작업마다 표가 다르고, 표에 없으면 도구 이름 그대로다."""
+    return PREPARE_LABELS.get(tool_name) or POSTER_LABELS.get(tool_name) or tool_name
 
 
 class RunRepository:
@@ -83,7 +95,7 @@ class RunRepository:
             ProcessStep(
                 seq=row["seq"],
                 tool=row["tool_name"],
-                label=PREPARE_LABELS.get(row["tool_name"], row["tool_name"]),
+                label=_label(row["tool_name"]),
                 status=row["status"],
                 latency_ms=row["latency_ms"],
                 chosen_by="pipeline",
@@ -130,6 +142,33 @@ class RunRepository:
             calendar_event=None,
             calendar_error=None,
         )
+
+    async def poster_result(self, user_id: str, run_id: str) -> PosterExtractResult | None:
+        """그 실행이 만든 초안. 기록이 지워졌거나 모양이 달라졌으면 None이다."""
+        row = await (
+            await self.conn.execute(
+                "select t.output from tool_calls t join agent_runs r on r.id = t.run_id"
+                " where t.run_id = %s and r.user_id = %s and t.tool_name = %s"
+                " order by t.seq desc, t.id desc limit 1",
+                (run_id, user_id, POSTER_TOOL),
+            )
+        ).fetchone()
+        output = row["output"] if row else None
+        if not isinstance(output, dict) or "draft" not in output:
+            return None
+        try:
+            draft = PosterDraft.model_validate(output["draft"])
+        except ValidationError:
+            logger.warning("포스터 초안 모양이 달라 읽지 못했어요: run %s", run_id)
+            return None
+        candidate = output.get("duplicate_candidate")
+        duplicate = None
+        if isinstance(candidate, dict):
+            try:
+                duplicate = DuplicateCandidate.model_validate(candidate)
+            except ValidationError:
+                duplicate = None
+        return PosterExtractResult(draft=draft, duplicate_candidate=duplicate)
 
 
 def _kst(value: datetime | None) -> datetime | None:

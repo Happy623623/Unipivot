@@ -1,12 +1,13 @@
 """준비하기(F-30·F-31)와 실행 조회(GET /runs/{id}). API 명세 7장·11장."""
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.calendar import CalendarEventView
 from app.schemas.opportunities import DocumentItem, ProcessStep, RunStatus
+from app.schemas.posters import PosterExtractResult
 
 
 class PrepareRequest(BaseModel):
@@ -42,6 +43,9 @@ class RunError(BaseModel):
     message: str
 
 
+RunResult = Annotated[PrepareResult | PosterExtractResult, Field(discriminator="kind")]
+
+
 class RunView(BaseModel):
     id: str
     trigger_type: str
@@ -50,5 +54,6 @@ class RunView(BaseModel):
     finished_at: datetime | None
     latency_ms: int | None
     steps: list[ProcessStep]
-    result: PrepareResult | None  # 작업별 결과. 지금은 준비하기(kind prepare)만 있다
+    # 작업별 결과. kind로 가린다(prepare 준비하기, poster_extract 포스터 추출)
+    result: RunResult | None
     error: RunError | None
