@@ -166,6 +166,19 @@ async def test_the_checks_do_not_become_the_process_of_an_opportunity() -> None:
     assert report.results[0].error is None
 
 
+async def test_a_judgment_check_only_takes_the_three_statuses() -> None:
+    """화면 라벨(4가지)을 넣으면 3×3 혼동행렬에 담기지 않는다."""
+
+    async def uses_a_display_label(world: EvalWorld) -> None:
+        await world.judged("화면 라벨", expected="missing_info", actual="missing_info")
+
+    report = await run_scenarios(
+        DATABASE_URL, [Scenario("S00", "라벨", "P0", uses_a_display_label)]
+    )
+    assert not report.results[0].ok
+    assert "판정 확인의 기대값" in (report.results[0].error or "")
+
+
 async def test_a_new_department_is_cleaned_up_too() -> None:
     """마이그레이션 seed에 없는 학과를 넣으면 학과 목록에 영원히 남는다."""
 

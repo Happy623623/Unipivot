@@ -44,6 +44,8 @@
 >
 > v0.4 보강(10/15, 시나리오 실행): `POST /internal/eval/run`은 지금 CLI(`python -m app.eval.cli`)로 돌린다. 배포 때 같은 함수(`app/eval.run_scenarios`)를 부른다
 >
+> v0.4 보강(10/15, 지표 집계): `GET /internal/metrics` 응답 필드 확정(scenarios·eligibility·product), 에러 코드 `EVAL_NOT_ALLOWED` 추가
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1169,7 +1171,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 
 ## 12. 내부 · 운영 API
 
-`/internal/*`, `/admin/*`는 사용자 토큰이 아니라 **서비스 키**(`X-Internal-Key`) 또는 운영자 계정으로만 호출한다. 프론트에서 부르지 않는다.
+`/internal/*`, `/admin/*`는 사용자 토큰이 아니라 **서비스 키**(`X-Internal-Key`) 또는 운영자 계정으로만 호출한다. 프론트에서 부르지 않는다. 서비스 키는 서버의 `INTERNAL_API_KEY`와 맞춰 본다. 키가 틀렸을 때와 서버에 키가 없을 때 모두 403 `FORBIDDEN`이고 응답이 같다(부른 쪽에 서버 설정 상태를 알려 주지 않는다).
 
 | 경로 | 호출 주체 | 설명 |
 | --- | --- | --- |
@@ -1179,8 +1181,8 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `POST /internal/jobs/lms-sync` | 스케줄러(30분) | LMS 연결된 전체 사용자 동기화 |
 | `POST /internal/jobs/send-notifications` | 스케줄러(5분) | 예약된 알림 발송 |
 | `POST /internal/jobs/expire-opportunities` | 스케줄러(매일) | 마감 지난 공고 `expired` 처리 |
-| `POST /internal/eval/run` | 개발자 | 요청 예: `{ "scenario_codes": ["S01", "S09"], "now": "2026-10-12T09:00:00+09:00", "fixtures": "recorded" }`. `now`로 시계를 고정하고, `fixtures: recorded`면 LMS·Google·온통청년 대신 녹화한 응답을 쓴다. 테스트용 Google 계정에 만든 이벤트는 끝나면 지운다. `agent_runs.scenario_code`로 기록. 지금은 사람이 `python -m app.eval.cli`로 돌린다(배포 때 같은 함수 `app/eval.run_scenarios`를 부른다). 시나리오 하나가 `agent_runs` 한 줄(trigger `eval`)이고, 확인한 것은 그 아래 `tool_calls`에 `check`로 남는다. 시나리오가 만든 실행(준비하기·포스터 추출)에도 같은 `scenario_code`를 붙이므로, 비용은 `agent_runs.cost_usd`가 아니라 `scenario_code`로 묶은 `llm_calls`를 더해서 센다 |
-| `GET /internal/metrics` | 개발자 | 기간별 성공률·응답시간(p50·p95)·호출비용 집계에 두 가지를 더한다. 하나는 제품 지표 5개(판정 불가 비율과 원인 상위 3개, 즉석 입력 응답률, 준비하기 전환율, LMS 연결 완료율, 주간 재방문율)이고, 다른 하나는 최근 eval 실행 기준의 판정 혼동행렬이다. 비용은 모델 단가표(적용 날짜 포함)로 계산한다. 호출비용은 `scenario_code`로 묶은 `llm_calls`를 더한다(시나리오 실행 행의 `cost_usd`는 0이다) |
+| `POST /internal/eval/run` | 개발자 | 요청 예: `{ "scenario_codes": ["S01", "S09"], "now": "2026-10-12T09:00:00+09:00", "fixtures": "recorded" }`. `now`로 시계를 고정하고, `fixtures: recorded`면 LMS·Google·온통청년 대신 녹화한 응답을 쓴다. 테스트용 Google 계정에 만든 이벤트는 끝나면 지운다. `agent_runs.scenario_code`로 기록. 지금은 사람이 `python -m app.eval.cli`로 돌린다(배포 때 같은 함수 `app/eval.run_scenarios`를 부른다). 시나리오 하나가 `agent_runs` 한 줄(trigger `eval`)이고, 확인한 것은 그 아래 `tool_calls`에 `check`로 남는다. 시나리오가 만든 실행(준비하기·포스터 추출)에도 같은 `scenario_code`를 붙이므로, 비용은 `agent_runs.cost_usd`가 아니라 `scenario_code`로 묶은 `llm_calls`를 더해서 센다. 응답은 `now`·`priced_on`·`scenarios`·`passed`·`success_rate`·`latency{p50_ms,p95_ms}`·`cost_usd`·`llm_calls`·`results[]`다. 시험용 DB가 아니면(Supabase 주소) 409 `EVAL_NOT_ALLOWED`로 거절한다 — 시나리오가 사용자·공고를 만들고 지우기 때문이다 |
+| `GET /internal/metrics` | 개발자 | 기간별 성공률·응답시간(p50·p95)·호출비용 집계에 두 가지를 더한다. 하나는 제품 지표 5개(판정 불가 비율과 원인 상위 3개, 즉석 입력 응답률, 준비하기 전환율, LMS 연결 완료율, 주간 재방문율)이고, 다른 하나는 최근 eval 실행 기준의 판정 혼동행렬이다. 비용은 모델 단가표(적용 날짜 포함)로 계산한다. 호출비용은 `scenario_code`로 묶은 `llm_calls`를 더한다(시나리오 실행 행의 `cost_usd`는 0이다). 기간은 `?from=&to=`(KST 날짜, 양 끝 포함)이고 주지 않으면 오늘까지 30일이다. 응답은 `from`·`to`와 세 묶음이다 — `scenarios`(`runs`·`passed`·`success_rate`·`latency{p50_ms,p95_ms}`·`cost_usd`·`llm_calls`·`by_scenario[]`), `eligibility`(`run_started_at`·`checks`·`correct`·`accuracy`·`rows[]{expected,counts,total}`·`eligible_to_ineligible`·`ineligible_to_eligible`), `product`(`undetermined`·`profile_prompt`·`prepare_conversion`·`lms_connect`·`weekly_return`, 각각 `{numerator,denominator,rate}`이고 `undetermined`에는 `top_missing_fields[]`가 더 있다). 비율은 분모가 0이면 `rate`가 `null`이다. 혼동행렬은 시나리오 번호마다 가장 최근 실행만 센다. 판정 불가 비율만 기간이 아니라 지금 저장된 판정(활성 공고) 기준이다 |
 | `POST /admin/opportunities/{id}/restore` | 운영자 | 신고로 숨겨진 공고 복구 (P1) |
 
 ## 13. 에러 코드
@@ -1203,6 +1205,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `DEADLINE_PASSED` | 409 | 마감이 지난 공고 준비하기 | 안내 문구 |
 | `SYLLABUS_EXISTS` | 409 | 과목 계획서 이미 있음 | 교체 여부 확인 |
 | `FIELD_READ_ONLY` · `TASK_NOT_DELETABLE` | 400 | LMS 과제 등 수정·삭제 불가 | 토스트 |
+| `EVAL_NOT_ALLOWED` | 409 | 시험용 DB가 아닌 곳에서 시나리오 실행 요청(`POST /internal/eval/run`) | 개발자용, 프론트에서 쓰지 않음 |
 | `CALENDAR_NOT_CONNECTED` | 409 | 캘린더 연결이 없거나 만료. `details.reason`은 `not_connected` 또는 `expired` | 캘린더 연결(증분 승인) |
 | `GOOGLE_REFRESH_TOKEN_MISSING` | 422 | 로그인 시 refresh token 못 받음 | 재로그인(동의 화면 다시) |
 | `LMS_NOT_CONNECTED` | 404 | LMS 미연결 | 연결 가이드로 이동 |
@@ -1263,3 +1266,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 > 10/15 반영(docs/캘린더_구현.md): CalendarEvent 타입, 준비 결과 창의 캘린더 체크와 공고 상세의 "마감일 캘린더" 줄, 연결에서 돌아오면 이어서 등록.
 
 > 10/15 반영(docs/시나리오실행_구현.md): 시나리오 실행을 CLI로 돌린다(`python -m app.eval.cli`). 시나리오 하나 = `agent_runs` 한 줄(trigger `eval`, `scenario_code`), 확인 하나 = `tool_calls` 한 줄(`check`). 비용은 `scenario_code`로 묶은 `llm_calls` 합이다.
+
+> 10/15 반영(docs/지표집계_구현.md): `GET /internal/metrics` 응답 필드, `POST /internal/eval/run` 응답과 409 `EVAL_NOT_ALLOWED`, 서비스 키 검증 규칙.

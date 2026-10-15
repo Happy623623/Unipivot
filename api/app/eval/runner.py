@@ -107,6 +107,8 @@ async def _one(
                     await _finished(world)
                 finally:
                     elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    # 실행 기록에도 같은 값을 남긴다. 아래 치우는 시간은 응답시간이 아니다
+                    run.latency_ms = elapsed_ms
                     # 뒤에서 도는 일(준비하기·포스터 추출)을 먼저 끝낸다. 확인이 틀려 중간에 멈췄으면
                     # 아직 도는 일이 있고, 그 일이 쥔 연결을 두고 풀을 닫으면 안 된다
                     await app.state.runner.drain(timeout=DRAIN_SECONDS)
