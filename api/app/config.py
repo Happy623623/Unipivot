@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     google_calendar_api_base: str = "https://www.googleapis.com/calendar/v3"
     # 비우면 SUPABASE_URL에서 만든다(https://<ref>.supabase.co/storage/v1)
     supabase_storage_base: str = ""
+    # /internal/* 호출에 쓰는 서비스 키(명세 12장의 X-Internal-Key). 비우면 그 경로가 모두 403이다
+    internal_api_key: str = ""
 
     @property
     def storage_base_url(self) -> str:

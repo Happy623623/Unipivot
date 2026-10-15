@@ -86,6 +86,9 @@ class AgentRun:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: Decimal = Decimal(0)
+    # 직접 잰 시간(ms). 넣으면 이 값을 agent_runs.latency_ms에 쓴다. 비우면 agent_run 블록 전체를 잰다.
+    # 블록 끝에 치우는 일이 붙는 실행(시나리오 실행)이 일한 시간만 남기려고 쓴다
+    latency_ms: int | None = None
     _seq: int = 0
 
     @asynccontextmanager
@@ -222,6 +225,7 @@ def _require_autocommit(conn: AsyncConnection) -> None:
 
 
 async def _finish(run: AgentRun, started: float, status: str, error: str | None) -> None:
+    latency = run.latency_ms if run.latency_ms is not None else _elapsed_ms(started)
     async with run.connect() as conn:
         await conn.execute(
             "update agent_runs set status = %s, finished_at = now(), latency_ms = %s,"
@@ -229,7 +233,7 @@ async def _finish(run: AgentRun, started: float, status: str, error: str | None)
             " where id = %s",
             (
                 status,
-                _elapsed_ms(started),
+                latency,
                 run.input_tokens,
                 run.output_tokens,
                 run.cost_usd,
