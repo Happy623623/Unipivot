@@ -73,7 +73,7 @@ async def s01(world: EvalWorld) -> None:
     client = world.client(student)
 
     detail = await _detail(world, client, opportunity)
-    await world.check("판정", expected="eligible", actual=detail["eligibility"]["status"])
+    await world.judged("판정", expected="eligible", actual=detail["eligibility"]["status"])
     await world.check(
         "화면 라벨", expected="eligible", actual=detail["eligibility"]["display_status"]
     )
@@ -119,7 +119,7 @@ async def s02(world: EvalWorld) -> None:
 
     detail = await _detail(world, client, opportunity)
     eligibility = detail["eligibility"]
-    await world.check("판정", expected="ineligible", actual=eligibility["status"])
+    await world.judged("판정", expected="ineligible", actual=eligibility["status"])
     await world.check("화면 라벨", expected="ineligible", actual=eligibility["display_status"])
     await world.check("물어볼 항목 없음", expected=[], actual=eligibility["missing_fields"])
     failed = [row for row in eligibility["conditions"] if row["outcome"] == "fail"]
@@ -141,7 +141,7 @@ async def s03(world: EvalWorld) -> None:
     client = world.client(student)
 
     before = (await _detail(world, client, opportunity))["eligibility"]
-    await world.check("판정", expected="undetermined", actual=before["status"])
+    await world.judged("판정", expected="undetermined", actual=before["status"])
     await world.check("화면 라벨", expected="missing_info", actual=before["display_status"])
     await world.check(
         "물어볼 항목", expected=["gpa_last_semester"], actual=before["missing_fields"]
@@ -153,7 +153,7 @@ async def s03(world: EvalWorld) -> None:
     await world.check("평점 입력", expected=200, actual=patched.status_code)
 
     after = (await _detail(world, client, opportunity))["eligibility"]
-    await world.check("다시 판정", expected="eligible", actual=after["status"])
+    await world.judged("다시 판정", expected="eligible", actual=after["status"])
     await world.check("물어볼 항목 없음", expected=[], actual=after["missing_fields"])
 
 
@@ -171,7 +171,7 @@ async def s04(world: EvalWorld) -> None:
     client = world.client(student)
 
     eligibility = (await _detail(world, client, opportunity))["eligibility"]
-    await world.check("판정", expected="eligible", actual=eligibility["status"])
+    await world.judged("판정", expected="eligible", actual=eligibility["status"])
     await world.check("묶음 수", expected=1, actual=len(eligibility["clauses"]))
     await world.check("묶음 결과", expected="pass", actual=eligibility["clauses"][0]["outcome"])
     # 충족한 묶음의 빈 항목은 묻지 않는다(판정엔진_규칙 6장)
@@ -200,11 +200,11 @@ async def s05(world: EvalWorld) -> None:
     )
 
     senior_view = await _detail(world, world.client(senior), opportunity)
-    await world.check(
+    await world.judged(
         "4학년 10학점", expected="eligible", actual=senior_view["eligibility"]["status"]
     )
     junior_view = await _detail(world, world.client(junior), opportunity)
-    await world.check(
+    await world.judged(
         "3학년 10학점", expected="ineligible", actual=junior_view["eligibility"]["status"]
     )
     await world.check(
@@ -239,7 +239,7 @@ async def s06(world: EvalWorld) -> None:
     await world.check(
         "지역 조건", expected=["region"], actual=[row["field"] for row in eligibility["conditions"]]
     )
-    await world.check("판정", expected="ineligible", actual=eligibility["status"])
+    await world.judged("판정", expected="ineligible", actual=eligibility["status"])
     await world.check("탈락 조건", expected="fail", actual=eligibility["conditions"][0]["outcome"])
     await world.check(
         "지역 사유", expected=True, actual="지역" in (eligibility["reason_text"] or "")
@@ -284,12 +284,12 @@ async def s07(world: EvalWorld) -> None:
         expected=True,
         actual=condition["user_value_text"] == f"만 {YOUTH_MAX_AGE}세",
     )
-    await world.check(
+    await world.judged(
         "만 34세 마지막 날", expected="eligible", actual=view["eligibility"]["status"]
     )
 
     older = await _detail(world, world.client(one_day_earlier), opportunity)
-    await world.check(
+    await world.judged(
         "하루 먼저 태어난 학생", expected="ineligible", actual=older["eligibility"]["status"]
     )
     await world.check(
@@ -322,7 +322,7 @@ async def s08(world: EvalWorld) -> None:
 
     detail = await _detail(world, client, opportunity)
     eligibility = detail["eligibility"]
-    await world.check("판정", expected="undetermined", actual=eligibility["status"])
+    await world.judged("판정", expected="undetermined", actual=eligibility["status"])
     await world.check("화면 라벨", expected="needs_review", actual=eligibility["display_status"])
     await world.check("물어볼 항목 없음", expected=[], actual=eligibility["missing_fields"])
     condition = eligibility["conditions"][0]
@@ -390,7 +390,7 @@ async def s11(world: EvalWorld) -> None:
 
     detail = await _detail(world, client, opportunity)
     await world.check("내가 올린 포스터", expected=True, actual=detail["uploaded_by_me"])
-    await world.check("판정", expected="eligible", actual=detail["eligibility"]["status"])
+    await world.judged("판정", expected="eligible", actual=detail["eligibility"]["status"])
 
     mine = await world.feed_card(client, opportunity)
     await world.check("내 피드에 보임", expected=True, actual=mine is not None)
@@ -452,6 +452,8 @@ async def s12(world: EvalWorld) -> None:
     await world.check(
         "배지 이유", expected=[LOW_CONFIDENCE_REASON], actual=detail["review_reasons"]
     )
+    # 재학생 조건은 그대로 남았다 → 고쳐 등록해도 판정은 된다
+    await world.judged("판정", expected="eligible", actual=detail["eligibility"]["status"])
 
 
 # ── S13: 준비하기 → 캘린더 ──────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 """단위 테스트용 가짜 저장소. 실제 저장소와 메서드 이름·반환 타입을 맞춘다."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -16,6 +16,15 @@ from app.schemas.me import (
     ProfileCompletion,
 )
 from app.schemas.meta import Department
+from app.schemas.metrics import (
+    EligibilityMatrix,
+    Latency,
+    Metrics,
+    ProductMetrics,
+    Ratio,
+    ScenarioMetrics,
+    UndeterminedRate,
+)
 from app.schemas.opportunities import FeedCounts, OpportunityDetail, OpportunityItem
 
 
@@ -201,3 +210,44 @@ class FakeOpportunityRepository:
     async def clear_mark(self, user_id: str, opportunity_id: str) -> None:
         self.mark_calls.append((user_id, opportunity_id, None, None))
         self.marks.pop((user_id, opportunity_id), None)
+
+
+class FakeMetricsRepository:
+    """지표 집계 대역. 받은 기간만 적어 두고 빈 집계를 돌려준다."""
+
+    def __init__(self) -> None:
+        self.periods: list[tuple[date, date]] = []
+
+    async def metrics(self, period: tuple[date, date]) -> Metrics:
+        self.periods.append(period)
+        start, end = period
+        empty = Ratio(numerator=0, denominator=0, rate=None)
+        return Metrics(
+            from_date=start,
+            to_date=end,
+            scenarios=ScenarioMetrics(
+                runs=0,
+                passed=0,
+                success_rate=0.0,
+                latency=Latency(p50_ms=0, p95_ms=0),
+                cost_usd=0.0,
+                llm_calls=0,
+                by_scenario=[],
+            ),
+            eligibility=EligibilityMatrix(
+                run_started_at=None,
+                checks=0,
+                correct=0,
+                accuracy=0.0,
+                rows=[],
+                eligible_to_ineligible=0,
+                ineligible_to_eligible=0,
+            ),
+            product=ProductMetrics(
+                undetermined=UndeterminedRate(**empty.model_dump(), top_missing_fields=[]),
+                profile_prompt=empty,
+                prepare_conversion=empty,
+                lms_connect=empty,
+                weekly_return=empty,
+            ),
+        )

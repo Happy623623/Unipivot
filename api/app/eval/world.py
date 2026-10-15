@@ -49,6 +49,8 @@ from app.main import create_app
 from app.repositories.calendar import CalendarRepository
 from app.repositories.profiles import ProfileRepository
 from app.schemas.me import INCOME_FIELDS
+from app.schemas.metrics import CHECK_TOOL, ELIGIBILITY_CHECK
+from app.schemas.opportunities import ELIGIBILITY_STATUSES
 from app.uploads.storage import get_storage
 from app.youth.convert import PolicyRecord, Skip, convert
 from app.youth.importer import ensure_source, save_policy
@@ -223,19 +225,36 @@ class EvalWorld:
 
     # ── 확인 ────────────────────────────────────────────────────────────────
 
-    async def check(self, what: str, *, expected: Any, actual: Any) -> None:
+    async def check(
+        self, what: str, *, expected: Any, actual: Any, kind: str | None = None
+    ) -> None:
         """기대와 실제를 맞춰 보고 실행 기록에 한 줄 남긴다. 다르면 시나리오를 여기서 멈춘다.
 
         남는 곳이 tool_calls.input·output이므로 **프로필 값과 토큰은 넘기지 않는다**(ERD의 컬럼 설명).
         `scrub`은 키 이름으로만 지우니 값은 걸러 주지 못한다. 나이·평점처럼 프로필에서
         온 값은 그대로 쓰지 말고 맞는지(bool)나 항목 이름으로 바꿔서 확인한다.
+
+        kind는 집계가 골라 읽을 종류다. 판정 확인은 check를 바로 부르지 말고 judged를 쓴다.
         """
-        found = Check(what, plain(expected), plain(actual))
+        found = Check(what, plain(expected), plain(actual), kind)
         self.checks.append(found)
-        async with self.run.tool("check", {"what": found.what, "expected": found.expected}) as call:
+        recorded = {"what": found.what, "expected": found.expected}
+        async with self.run.tool(CHECK_TOOL, recorded | ({"kind": kind} if kind else {})) as call:
             call.output = {"actual": found.actual, "ok": found.ok}
             if not found.ok:
                 raise CheckFailed(found)
+
+    async def judged(self, what: str, *, expected: str, actual: Any) -> None:
+        """판정 확인. 판정 혼동행렬(PRD 8장)이 이 줄만 읽는다.
+
+        expected는 정답 상태, actual은 엔진이 낸 상태다. 둘 다 판정 상태 3가지여야 한다 — 화면 라벨
+        (display_status, 4가지)을 넣으면 3×3 행렬에 담기지 않는다.
+        """
+        if expected not in ELIGIBILITY_STATUSES:
+            raise AssertionError(
+                f"판정 확인의 기대값은 {ELIGIBILITY_STATUSES} 중 하나다: {expected!r}"
+            )
+        await self.check(what, expected=expected, actual=actual, kind=ELIGIBILITY_CHECK)
 
     # ── 세계 만들기 ──────────────────────────────────────────────────────────
 

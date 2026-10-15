@@ -14,18 +14,23 @@ from pydantic import BaseModel
 
 @dataclass(frozen=True)
 class Check:
-    """시나리오가 확인한 것 하나. agent_runs 아래 tool_calls(check) 한 줄로도 남는다."""
+    """시나리오가 확인한 것 하나. agent_runs 아래 tool_calls(check) 한 줄로도 남는다.
+
+    kind는 집계가 골라 읽을 종류다(지금은 판정 확인뿐, app/schemas/metrics.py의 ELIGIBILITY_CHECK).
+    """
 
     what: str
     expected: Any
     actual: Any
+    kind: str | None = None
 
     @property
     def ok(self) -> bool:
         return self.actual == self.expected
 
     def json(self) -> dict[str, Any]:
-        return {"what": self.what, "expected": self.expected, "actual": self.actual, "ok": self.ok}
+        found = {"what": self.what, "expected": self.expected, "actual": self.actual, "ok": self.ok}
+        return {**found, "kind": self.kind} if self.kind else found
 
 
 class CheckFailed(AssertionError):
