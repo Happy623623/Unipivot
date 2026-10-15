@@ -18,10 +18,12 @@ import pytest
 from app.background import InlineRunner
 from app.config import Settings, get_settings
 from app.db import create_pools
+from app.extraction.store import content_hash
+from app.extraction.validate import LOW_CONFIDENCE as LOW_CONFIDENCE_REASON
 from app.llm.deps import get_llm
 from app.main import create_app
 from app.posters.prompt import SUBMIT
-from app.repositories.posters import PosterRepository
+from app.repositories.posters import AMBIGUOUS_REASON, PosterRepository
 from app.uploads.storage import StorageError, get_storage
 from tests.conftest import make_token
 from tests.db_world import DATABASE_URL, connect, make_user
@@ -35,6 +37,19 @@ pytestmark = [
 ]
 
 POSTER_BYTES = b"\xff\xd8\xff" + b"poster".ljust(40, b"\x00")
+# 실패한 실행으로 등록을 눌러 볼 때 보내는 몸통(초안 모양만 맞으면 된다)
+DRAFT_BODY: dict[str, Any] = {
+    "title": "손으로 적은 제목",
+    "organizer": None,
+    "category": "contest",
+    "apply_start_at": None,
+    "deadline_at": None,
+    "easy_summary": None,
+    "requirements": [],
+    "documents": [],
+    "extraction_confidence": 0.5,
+    "low_confidence_fields": [],
+}
 
 
 class FakeStorage:
@@ -364,6 +379,246 @@ async def test_the_poster_file_lookup_only_finds_my_uploaded_poster() -> None:
             assert await repo.poster_file(world.user, world.files["계획서"]) is None
     finally:
         await conn.close()
+
+
+async def confirm(
+    world: Fixture, settings: Settings, llm: Any, *, edit: Any = None, user: str | None = None
+) -> dict[str, Any]:
+    """추출 → (고치기) → POST /posters/confirm. 응답 본문을 돌려준다."""
+    store = FakeStorage()
+    file_id = world.files["내 포스터"]
+    store.objects[world.paths[file_id]] = POSTER_BYTES
+    async with api(settings, llm, store) as client:
+        http = client(user or world.user)
+        started = await http.post("/api/v1/posters/extract", json={"file_id": file_id})
+        assert started.status_code == 202, started.text
+        run_id = started.json()["run_id"]
+        run = (await http.get(f"/api/v1/runs/{run_id}")).json()
+        assert run["status"] == "succeeded", run
+        draft = run["result"]["draft"]
+        if edit is not None:
+            draft = edit(draft)
+        res = await http.post("/api/v1/posters/confirm", json={"run_id": run_id, "draft": draft})
+        assert res.status_code in (200, 201), res.text
+        return {"status": res.status_code, **res.json(), "run_id": run_id}
+
+
+async def test_confirming_makes_a_poster_opportunity_only_i_can_see(settings: Settings) -> None:
+    llm = ScriptedLlm(call(SUBMIT, **args()))
+    async with committed() as world:
+        done = await confirm(world, settings, llm)
+        oid = done["opportunity_id"]
+        world.ids[f"__poster_{oid}"] = oid  # 끝나면 지운다
+        rows_ = await rows(
+            "select source_type::text as source_type, category::text as category, title, organizer,"
+            " raw_text, uploaded_by::text as uploaded_by, poster_file_id::text as poster_file_id,"
+            " extraction_run_id::text as extraction_run_id, easy_summary, extraction_confidence,"
+            " deadline_at from opportunities where id = %s",
+            oid,
+        )
+        requirements = await rows(
+            "select clause_no, field, operator, value, is_ambiguous, evidence_text"
+            " from requirements where opportunity_id = %s order by clause_no, created_at",
+            oid,
+        )
+        documents = await rows(
+            "select name from opportunity_documents where opportunity_id = %s order by name",
+            oid,
+        )
+        judged = await rows(
+            "select status::text as status from eligibility_results"
+            " where opportunity_id = %s and user_id = %s",
+            oid,
+            world.user,
+        )
+    assert done["status"] == 201 and done["merged"] is False
+    (row,) = rows_
+    assert (row["source_type"], row["category"]) == ("poster", "contest")
+    assert row["title"] == "2026 전국 대학생 SW 창업 아이디어톤"
+    assert row["uploaded_by"] == world.user  # 올린 본인에게만 보인다
+    assert row["poster_file_id"] == world.files["내 포스터"]
+    assert row["extraction_run_id"] == done["run_id"]  # 상세·피드가 판정을 쓰려면 있어야 한다
+    assert row["raw_text"] == TEXT  # 옮겨 적은 글이 공고 원문이 된다
+    assert row["easy_summary"] and row["extraction_confidence"] is not None
+    assert row["deadline_at"] is not None
+    assert [(r["clause_no"], r["field"], r["operator"]) for r in requirements] == [
+        (1, "enrollment_status", "in")
+    ]
+    assert requirements[0]["value"] == ["enrolled", "on_leave"]
+    assert requirements[0]["evidence_text"] == "국내 대학 재학생 및 휴학생"
+    assert {r["name"] for r in documents} == {"아이디어 제안서", "재학증명서"}
+    assert len(judged) == 1  # 등록 즉시 본인 판정을 계산한다
+
+
+async def test_the_basis_and_the_step_label_survive_registration(settings: Settings) -> None:
+    """학과 기준(basis)이 요건 행까지 가고, 상세의 처리 과정에 내부 도구 이름이 보이지 않는다."""
+    with_basis = args(
+        poster_text=TEXT + "\n모집 대상: 공과대학 재학생",
+        requirements=[
+            {
+                "clause_no": 1,
+                "field": "department",
+                "operator": "in",
+                "value_json": '["공과대학"]',
+                "basis": "college",
+                "evidence_text": "모집 대상: 공과대학 재학생",
+                "is_ambiguous": False,
+            }
+        ],
+    )
+    llm = ScriptedLlm(call(SUBMIT, **with_basis))
+    async with committed() as world:
+        store = FakeStorage()
+        file_id = world.files["내 포스터"]
+        store.objects[world.paths[file_id]] = POSTER_BYTES
+        async with api(settings, llm, store) as client:
+            mine = client(world.user)
+            started = await mine.post("/api/v1/posters/extract", json={"file_id": file_id})
+            run_id = started.json()["run_id"]
+            draft = (await mine.get(f"/api/v1/runs/{run_id}")).json()["result"]["draft"]
+            assert draft["requirements"][0]["basis"] == "college"  # 화면도 받아서 돌려보낸다
+            made = await mine.post(
+                "/api/v1/posters/confirm", json={"run_id": run_id, "draft": draft}
+            )
+            oid = made.json()["opportunity_id"]
+            world.ids["__poster_basis"] = oid
+            detail = (await mine.get(f"/api/v1/opportunities/{oid}")).json()
+            mine_only = await client(world.other).get(f"/api/v1/opportunities/{oid}")
+        saved = await rows(
+            "select basis::text as basis from requirements where opportunity_id = %s", oid
+        )
+    assert saved[0]["basis"] == "college"  # 없으면 학과 조건을 학과 이름으로 비교해 판정이 틀린다
+    labels = [step["label"] for step in detail["process"]["extraction"]]
+    assert labels == ["포스터에서 글자·날짜 읽기"]  # 도구 이름이 그대로 보이지 않는다
+    assert mine_only.status_code == 404  # 남이 올린 포스터 공고는 보이지 않는다
+
+
+async def test_a_low_confidence_poster_gets_the_review_badge(settings: Settings) -> None:
+    llm = ScriptedLlm(call(SUBMIT, **args(confidence=0.3)))
+    async with committed() as world:
+        done = await confirm(world, settings, llm)
+        world.ids["__poster_low"] = done["opportunity_id"]
+        found = await rows(
+            "select needs_review, review_reasons from opportunities where id = %s",
+            done["opportunity_id"],
+        )
+    assert found[0]["needs_review"] is True
+    assert LOW_CONFIDENCE_REASON in found[0]["review_reasons"]
+
+
+async def test_an_ambiguous_condition_puts_the_review_badge_on_the_opportunity(
+    settings: Settings,
+) -> None:
+    """포스터에서 읽은 조건이 모호하면 상세에 '원문 확인 필요'가 붙는다."""
+    vague = args(
+        requirements=[
+            {
+                "clause_no": 1,
+                "field": "other",
+                "operator": "eq",
+                "value_json": '{"text": "성적 우수자"}',
+                "evidence_text": "국내 대학 재학생 및 휴학생",
+                "is_ambiguous": True,
+            }
+        ]
+    )
+    llm = ScriptedLlm(call(SUBMIT, **vague))
+    async with committed() as world:
+        done = await confirm(world, settings, llm)
+        world.ids["__poster_vague"] = done["opportunity_id"]
+        found = await rows(
+            "select needs_review, review_reasons, content_hash, raw_text from opportunities"
+            " where id = %s",
+            done["opportunity_id"],
+        )
+    (row,) = found
+    assert row["needs_review"] is True
+    assert row["review_reasons"] == [AMBIGUOUS_REASON]
+    # 원문 해시는 옮겨 적은 글에서 만든다(나중에 같은 포스터를 다시 읽을 때 바뀜을 본다)
+    assert row["content_hash"] == content_hash(row["raw_text"], ())
+
+
+async def test_a_failed_run_cannot_be_confirmed(settings: Settings) -> None:
+    """글자를 읽지 못한 실행으로는 등록할 수 없다."""
+    async with committed() as world:
+        store = FakeStorage()
+        file_id = world.files["내 포스터"]
+        store.objects[world.paths[file_id]] = POSTER_BYTES
+        async with api(settings, ScriptedLlm("포스터가 흐려요"), store) as client:
+            http = client(world.user)
+            started = await http.post("/api/v1/posters/extract", json={"file_id": file_id})
+            run_id = started.json()["run_id"]
+            run = (await http.get(f"/api/v1/runs/{run_id}")).json()
+            assert run["status"] == "failed"
+            res = await http.post(
+                "/api/v1/posters/confirm",
+                json={"run_id": run_id, "draft": DRAFT_BODY},
+            )
+    assert res.status_code == 404
+
+
+async def test_confirming_twice_leaves_one_opportunity(settings: Settings) -> None:
+    llm = ScriptedLlm(call(SUBMIT, **args()), call(SUBMIT, **args()))
+    async with committed() as world:
+        first = await confirm(world, settings, llm)
+        world.ids["__poster_1"] = first["opportunity_id"]
+        again = await confirm(world, settings, llm)
+        made = await rows(
+            "select count(*) as n from opportunities where uploaded_by = %s", world.user
+        )
+    assert first["status"] == 201 and again["status"] == 200
+    assert again["merged"] is True and again["opportunity_id"] == first["opportunity_id"]
+    assert made[0]["n"] == 1
+
+
+async def test_a_requirement_the_student_deleted_is_not_saved(settings: Settings) -> None:
+    llm = ScriptedLlm(call(SUBMIT, **args()))
+    async with committed() as world:
+        done = await confirm(world, settings, llm, edit=lambda d: {**d, "requirements": []})
+        world.ids["__poster_2"] = done["opportunity_id"]
+        requirements = await rows(
+            "select field from requirements where opportunity_id = %s", done["opportunity_id"]
+        )
+    assert requirements == []
+
+
+async def test_a_requirement_the_student_rewrote_is_not_saved(settings: Settings) -> None:
+    """화면에서 값을 지어내 보내도 판정 규칙이 되지 않는다."""
+    llm = ScriptedLlm(call(SUBMIT, **args()))
+
+    def tamper(draft: dict[str, Any]) -> dict[str, Any]:
+        rewritten = {
+            **draft["requirements"][0],
+            "field": "gpa_total",
+            "operator": "gte",
+            "value": 0,
+        }
+        return {**draft, "requirements": [rewritten]}
+
+    async with committed() as world:
+        done = await confirm(world, settings, llm, edit=tamper)
+        world.ids["__poster_3"] = done["opportunity_id"]
+        requirements = await rows(
+            "select field from requirements where opportunity_id = %s", done["opportunity_id"]
+        )
+    assert requirements == []
+
+
+async def test_a_run_that_is_not_mine_cannot_be_confirmed(settings: Settings) -> None:
+    llm = ScriptedLlm(call(SUBMIT, **args()))
+    async with committed() as world:
+        store = FakeStorage()
+        file_id = world.files["내 포스터"]
+        store.objects[world.paths[file_id]] = POSTER_BYTES
+        async with api(settings, llm, store) as client:
+            mine = client(world.user)
+            started = await mine.post("/api/v1/posters/extract", json={"file_id": file_id})
+            run_id = started.json()["run_id"]
+            draft = (await mine.get(f"/api/v1/runs/{run_id}")).json()["result"]["draft"]
+            res = await client(world.other).post(
+                "/api/v1/posters/confirm", json={"run_id": run_id, "draft": draft}
+            )
+    assert res.status_code == 404
 
 
 async def saved_output(run_id: str) -> dict[str, Any]:

@@ -4,7 +4,7 @@ import { getDevScenario } from "@/dev/scenarios";
 import { duplicatePosterExtractResult, posterExtractResult } from "@/mocks";
 import { registerStoredPoster } from "@/mocks/posterStore";
 import type {
-  OpportunityDetail,
+  PosterConfirmResult,
   PosterExtractResult,
   PosterUploadResult,
   ProcessStep,
@@ -17,9 +17,11 @@ export type PosterPreviewState =
   | { status: "failure"; result: null }
   | { status: "duplicate"; result: PosterExtractResult };
 
-// 확인한 내용으로 공고를 등록할 수 있는지. TODO(api): POST /posters/confirm(W6 3차)이 생기면
-// registerPosterOpportunity를 바꾸고 이 값을 지운다. 그 전까지 실제 모드는 확인 화면까지만 간다
-export const POSTER_REGISTER_READY = USE_MOCKS;
+// 추출 결과와 그 실행 번호. 등록할 때 run_id를 함께 보낸다(서버가 초안을 기준으로 삼는다)
+export interface PosterExtraction {
+  run_id: string;
+  result: PosterExtractResult;
+}
 
 // 포스터를 읽는 단계 이름. Vision을 한 번 부르므로 단계도 하나다(서버의 단계 이름과 같게 둔다).
 // 실제 모드는 첫 폴링 전까지 이 이름을 쓰고, 그 뒤에는 실행의 처리 과정으로 바꾼다
@@ -68,7 +70,7 @@ export function getPosterPreviewState(): Promise<PosterPreviewState> {
 export async function extractPoster(
   fileId: string,
   onSteps?: (steps: ProcessStep[]) => void,
-): Promise<PosterExtractResult> {
+): Promise<PosterExtraction> {
   if (USE_MOCKS) return mockExtract();
   const started = await apiFetch<{ run_id: string }>("/posters/extract", {
     method: "POST",
@@ -87,10 +89,10 @@ export async function extractPoster(
       422,
     );
   }
-  return run.result;
+  return { run_id: started.run_id, result: run.result };
 }
 
-function mockExtract(): Promise<PosterExtractResult> {
+async function mockExtract(): Promise<PosterExtraction> {
   const scenario = getDevScenario();
   if (scenario === "poster_failure") {
     return rejectAfter(
@@ -101,14 +103,24 @@ function mockExtract(): Promise<PosterExtractResult> {
       ),
     );
   }
-  return respond(
+  const result = await respond(
     scenario === "poster_duplicate" ? duplicatePosterExtractResult : posterExtractResult,
   );
+  return { run_id: "mock-run", result };
 }
 
-// TODO(api): POST /posters/confirm(W6 3차)이 생기면 확인한 draft 등록 요청으로 바꾼다.
-export function registerPosterOpportunity(
+// 확인한 내용으로 공고 등록 (POST /posters/confirm). 같은 공고가 이미 있으면 merged가 true다.
+// 요건·서류는 서버가 run_id로 추출 초안을 다시 읽어 기준으로 삼고, 지운 줄만 뺀다
+export async function registerPosterOpportunity(
+  runId: string,
   draft: PosterExtractResult["draft"],
-): Promise<OpportunityDetail> {
-  return respond(registerStoredPoster(draft));
+): Promise<PosterConfirmResult> {
+  if (USE_MOCKS) {
+    const detail = await respond(registerStoredPoster(draft));
+    return { opportunity_id: detail.id, merged: false };
+  }
+  return apiFetch<PosterConfirmResult>("/posters/confirm", {
+    method: "POST",
+    body: JSON.stringify({ run_id: runId, draft }),
+  });
 }
