@@ -30,6 +30,11 @@ class TaskRunner:
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.error("뒤에서 돌던 일이 실패했어요: %r", error)
 
+    @property
+    def running(self) -> int:
+        """아직 돌고 있는 일의 수. drain이 끝나도 0이 아니면 못 끝낸 일이 있다."""
+        return len(self._tasks)
+
     async def drain(self, timeout: float) -> None:
         """서버를 끌 때 돌던 일을 timeout초까지 기다린다. 못 끝낸 일은 다음 요청이 멈춘 실행으로 본다."""
         if self._tasks:
