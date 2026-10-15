@@ -4,6 +4,7 @@
 경로는 `<user_id>/<kind>/<file_id>.<확장자>`다.
 
 - 올리기: POST {base}/object/{bucket}/{path} (본문은 파일 바이트 그대로)
+- 받기: GET {base}/object/{bucket}/{path} (서버가 포스터를 모델에 넘길 때 쓴다)
 - 지우기: DELETE {base}/object/{bucket}/{path}
 
 서비스 역할 키는 DB 전체를 읽고 쓸 수 있는 값이라 응답·로그·오류 문구에 넣지 않는다. 내려받기는
@@ -43,6 +44,13 @@ class SupabaseStorage:
     async def upload(self, path: str, data: bytes, content_type: str) -> None:
         await self._send("POST", path, content=data, content_type=content_type)
 
+    async def download(self, path: str) -> bytes:
+        """올려 둔 파일을 다시 받는다(포스터를 모델에 넘길 때). 없으면 StorageError다."""
+        body = await self._send("GET", path)
+        if not body:
+            raise StorageError("파일 저장소에 그 파일이 없어요.")
+        return body
+
     async def remove(self, path: str) -> None:
         """올려 둔 파일을 지운다(기록을 남기지 못했을 때 되돌리기용). 없으면 그냥 지나간다."""
         await self._send("DELETE", path, gone_is_ok=True)
@@ -55,7 +63,7 @@ class SupabaseStorage:
         content: bytes | None = None,
         content_type: str | None = None,
         gone_is_ok: bool = False,
-    ) -> None:
+    ) -> bytes:
         if not self.ready:
             raise StorageError("파일 저장소 설정이 비었어요(SUPABASE_SERVICE_ROLE_KEY).")
         headers = {"Authorization": f"Bearer {self.service_key}"}
@@ -69,9 +77,10 @@ class SupabaseStorage:
         except httpx.HTTPError as exc:
             raise StorageError(f"파일 저장소에 닿지 못했어요: {type(exc).__name__}") from exc
         if gone_is_ok and response.status_code in (404, 410):
-            return
+            return b""
         if response.status_code >= 400:
             raise StorageError(f"파일 저장소가 요청을 거절했어요({response.status_code}).")
+        return response.content
 
 
 def get_storage(settings: Annotated[Settings, Depends(get_settings)]) -> SupabaseStorage:

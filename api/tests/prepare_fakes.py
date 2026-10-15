@@ -8,6 +8,7 @@ from app.prepare.service import Started
 from app.repositories.prepare import PlanState
 from app.repositories.runs import RunRow
 from app.schemas.opportunities import OpportunityDetail, ProcessStep
+from app.schemas.posters import PosterExtractResult
 from app.schemas.prepare import PrepareResult
 
 _ids = itertools.count(1)
@@ -55,6 +56,7 @@ class FakeRunRepository:
         self.runs: dict[str, RunRow] = {}
         self.steps_by_run: dict[str, list[ProcessStep]] = {}
         self.results: dict[str, PrepareResult] = {}
+        self.poster_results: dict[str, PosterExtractResult] = {}
         self.result_calls: list[tuple[str, str]] = []
 
     async def run(self, run_id: str) -> RunRow | None:
@@ -66,6 +68,10 @@ class FakeRunRepository:
     async def prepare_result(self, user_id: str, run_id: str) -> PrepareResult | None:
         self.result_calls.append((user_id, run_id))
         return self.results.get(run_id)
+
+    async def poster_result(self, user_id: str, run_id: str) -> PosterExtractResult | None:
+        self.result_calls.append((user_id, run_id))
+        return self.poster_results.get(run_id)
 
 
 def run_row(**values: Any) -> RunRow:

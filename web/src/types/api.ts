@@ -249,7 +249,8 @@ export interface PosterExtractResult {
     apply_start_at: string | null;
     deadline_at: string | null;
     easy_summary: string | null;
-    requirements: { field: string; operator: string; value: unknown; condition_text: string; evidence_text: string | null; is_ambiguous: boolean }[];
+    // clause_no는 묶음 번호(같은 번호끼리 "또는"). 등록할 때 그대로 돌려보낸다
+    requirements: { clause_no: number; field: string; operator: string; value: unknown; condition_text: string; evidence_text: string | null; is_ambiguous: boolean }[];
     documents: { name: string; issuer: string | null; lead_days: number | null; effort_minutes: number | null; form_url: string | null }[];
     extraction_confidence: number;
     low_confidence_fields: string[];

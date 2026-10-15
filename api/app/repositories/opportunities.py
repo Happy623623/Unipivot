@@ -98,12 +98,13 @@ _PAGES = re.compile(r"(\d+)")  # Vision이 읽은 쪽 "4–6/8"의 첫 쪽
 
 Sort = Literal["deadline", "recent"]
 
-# 공개 범위(RLS opportunities_select_visible과 같은 규칙). 백엔드는 RLS를 받지 않아서 쿼리에 직접 건다
-_COURSE_JOIN = (
+# 공개 범위(RLS opportunities_select_visible과 같은 규칙). 백엔드는 RLS를 받지 않아서 쿼리에 직접 건다.
+# 포스터 중복 찾기(repositories/posters.py)도 같은 조건을 쓴다
+COURSE_JOIN = (
     " left join lms_courses c on o.visible_canvas_course_id is not null"
     " and c.user_id = %(uid)s and c.canvas_course_id = o.visible_canvas_course_id and c.is_active"
 )
-_VISIBLE = (
+VISIBLE = (
     " (o.source_type <> 'poster' or o.uploaded_by = %(uid)s)"
     " and (o.visible_canvas_course_id is null or c.id is not null)"
 )
@@ -141,13 +142,13 @@ _COUNTS = (
     " not exists(select 1 from opportunity_views v"
     " where v.user_id = %(uid)s and v.opportunity_id = o.id) as unseen"
     " from opportunities o"
-    + _COURSE_JOIN
+    + COURSE_JOIN
     + _RESULT_JOIN
     + _MARK_JOIN
     + " where"
     + _ACTIVE
     + " and"
-    + _VISIBLE
+    + VISIBLE
     + " and"
     + _SHOWN
     + " and"
@@ -183,7 +184,7 @@ PREP_DONE = (
     " where pr.id = p.agent_run_id and pr.status = 'succeeded'))"
 )
 # 상세를 열 수 있는 공고: 준비한 공고는 상태와 상관없이 본인에게, 그 밖은 활성·마감 공고 중 공개 범위 안
-_OPENABLE = " (p.id is not null or (o.status in ('active', 'expired') and" + _VISIBLE + "))"
+_OPENABLE = " (p.id is not null or (o.status in ('active', 'expired') and" + VISIBLE + "))"
 # 상세 한 건: 공고·요건·서류(내 준비 할 일)·첨부·처리 과정·캘린더를 한 문장으로 읽는다
 _DETAIL = (
     "select o.id, o.title, o.organizer, o.category::text as category,"
@@ -233,12 +234,12 @@ _DETAIL = (
     " from tool_calls s where s.run_id = o.extraction_run_id), '[]'::jsonb) as steps,"
     " (select m.mark from opportunity_marks m where m.user_id = %(uid)s"
     " and m.opportunity_id = o.id) as my_mark"
-    " from opportunities o" + _COURSE_JOIN + _PREP_JOIN + " where o.id = %(oid)s and" + _OPENABLE
+    " from opportunities o" + COURSE_JOIN + _PREP_JOIN + " where o.id = %(oid)s and" + _OPENABLE
 )
 # 관심 표시(F-45). 다른 표시로 바꾸면 시각을 새로 쓰고, 같은 표시를 다시 고르면 처음 시각을 둔다
 _MARK_OPENABLE = (
     "select 1 from opportunities o"
-    + _COURSE_JOIN
+    + COURSE_JOIN
     + _PREP_JOIN
     + " where o.id = %(oid)s and"
     + _OPENABLE
@@ -268,12 +269,12 @@ def _stale_sql(scope: str) -> str:
         " e.user_id is not null as had_result, e.status::text as old_status,"
         " e.missing_fields as old_missing, " + _REQUIREMENTS_JSON + " as requirements"
         " from opportunities o"
-        + _COURSE_JOIN
+        + COURSE_JOIN
         + _RESULT_JOIN
         + " where"
         + scope
         + " and"
-        + _VISIBLE
+        + VISIBLE
         + " and o.extraction_run_id is not null"
         " and (%(force)s or e.user_id is null or e.evaluated_at is null"
         " or e.requirements_version <> o.requirements_version"
@@ -302,7 +303,7 @@ def _feed_sql(where: str, outer: str, order: str) -> str:
         " case when " + _JUDGED + " then coalesce(e.missing_fields, '{}') else '{}' end"
         " as eff_missing,"
         " e.reason_text, m.mark as my_mark"
-        " from opportunities o" + _COURSE_JOIN + _RESULT_JOIN + _MARK_JOIN + " where" + where + ")"
+        " from opportunities o" + COURSE_JOIN + _RESULT_JOIN + _MARK_JOIN + " where" + where + ")"
         " select * from feed" + outer + " order by " + order + " limit %(limit)s"
     )
 
@@ -574,7 +575,7 @@ class OpportunityRepository:
             "new_since": now - timedelta(days=NEW_DAYS),
             "limit": query.limit + 1,
         }
-        where = [_WITH_EXPIRED if query.include_expired else _ACTIVE, _VISIBLE, _SHOWN]
+        where = [_WITH_EXPIRED if query.include_expired else _ACTIVE, VISIBLE, _SHOWN]
         if not query.include_not_interested:
             where.append(_NOT_DISMISSED)
         if query.categories:

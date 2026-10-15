@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { errorMessage, getFeed, getMe, POSTER_EXTRACT_READY, setOpportunityMark, type FeedParams } from "@/api/client";
+import { errorMessage, getFeed, getMe, POSTER_REGISTER_READY, setOpportunityMark, type FeedParams } from "@/api/client";
 import CategoryChips, { type CategoryFilter } from "@/components/CategoryChips";
 import FeedList from "@/components/FeedList";
 import FeedSummary, { type SummaryFilter } from "@/components/FeedSummary";
@@ -139,8 +139,8 @@ export default function Home({ navigate }: HomeProps) {
   const emptyState = (): EmptyState | null => {
     const all = category === "all";
     if (isEmptyFeed) {
-      // 포스터에서 공고를 뽑는 기능(W6 2차) 전에는 등록을 권할 수 없어 다시 불러오기를 안내한다
-      return POSTER_EXTRACT_READY
+      // 포스터를 공고로 등록하는 기능(W6 3차) 전에는 등록을 권할 수 없어 다시 불러오기를 안내한다
+      return POSTER_REGISTER_READY
         ? { title: "포스터를 올리면 공고로 등록하고 자격을 판정해요", action: "포스터 등록", onAction: () => navigate({ name: "upload" }) }
         : { title: "아직 볼 수 있는 공고가 없어요. 새 공고가 올라오면 여기에 보여요", action: "다시 불러오기", onAction: () => setReload((value) => value + 1) };
     }

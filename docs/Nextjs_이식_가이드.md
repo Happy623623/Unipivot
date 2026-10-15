@@ -547,8 +547,8 @@ npm run build      # 타입 검사 포함
 | `setDocumentDone` · `setPlannerTaskDone` | `PATCH /planner/tasks/{task_id}` | 서류 체크 = 플래너 할 일 · API 전까지 실제 모드는 서류 체크를 막는다(PREPARE_READY) |
 | `getPlanner` · 직접 추가·수정·삭제 | `GET` · `POST` · `PATCH` · `DELETE /planner/tasks` | |
 | `uploadPosterFile` | `POST /files` | 실제 API 연결(10/15) · multipart, 같은 파일이면 200 `reused` |
-| `extractPoster` | `POST /posters/extract` → `waitForRun` | API 전까지 실제 모드는 올린 뒤 자동 정리 준비 중 안내(POSTER_EXTRACT_READY) |
-| `registerPosterOpportunity` | `POST /posters/confirm` | 중복이면 `merged: true` · API 전까지 실제 모드는 자동 정리 준비 중 안내(POSTER_EXTRACT_READY) |
+| `extractPoster` | `POST /posters/extract` → `waitForRun` | 실제 API 연결(10/15) · 처리 과정은 실행의 steps를 그대로 보여 준다 |
+| `registerPosterOpportunity` | `POST /posters/confirm` | 중복이면 `merged: true` · API 전까지 실제 모드는 확인 화면에서 등록 준비 중 안내(POSTER_REGISTER_READY) |
 | `getLmsConnection` · `connectLms` · `disconnectLms` | `GET` · `POST` · `DELETE /lms/connection` | API 전까지 실제 모드는 '연결되지 않음', 연결 창은 준비 중 안내 |
 | `getCourses` · `getCourse` | `GET /lms/courses` · `GET /lms/courses/{id}` | |
 | `getLmsUpdates` | `GET /lms/updates` | |
