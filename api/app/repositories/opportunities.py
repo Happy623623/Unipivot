@@ -212,7 +212,9 @@ _DETAIL = (
     " as tasks_done,"
     " coalesce((select jsonb_agg(jsonb_build_object('id', ev.id, 'provider', ev.provider)"
     " order by ev.starts_at, ev.id) from calendar_events ev"
-    " where ev.user_id = %(uid)s and ev.opportunity_id = o.id), '[]'::jsonb) as calendar_events,"
+    # 넣는 중(external_event_id 없음)인 자리는 아직 캘린더에 없다. 등록된 것만 센다(F-32)
+    " where ev.user_id = %(uid)s and ev.opportunity_id = o.id"
+    " and ev.external_event_id is not null), '[]'::jsonb) as calendar_events,"
     " coalesce((select jsonb_agg(jsonb_build_object('id', a.id, 'seq', a.seq,"
     " 'file_name', a.file_name, 'source_url', a.source_url, 'method', a.extract_method,"
     " 'error', a.extract_error) order by a.seq, a.id)"

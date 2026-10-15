@@ -1,4 +1,3 @@
-import { CALENDAR_NOT_READY, CALENDAR_READY } from "@/api/client";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import { formatKstShortDate } from "@/lib/format";
@@ -15,8 +14,10 @@ interface PreparationProgressProps {
   steps: ProcessStep[] | null; // null이면 아직 누르지 않았다
   result: PrepareResult | null;
   calendarConnected: boolean;
+  hasDeadline: boolean; // 상시 공고는 캘린더에 넣을 마감일이 없다
   includeCalendar: boolean;
   onIncludeCalendar: (include: boolean) => void;
+  onConnectCalendar: () => void;
   finishing: boolean;
   onFinish: () => void;
 }
@@ -33,8 +34,10 @@ export default function PreparationProgress({
   steps,
   result,
   calendarConnected,
+  hasDeadline,
   includeCalendar,
   onIncludeCalendar,
+  onConnectCalendar,
   finishing,
   onFinish,
 }: PreparationProgressProps) {
@@ -73,27 +76,26 @@ export default function PreparationProgress({
               </div>
             ))}
           </div>
-          {CALENDAR_READY ? (
+          {hasDeadline && (
             <>
               <label className="mt-4 flex items-center gap-2 text-[13px] font-medium">
                 <input
                   type="checkbox"
-                  checked={includeCalendar && calendarConnected}
-                  disabled={!calendarConnected}
+                  checked={includeCalendar}
                   onChange={(event) => onIncludeCalendar(event.target.checked)}
                   className="accent-[#4f6ef7]"
                 />
                 마감일을 Google Calendar에도 넣기
               </label>
-              {!calendarConnected && (
+              {includeCalendar && !calendarConnected && (
                 <p className="mt-2 text-[12px] text-[#667085]">
-                  설정에서 Google Calendar를 연결하면 함께 넣을 수 있어요
+                  완료를 누르면 Google 화면에서 캘린더 권한을 먼저 받아요.{" "}
+                  <button type="button" onClick={onConnectCalendar} className="font-semibold text-[#4f6ef7]">
+                    지금 연결하기
+                  </button>
                 </p>
               )}
             </>
-          ) : (
-            // 캘린더 등록(F-32) 전까지는 쓸 수 없는 칸을 보여 주지 않고 안내만 한다
-            <p className="mt-4 text-[12px] text-[#667085]">{CALENDAR_NOT_READY}</p>
           )}
           {result.calendar_error && (
             <p className="mt-2 text-[12px] text-[#c53030]">{result.calendar_error}</p>

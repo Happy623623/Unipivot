@@ -154,7 +154,7 @@ async def prepare_opportunity(
 
     누를 때 지금 프로필로 다시 판정한다. 이미 준비한 공고(또는 준비하는 중)면 200과 그 실행이다.
     지원 어려움은 force가 아니면 409 NOT_ELIGIBLE, 마감이 지난 공고는 409 DEADLINE_PASSED, 상시 공고는
-    target_date가 필요하다(422). 캘린더 등록(F-32)은 다음 작업이라 register_calendar는 받기만 한다.
+    target_date가 필요하다(422). 마감일 캘린더 등록은 따로 한다(POST /calendar/events, F-32).
     """
     oid = str(opportunity_id)
     detail = await service.judge(user.id, oid, now=now, display_name=user.name)

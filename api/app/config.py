@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     extraction_max_reads: int = 4  # 요건 추출 읽기 도구 상한(PRD 14장 미결, W2–3에 확정)
     extraction_max_tokens: int = 150_000
     youth_api_key: str = ""  # 온통청년 OPEN API 인증키(청년정책 수집, app/youth)
+    # 마감일 캘린더 등록(F-32). Supabase Google 로그인에 쓰는 OAuth 앱의 값과 같아야 한다.
+    # 비워 두면 access token(55분)이 만료된 뒤 다시 연결해야 한다(갱신을 못 한다)
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    # 시험용으로만 바꾼다(가짜 Google로 E2E를 돌릴 때)
+    google_token_url: str = "https://oauth2.googleapis.com/token"
+    google_calendar_api_base: str = "https://www.googleapis.com/calendar/v3"
 
 
 @lru_cache

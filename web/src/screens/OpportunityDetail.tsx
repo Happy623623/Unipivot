@@ -22,6 +22,7 @@ interface OpportunityDetailProps {
   id: string;
   focus?: "profile_input";
   calendarConnected: boolean;
+  calendarResult?: "connected" | "error" | null; // Google 캘린더 연결에서 돌아온 결과
   navigate: (route: Route) => void;
 }
 
@@ -49,6 +50,7 @@ export default function OpportunityDetail({
   id,
   focus,
   calendarConnected,
+  calendarResult,
   navigate,
 }: OpportunityDetailProps) {
   const request = useAsyncData(
@@ -152,6 +154,7 @@ export default function OpportunityDetail({
       <OpportunityPreparation
         detail={detail}
         calendarConnected={calendarConnected}
+        calendarResult={calendarResult ?? null}
         navigate={navigate}
         onOpenProfile={() => setProfileOpen(true)}
         originalHref={originalHref}
