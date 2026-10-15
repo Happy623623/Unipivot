@@ -16,11 +16,11 @@ from app.eligibility import KST
 from app.schemas.opportunities import DocumentItem, ProcessStep
 from app.schemas.prepare import PrepareResult, PrepTask, RunError
 
-# 준비하기 단계 이름(화면의 처리 과정). 정해진 순서로 도는 단계라 chosen_by는 pipeline이다
+# 준비하기 단계 이름(화면의 처리 과정). 정해진 순서로 도는 단계라 chosen_by는 pipeline이다.
+# 마감일 캘린더 등록은 준비하기 단계가 아니라 따로 부르는 API다(POST /calendar/events, F-32)
 PREPARE_LABELS = {
     "get_document_guide": "필요 서류 확인",
     "build_prep_plan": "마감일에서 거꾸로 일정 짜기",
-    "create_calendar_event": "캘린더에 마감일 넣기",
 }
 FAILED_MESSAGE = "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요."
 _CODED = re.compile(r"^([A-Z][A-Z_]+): (.+)$", re.S)  # agent_log.error_text의 "코드: 문구"
@@ -126,7 +126,8 @@ class RunRepository:
             prep_plan_id=str(plan["id"]),
             documents=[DocumentItem(**row) for row in documents],
             tasks=[PrepTask(**row) for row in tasks],
-            calendar_event=None,  # 캘린더 등록(F-32)은 다음 작업
+            # 마감일 캘린더는 따로 등록한다(POST /calendar/events). 준비하기 결과에는 담지 않는다
+            calendar_event=None,
             calendar_error=None,
         )
 

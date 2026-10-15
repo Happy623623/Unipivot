@@ -80,8 +80,9 @@ async def test_detail_shows_judgment_documents_and_process() -> None:
             (me, plan["id"], documents[0]["id"], now.date(), me, plan["id"], now.date()),
         )
         await conn.execute(
-            "insert into calendar_events (user_id, provider, opportunity_id, title, starts_at)"
-            " values (%s, 'google', %s, '장학 A 마감', %s)",
+            # 등록을 마친 일정(external_event_id가 있다). 넣는 중인 자리는 상세에 세지 않는다(F-32)
+            "insert into calendar_events (user_id, provider, opportunity_id, title, starts_at,"
+            " external_event_id) values (%s, 'google', %s, '장학 A 마감', %s, 'gcal-a')",
             (me, a, now),
         )
         await conn.execute(

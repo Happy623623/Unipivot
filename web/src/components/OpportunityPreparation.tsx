@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   ApiError,
-  CALENDAR_READY,
+  connectCalendar,
   errorMessage,
   fieldErrors,
   getOpportunity,
@@ -10,16 +10,19 @@ import {
 } from "@/api/client";
 import Badge from "@/components/Badge";
 import Button, { ButtonLink } from "@/components/Button";
+import DeadlineCalendarRow, { calendarFailure } from "@/components/DeadlineCalendarRow";
 import Modal from "@/components/Modal";
 import PreparationProgress from "@/components/PreparationProgress";
 import StatusBadge from "@/components/StatusBadge";
 import { formatKstDate, getDdayValue, isDeadlineSoon } from "@/lib/format";
+import useCalendarEvent from "@/lib/useCalendarEvent";
 import type { OpportunityDetail, PrepareResult, ProcessStep } from "@/types/api";
 import type { Route } from "@/types/route";
 
 interface OpportunityPreparationProps {
   detail: OpportunityDetail;
   calendarConnected: boolean;
+  calendarResult: "connected" | "error" | null; // Google 캘린더 연결에서 돌아온 결과
   navigate: (route: Route) => void;
   onOpenProfile: () => void;
   originalHref: string | null; // 공고 원문 주소(http·https만)
@@ -48,6 +51,7 @@ function failureMessage(error: unknown): string {
 export default function OpportunityPreparation({
   detail,
   calendarConnected,
+  calendarResult,
   navigate,
   onOpenProfile,
   originalHref,
@@ -73,6 +77,13 @@ export default function OpportunityPreparation({
     setTargetDate("");
   }, [detail.id]);
 
+  const calendar = useCalendarEvent({
+    detail,
+    calendarConnected,
+    calendarResult,
+    onDetailChange,
+    onMessage: setMessage,
+  });
   const today = todayKst();
   const deadlineSoon = isDeadlineSoon(detail.deadline_at, today);
   const applicationPeriod = `${detail.apply_start_at ? formatKstDate(detail.apply_start_at) : "시작일 미정"} ~ ${
@@ -88,7 +99,7 @@ export default function OpportunityPreparation({
     setSteps([]);
     setRunning(true);
     try {
-      const prepared = await prepareOpportunity(detail.id, false, targetDate || undefined, {
+      const prepared = await prepareOpportunity(detail.id, targetDate || undefined, {
         force,
         onProgress: setSteps,
       });
@@ -111,16 +122,24 @@ export default function OpportunityPreparation({
     }
   };
 
+  // 완료: 체크했으면 마감일을 캘린더에 넣는다. 권한이 없으면 Google 화면으로 보내고(돌아오면 다시 누른다),
+  // 캘린더만 실패해도 준비 일정은 이미 만들어져 있으니 그 사실을 알린다
   const finishPreparation = async () => {
     setFinishing(true);
     try {
-      if (includeCalendar && calendarConnected && CALENDAR_READY) {
-        await prepareOpportunity(detail.id, true, targetDate || undefined);
+      if (includeCalendar && detail.deadline_at) {
+        await calendar.add(); // 권한이 없으면 Google 화면으로 떠난다(돌아오면 이어서 넣는다)
+        if (!calendarConnected) return;
       }
       onDetailChange(await getOpportunity(detail.id));
       setCompleted(true);
     } catch (error) {
-      setMessage(failureMessage(error));
+      setMessage(calendarFailure(error));
+      try {
+        onDetailChange(await getOpportunity(detail.id));
+      } catch {
+        /* 준비 일정은 이미 만들어졌다. 위 문구만 보여 준다 */
+      }
     } finally {
       setFinishing(false);
     }
@@ -221,11 +240,20 @@ export default function OpportunityPreparation({
         steps={steps}
         result={result}
         calendarConnected={calendarConnected}
+        hasDeadline={detail.deadline_at !== null}
         includeCalendar={includeCalendar}
         onIncludeCalendar={setIncludeCalendar}
+        onConnectCalendar={() => void connectCalendar(calendar.here)}
         finishing={finishing}
         onFinish={finishPreparation}
       />
+      {calendar.canRegister && !result && (
+        <DeadlineCalendarRow
+          registered={calendar.registered}
+          busy={calendar.busy}
+          onToggle={calendar.toggle}
+        />
+      )}
       {completed && (
         <div className="fixed bottom-6 left-1/2 z-[90] flex -translate-x-1/2 items-center gap-3 rounded-[10px] bg-[#181a20] px-4 py-3 text-[13px] font-semibold text-white">
           준비 일정을 만들었어요
