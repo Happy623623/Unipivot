@@ -175,3 +175,6 @@ def _xor_keystream(data: bytearray) -> None:
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+# 포스터 업로드 검사는 앞부분 바이트만 본다(app/uploads.sniff). 뒤는 아무 바이트나 와도 된다
+WEBP = b"RIFF" + struct.pack("<I", 40) + b"WEBPVP8 " + b"\x00" * 24
+HEIC = b"\x00\x00\x00\x18ftypheic" + b"\x00" * 24  # 아이폰 기본 사진 형식

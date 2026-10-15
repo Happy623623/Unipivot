@@ -40,12 +40,14 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   }
   const { data } = await createBrowserSupabase().auth.getSession();
   const token = data.session?.access_token;
+  // 파일 업로드(multipart)는 Content-Type을 브라우저가 경계 문자열과 함께 붙인다. 우리가 넣으면 깨진다
+  const isForm = init.body instanceof FormData;
   let response: Response;
   try {
     response = await fetch(`${base}${path}`, {
       ...init,
       headers: {
-        "Content-Type": "application/json",
+        ...(isForm ? {} : { "Content-Type": "application/json" }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...init.headers,
       },

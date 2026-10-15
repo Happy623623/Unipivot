@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     extraction_max_reads: int = 4  # 요건 추출 읽기 도구 상한(PRD 14장 미결, W2–3에 확정)
     extraction_max_tokens: int = 150_000
     youth_api_key: str = ""  # 온통청년 OPEN API 인증키(청년정책 수집, app/youth)
+    # 포스터·계획서 업로드 파일을 두는 Supabase Storage(F-13). 버킷은 대시보드에서 비공개로 만든다
+    supabase_service_role_key: str = ""
+    supabase_storage_bucket: str = "uploads"
     # 마감일 캘린더 등록(F-32). Supabase Google 로그인에 쓰는 OAuth 앱의 값과 같아야 한다.
     # 비워 두면 access token(55분)이 만료된 뒤 다시 연결해야 한다(갱신을 못 한다)
     google_oauth_client_id: str = ""
@@ -30,6 +33,15 @@ class Settings(BaseSettings):
     # 시험용으로만 바꾼다(가짜 Google로 E2E를 돌릴 때)
     google_token_url: str = "https://oauth2.googleapis.com/token"
     google_calendar_api_base: str = "https://www.googleapis.com/calendar/v3"
+    # 비우면 SUPABASE_URL에서 만든다(https://<ref>.supabase.co/storage/v1)
+    supabase_storage_base: str = ""
+
+    @property
+    def storage_base_url(self) -> str:
+        """Storage REST 주소. 시험용 주소를 넣었으면 그것을 쓴다."""
+        if self.supabase_storage_base:
+            return self.supabase_storage_base.rstrip("/")
+        return f"{self.supabase_url.rstrip('/')}/storage/v1" if self.supabase_url else ""
 
 
 @lru_cache

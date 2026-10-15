@@ -15,6 +15,7 @@ from app.routers import (
     auth,
     calendar,
     events,
+    files,
     health,
     me,
     meta,
@@ -32,6 +33,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 로그인 설정이 틀렸으면 첫 요청을 기다리지 않고 시작할 때 알린다(.env를 고치면 서버를 다시 켠다)
     if problem := auth_settings_problem(settings):
         logger.warning("로그인 설정 확인: %s", problem)
+    # 파일 업로드(F-13)는 Supabase Storage가 있어야 한다. 비었으면 첫 업로드에서 502가 난다
+    if not settings.supabase_service_role_key or not settings.storage_base_url:
+        logger.warning(
+            "파일 저장소 설정 확인: SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL이 있어야 포스터를 올릴 수 있어요"
+        )
     app.state.pool = app.state.log_pool = None
     if settings.database_url:
         app.state.pool, app.state.log_pool = create_pools(settings.database_url)
@@ -65,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for router in (
         auth.router,
         calendar.router,
+        files.router,
         me.router,
         meta.router,
         events.router,
