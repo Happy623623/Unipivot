@@ -11,9 +11,9 @@ export const posterExtractResult: PosterExtractResult = {
     deadline_at: "2026-10-30T23:59:00+09:00",
     easy_summary: "도시 문제 해결 아이디어를 제안하는 전국 대학생 대상 공모전이에요.",
     requirements: [
-      { clause_no: 1, field: "enrollment_status", operator: "in", value: ["enrolled", "on_leave"], condition_text: "재학 또는 휴학", evidence_text: "공고일 기준 대학 재학생 및 휴학생", is_ambiguous: false },
-      { clause_no: 2, field: "degree_program", operator: "eq", value: "bachelor", condition_text: "학부", evidence_text: "학부 재학생을 대상으로 합니다.", is_ambiguous: false },
-      { clause_no: 3, field: "other", operator: "eq", value: { text: "개인 또는 4인 이하 팀" }, condition_text: "개인 또는 4인 이하 팀", evidence_text: "개인 및 4인 이하 팀으로 참가할 수 있습니다.", is_ambiguous: true },
+      { clause_no: 1, field: "enrollment_status", operator: "in", value: ["enrolled", "on_leave"], basis: null, condition_text: "재학 또는 휴학", evidence_text: "공고일 기준 대학 재학생 및 휴학생", is_ambiguous: false },
+      { clause_no: 2, field: "degree_program", operator: "eq", value: "bachelor", basis: null, condition_text: "학부", evidence_text: "학부 재학생을 대상으로 합니다.", is_ambiguous: false },
+      { clause_no: 3, field: "other", operator: "eq", value: { text: "개인 또는 4인 이하 팀" }, basis: null, condition_text: "개인 또는 4인 이하 팀", evidence_text: "개인 및 4인 이하 팀으로 참가할 수 있습니다.", is_ambiguous: true },
     ],
     documents: [
       { name: "참가 신청서", issuer: "공고 첨부 양식·신청 사이트", lead_days: 0, effort_minutes: 30, form_url: "https://example.edu/forms/city-contest" },

@@ -5,7 +5,7 @@ import {
   extractPoster,
   getPosterPreviewState,
   EXTRACT_STEPS,
-  POSTER_REGISTER_READY,
+  fieldErrors,
   registerPosterOpportunity,
   SHOW_MOCK_STEPS,
   uploadPosterFile,
@@ -18,9 +18,12 @@ import PosterFileInputs from "@/components/PosterFileInputs";
 import PosterExtractForm from "@/components/PosterExtractForm";
 import PosterNotice from "@/components/PosterNotice";
 import PosterSourcePreview from "@/components/PosterSourcePreview";
+import PosterUploading from "@/components/PosterUploading";
 import Skeleton from "@/components/Skeleton";
+import Toast from "@/components/Toast";
 import { validatePosterFile } from "@/lib/posterFile";
 import useAsyncData from "@/lib/useAsyncData";
+import useToast from "@/lib/useToast";
 import type { PosterExtractResult } from "@/types/api";
 import type { Route } from "@/types/route";
 
@@ -42,10 +45,8 @@ const READ_FAILED = "글자를 읽지 못했어요. 포스터 전체가 보이�
 const UPLOAD_FAILED = "파일을 올리지 못했어요. 잠시 후 다시 시도해 주세요";
 // 화면이 기다리는 60초를 넘겼다. 실행은 아직 돌고 있어서 실패가 아니다
 const STILL_READING = "포스터를 아직 읽고 있어요. 조금 뒤에 다시 올려 주세요";
-// 등록은 아직이다. 올리기 전에 어디까지 되는지 알려 준다(끝까지 가 보고 알면 속은 느낌이 든다)
-const SUBTITLE = POSTER_REGISTER_READY
-  ? "포스터를 올리면 AI가 제목, 마감일, 지원 조건을 자동으로 정리해요."
-  : "포스터를 올리면 AI가 제목·마감일·지원 조건을 정리해 보여 줘요. 공고로 등록하는 기능은 준비 중이에요.";
+const SUBTITLE = "포스터를 올리면 AI가 제목, 마감일, 지원 조건을 자동으로 정리해요.";
+const REGISTER_FAILED = "공고를 등록하지 못했어요. 잠시 후 다시 시도해 주세요";
 
 const wait = (milliseconds: number) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -58,12 +59,14 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
   const [status, setStatus] = useState<UploadStatus>("idle");
   const [steps, setSteps] = useState<AnalyzeStep[]>([]);
   const [result, setResult] = useState<PosterExtractResult | null>(null);
+  const [runId, setRunId] = useState("");
   const [draft, setDraft] = useState<PosterExtractResult["draft"] | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
   const [fileName, setFileName] = useState("");
   const [isPdf, setIsPdf] = useState(false);
   const [registering, setRegistering] = useState(false);
-  const [toast, setToast] = useState("");
+  const [problems, setProblems] = useState<Record<string, string>>({});
+  const [toast, showToast, , holdToast] = useToast();
   const [failureMessage, setFailureMessage] = useState(READ_FAILED);
   const [failureBadge, setFailureBadge] = useState("분석 실패");
 
@@ -98,6 +101,8 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
     setStatus("idle");
     setSteps([]);
     setResult(null);
+    setRunId("");
+    setProblems({});
     setDraft(null);
     setPreviewUrl("");
     setFileName("");
@@ -175,17 +180,28 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
       fail(READ_FAILED, "분석 실패");
       return;
     }
-    setResult(extracted.value);
-    setDraft(extracted.value.draft);
-    setStatus(extracted.value.duplicate_candidate ? "duplicate" : "complete");
+    const { run_id, result: read } = extracted.value;
+    setRunId(run_id);
+    setResult(read);
+    setDraft(read.draft);
+    setStatus(read.duplicate_candidate ? "duplicate" : "complete");
   };
 
   const register = async () => {
     if (!draft) return;
     setRegistering(true);
-    const detail = await registerPosterOpportunity(draft);
-    setToast("공고를 등록했어요");
-    setTimeout(() => navigate({ name: "opportunity", id: detail.id }), 700);
+    setProblems({});
+    try {
+      const made = await registerPosterOpportunity(runId, draft);
+      showToast(made.merged ? "이미 등록된 공고예요. 그 공고로 갈게요" : "공고를 등록했어요");
+      setTimeout(() => navigate({ name: "opportunity", id: made.opportunity_id }), 700);
+    } catch (error) {
+      setRegistering(false);
+      // 422는 어느 칸이 문제인지 서버가 알려 준다. 그 칸 아래에 보여 주고 안내도 띄운다
+      const fields = fieldErrors(error);
+      setProblems(fields);
+      showToast(Object.values(fields)[0] ?? errorMessage(error, REGISTER_FAILED));
+    }
   };
 
   const pickAgain = () => {
@@ -217,12 +233,7 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
           onUseCamera={() => cameraInputRef.current?.click()}
         />
       )}
-      {status === "uploading" && (
-        <section className="flex min-h-[310px] flex-col items-center justify-center gap-3 rounded-[18px] border border-[#e5e7eb] bg-white p-8 text-center" role="status">
-          <p className="text-[18px] font-semibold">포스터를 올리고 있어요</p>
-          <p className="text-[13px] text-[#667085]">{fileName}</p>
-        </section>
-      )}
+      {status === "uploading" && <PosterUploading fileName={fileName} />}
       {status === "analyzing" && (
         <div className="grid grid-cols-[1fr_1fr] gap-5 max-[900px]:grid-cols-1">
           {preview}
@@ -245,10 +256,9 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
             result={result}
             draft={draft}
             registering={registering}
-            registerReady={POSTER_REGISTER_READY}
+            problems={problems}
             onDraftChange={setDraft}
             onRegister={register}
-            onPickAgain={pickAgain}
           />
         </div>
       )}
@@ -282,11 +292,7 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
           onAction={pickAgain}
         />
       )}
-      {toast && (
-        <div className="fixed bottom-6 left-1/2 z-[90] -translate-x-1/2 rounded-[10px] bg-[#181a20] px-4 py-3 text-[13px] font-semibold text-white">
-          {toast}
-        </div>
-      )}
+      <Toast toast={toast} onHold={holdToast} />
     </>
   );
 }

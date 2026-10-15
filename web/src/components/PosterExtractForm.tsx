@@ -8,10 +8,9 @@ interface PosterExtractFormProps {
   result: PosterExtractResult;
   draft: PosterExtractResult["draft"];
   registering: boolean;
-  registerReady: boolean; // 등록(POST /posters/confirm)이 아직이면 안내만 보여 준다
+  problems: Record<string, string>; // 등록이 422로 막혔을 때 항목별 사유(명세 13장)
   onDraftChange: (draft: PosterExtractResult["draft"]) => void;
   onRegister: () => void;
-  onPickAgain: () => void;
 }
 
 const categories: Category[] = [
@@ -29,18 +28,19 @@ function dateValue(value: string | null): string {
   return value?.slice(0, 10) ?? "";
 }
 
-function toDateTime(value: string): string | null {
-  return value ? `${value}T09:00:00+09:00` : null;
+// 날짜만 고쳤을 때 붙이는 시각. 마감은 그날 끝(23:59), 신청 시작은 그날 처음이다(서버 규칙과 같다)
+function toDateTime(value: string, endOfDay = false): string | null {
+  if (!value) return null;
+  return `${value}T${endOfDay ? "23:59" : "00:00"}:00+09:00`;
 }
 
 export default function PosterExtractForm({
   result,
   draft,
   registering,
-  registerReady,
+  problems,
   onDraftChange,
   onRegister,
-  onPickAgain,
 }: PosterExtractFormProps) {
   const [editing, setEditing] = useState(false);
   const isLowConfidence = (field: string) =>
@@ -54,10 +54,19 @@ export default function PosterExtractForm({
     ) : null;
   const fieldClass = (field: string) =>
     `rounded-[10px] border p-3 ${
-      isLowConfidence(field)
-        ? "border-[#b7791f] bg-[#fff8e1]"
-        : "border-[#e5e7eb] bg-white"
+      problems[field]
+        ? "border-[#c53030] bg-[#fef2f2]"
+        : isLowConfidence(field)
+          ? "border-[#b7791f] bg-[#fff8e1]"
+          : "border-[#e5e7eb] bg-white"
     }`;
+  // 등록이 막힌 사유를 그 칸 아래에 보여 준다. 없으면 확신하지 못한 칸 안내를 그대로 둔다
+  const note = (field: string) =>
+    problems[field] ? (
+      <span className="text-[11px] text-[#c53030]">{problems[field]}</span>
+    ) : isLowConfidence(field) ? (
+      <span className="text-[11px] text-[#b7791f]">확인해 주세요</span>
+    ) : null;
 
   return (
     <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
@@ -77,7 +86,7 @@ export default function PosterExtractForm({
             onChange={(event) => onDraftChange({ ...draft, title: event.target.value })}
             className="w-full bg-transparent text-[14px] font-semibold outline-none"
           />
-          {isLowConfidence("title") && <span className="text-[11px] text-[#b7791f]">확인해 주세요</span>}
+          {note("title")}
         </label>
         <label className={fieldClass("organizer")}>
           <span className="mb-1 block text-[12px] font-medium text-[#667085]">주최</span>
@@ -87,7 +96,7 @@ export default function PosterExtractForm({
             onChange={(event) => onDraftChange({ ...draft, organizer: event.target.value })}
             className="w-full bg-transparent text-[14px] font-semibold outline-none"
           />
-          {isLowConfidence("organizer") && <span className="text-[11px] text-[#b7791f]">확인해 주세요</span>}
+          {note("organizer")}
         </label>
         <label className={fieldClass("category")}>
           <span className="mb-1 block text-[12px] font-medium text-[#667085]">카테고리</span>
@@ -112,7 +121,7 @@ export default function PosterExtractForm({
               onChange={(event) => onDraftChange({ ...draft, apply_start_at: toDateTime(event.target.value) })}
               className="w-full bg-transparent text-[13px] outline-none"
             />
-            {isLowConfidence("apply_start_at") && <span className="text-[11px] text-[#b7791f]">확인해 주세요</span>}
+            {note("apply_start_at")}
           </label>
           <label className={fieldClass("deadline_at")}>
             <span className="mb-1 block text-[12px] font-medium text-[#667085]">마감</span>
@@ -120,10 +129,10 @@ export default function PosterExtractForm({
               type="date"
               value={dateValue(draft.deadline_at)}
               readOnly={!editing}
-              onChange={(event) => onDraftChange({ ...draft, deadline_at: toDateTime(event.target.value) })}
+              onChange={(event) => onDraftChange({ ...draft, deadline_at: toDateTime(event.target.value, true) })}
               className="w-full bg-transparent text-[13px] outline-none"
             />
-            {isLowConfidence("deadline_at") && <span className="text-[11px] text-[#b7791f]">확인해 주세요</span>}
+            {note("deadline_at")}
           </label>
         </div>
       </div>
@@ -167,38 +176,36 @@ export default function PosterExtractForm({
         <h3 className="text-[14px] font-semibold">필요 서류{checkMark("documents")}</h3>
         <div className="mt-2 flex flex-wrap gap-2">
           {draft.documents.map((document, index) => (
-            <input
+            <span
               key={`${document.name}-${index}`}
-              value={document.name}
-              readOnly={!editing}
-              onChange={(event) => {
-                const documents = [...draft.documents];
-                documents[index] = { ...document, name: event.target.value };
-                onDraftChange({ ...draft, documents });
-              }}
-              className="rounded-full bg-[#f2f4f7] px-3 py-2 text-[12px] font-semibold text-[#475467] outline-none"
-            />
+              className="flex items-center gap-2 rounded-full bg-[#f2f4f7] px-3 py-2 text-[12px] font-semibold text-[#475467]"
+            >
+              {document.name}
+              {editing && (
+                <button
+                  type="button"
+                  aria-label={`${document.name} 빼기`}
+                  onClick={() => onDraftChange({ ...draft, documents: draft.documents.filter((_, at) => at !== index) })}
+                  className="text-[#c53030]"
+                >
+                  ✕
+                </button>
+              )}
+            </span>
           ))}
         </div>
       </div>
       <p className="mt-5 rounded-[10px] bg-[#eef2ff] p-3 text-[12px] text-[#344054]">
-        {registerReady
-          ? "등록한 포스터 공고는 올린 본인에게만 보여요."
-          : "확인한 내용으로 공고를 등록하는 기능은 준비 중이에요. 지금은 읽어 온 내용만 보여 드려요."}
+        등록한 포스터 공고는 올린 본인에게만 보여요. 지운 조건은 저장하지 않고, 조건 문장만 고친 것은
+        그대로 둬요.
       </p>
       <div className="mt-4 flex justify-end gap-2">
-        {registerReady ? (
-          <>
-            <Button secondary onClick={() => setEditing((value) => !value)}>
-              {editing ? "수정 완료" : "정보 수정"}
-            </Button>
-            <Button onClick={onRegister} disabled={registering}>
-              {registering ? "등록 중" : "공고 등록하고 자격 확인"}
-            </Button>
-          </>
-        ) : (
-          <Button secondary onClick={onPickAgain}>다른 포스터 올리기</Button>
-        )}
+        <Button secondary onClick={() => setEditing((value) => !value)}>
+          {editing ? "수정 완료" : "정보 수정"}
+        </Button>
+        <Button onClick={onRegister} disabled={registering}>
+          {registering ? "등록 중" : "공고 등록하고 자격 확인"}
+        </Button>
       </div>
     </section>
   );

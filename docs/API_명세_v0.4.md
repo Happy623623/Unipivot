@@ -34,6 +34,8 @@
 >
 > v0.4 보강(10/15, 플래너): 출처별 수정 범위(준비 할 일은 날짜만), 기간 상한 400일, include_done 기본값, 마커는 준비를 마친 공고의 마감일
 >
+> v0.4 보강(10/15, 포스터 등록): `POST /posters/confirm`은 기본 칸만 받고 요건·서류는 지운 것만 반영한다, 중복이면 새로 만들지 않고 200과 기존 공고
+>
 > v0.4 보강(10/15, 포스터 추출): Vision 한 번 호출로 `POST /posters/extract`, 초안 요건에 `clause_no`, 중복 기준(제목+마감일 같은 날), 읽기 실패 `POSTER_READ_FAILED`
 >
 > v0.4 보강(10/15, 포스터 업로드): `POST /files`는 지금 포스터만 받는다(HEIC 미지원), 하루 한도 20개 확정, 응답에 `reused`, 저장소 오류 `STORAGE_API_ERROR`
@@ -593,7 +595,6 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 - 연도 없는 날짜("10. 20.까지")는 **사진을 올린 날(KST)** 뒤에 오는 가장 가까운 날로 읽는다. 올린 날보다 앞선 마감일은 연도를 잘못 읽은 것으로 보고 버린다
 - 글자를 읽지 못했거나 공고 이름을 찾지 못하면 실행이 `422 POSTER_READ_FAILED`로 실패한다(실행의 `error`로 전달). 모델이 멈추면 `502 LLM_TIMEOUT`, 저장소에서 파일을 받지 못하면 `502 STORAGE_API_ERROR`다
 - 초안은 따로 저장하지 않는다. 그 실행 기록에 남아 `GET /runs/{run_id}`가 다시 읽어 준다. 실행 기록이 지워지면 `result`는 null이다
-- 확인 화면에서 고친 값으로 공고를 만드는 `POST /posters/confirm`은 아직이다(W6 3차)
 
 완료 시 `GET /runs/{run_id}`의 `result`:
 
@@ -608,7 +609,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
     "deadline_at": "2026-10-20T18:00:00+09:00",
     "easy_summary": "...",
     "requirements": [
-      { "clause_no": 1, "field": "enrollment_status", "operator": "in", "value": ["enrolled", "on_leave"], "condition_text": "재학·휴학", "evidence_text": "국내 대학 재학생 및 휴학생", "is_ambiguous": false }
+      { "clause_no": 1, "field": "enrollment_status", "operator": "in", "value": ["enrolled", "on_leave"], "basis": null, "condition_text": "재학·휴학", "evidence_text": "국내 대학 재학생 및 휴학생", "is_ambiguous": false }
     ],
     "documents": [ { "name": "참가신청서", "issuer": "주최측 홈페이지", "lead_days": 2, "effort_minutes": 60, "form_url": null } ],
     "extraction_confidence": 0.71,
@@ -619,7 +620,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 ```
 
 - `low_confidence_fields`는 확인 화면에서 강조 표시. 값은 `title`·`organizer`·`category`·`apply_start_at`·`deadline_at`·`requirements`·`documents` 중에서 고른다. 모델이 고른 항목에, 코드가 보기에 확인이 필요한 항목(마감일을 못 읽음, 신뢰도가 0.6 미만, 모호한 조건이 있음, 코드가 고쳐서 받음, 제목이 너무 짧음, 종류를 못 읽어 `etc`로 둠)을 더한다
-- `clause_no`는 요건 묶음 번호다(같은 번호끼리 "또는", 다른 번호끼리 "그리고"). 확인 화면은 보여주지 않지만 등록할 때 그대로 돌려보낸다
+- `clause_no`는 요건 묶음 번호다(같은 번호끼리 "또는", 다른 번호끼리 "그리고"). `basis`는 비교 기준(`region`·`department`만, 그 밖은 null)이다. 둘 다 확인 화면에는 보이지 않지만 등록할 때 그대로 돌려보낸다 — `basis`가 없으면 학과·지역 판정이 달라진다
 - 확인 화면은 요건을 `condition_text` 문장으로 보여주고 행 단위로 지울 수 있다. `condition_text`는 공고 상세와 같은 방법으로 만든 문장이다
 - `documents`의 발급처·소요 일수·작성 시간은 준비하기와 같은 서류 사전에서 채운다. 사전에 없는 서류는 null이고 준비하기가 모델에 묻는다
 - `duplicate_candidate`가 있으면 "이미 등록된 공고예요" 안내 후 그 공고로 이동 선택지 제공. 같은 공고로 보는 기준은 **제목을 정규화해 같고**(소문자·숫자·한글만 남김) **마감일이 같은 KST 날짜**다. 마감일을 읽지 못했으면 아직 마감하지 않은 공고 중 제목이 같은 것을 본다. 내가 볼 수 있는 공고만 본다(남이 올린 포스터 공고는 보지 않는다)
@@ -630,13 +631,21 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 // Request: 사용자가 확인 화면에서 고친 최종값
 { "run_id": "uuid", "draft": { "...": "위 draft와 같은 형식" } }
 
-// Response 201
+// Response 201 (새 공고) 또는 200 (같은 공고가 이미 있음)
 { "opportunity_id": "uuid", "merged": false }
 ```
 
-- 같은 공고가 이미 있으면 `merged: true`와 기존 공고 ID를 돌려준다(F-16)
+- `run_id`는 그 포스터를 읽은 **내 추출 실행**이다. 남의 실행·실패한 실행·기록이 지워진 실행은 `404 NOT_FOUND`
+- **학생이 고칠 수 있는 것은 기본 칸이다**: `title`·`organizer`·`category`·`apply_start_at`·`deadline_at`·`easy_summary`. `requirements`·`documents`는 **지운 줄만** 반영한다. 서버가 `run_id`로 추출 초안을 다시 읽어 기준으로 삼고, 보낸 목록에 남아 있는 줄만 남긴다
+- 요건의 짝은 (`clause_no`, `field`, `operator`, `value`)로 맞춘다. 값을 고쳐 보낸 줄은 짝이 없어 **지운 것으로 본다**. 새로 끼워 넣은 줄은 무시한다. 판정에 쓰이는 값이라 화면에서 지어내 보낼 수 없다
+- 서류의 짝은 이름으로 맞춘다. 그래서 확인 화면은 서류 이름을 고치게 하지 않고 빼기만 둔다
+- `extraction_confidence`와 요건의 `basis`·`evidence_text`·`is_ambiguous`도 초안 값을 쓴다(보낸 값은 무시)
+- 제목이 비면 `422 VALIDATION_FAILED`(`details.fields.title`), **마감이 이미 지났으면** `details.fields.deadline_at`, 신청 시작일이 마감일보다 늦으면 `details.fields.apply_start_at`이다. 마감일을 비우면 상시 공고가 된다. 지난 공고를 받지 않는 것은 판정이 열린 공고만 대상이기 때문이다
+- 같은 공고가 이미 있으면 **새로 만들지 않고** `200`과 `merged: true`, 기존 공고 ID를 돌려준다(F-16). 같은 공고로 보는 기준은 추출의 `duplicate_candidate`와 같고, 학생이 고친 제목·마감일로 찾는다. 등록을 두 번 눌러도 공고는 하나다
 - 저장한 포스터 공고는 올린 본인에게만 보인다. 확인 화면의 "다른 학생 피드에도 공개" 안내는 뺀다(공유는 P1)
 - 등록 즉시 업로더 본인 판정을 계산한다. 다른 사용자 판정은 공유(P1)를 켤 때부터다
+- 옮겨 적은 포스터 글자가 공고 원문(`raw_text`)이 되고, 올린 파일은 `poster_file_id`로 붙는다. 모호한 조건이 남았거나 신뢰도가 0.6 미만이면 상세에 "원문 확인 필요"가 붙는다(공지 추출과 같은 기준)
+- 공고·요건·서류·판정은 한 요청에서 함께 저장된다. 중간에 실패하면 아무것도 남지 않는다
 
 ## 7. 준비하기 · 플래너 · 캘린더
 

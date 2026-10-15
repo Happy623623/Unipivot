@@ -222,3 +222,25 @@ async def test_a_deadline_before_today_is_dropped_and_flagged() -> None:
 async def test_a_deadline_far_past_today_is_dropped_too() -> None:
     extracted, _ = await run(call(SUBMIT, **args(deadline="2028-10-20T18:00", apply_start=None)))
     assert extracted.draft.deadline_at is None
+
+
+async def test_the_comparison_basis_is_kept_for_the_judgment() -> None:
+    """학과·지역 조건은 기준(basis)이 없으면 판정이 달라진다. 초안에 남겨 등록까지 가져간다."""
+    with_basis = args(
+        poster_text=TEXT + "\n모집 대상: 공과대학 재학생",
+        requirements=[
+            {
+                "clause_no": 1,
+                "field": "department",
+                "operator": "in",
+                "value_json": '["공과대학"]',
+                "basis": "college",
+                "evidence_text": "모집 대상: 공과대학 재학생",
+                "is_ambiguous": False,
+            }
+        ],
+    )
+    extracted, _ = await run(call(SUBMIT, **with_basis))
+    (requirement,) = extracted.draft.requirements
+    assert requirement.basis == "college"
+    assert not requirement.is_ambiguous

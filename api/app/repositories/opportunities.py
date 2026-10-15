@@ -77,6 +77,8 @@ from app.schemas.opportunities import (
     Process,
     ProcessStep,
 )
+from app.schemas.posters import EXTRACT_LABEL
+from app.schemas.posters import EXTRACT_TOOL as POSTER_TOOL
 from app.youth import BUILD_TOOL as BUILD_YOUTH
 from app.youth import FETCH_TOOL as FETCH_YOUTH
 
@@ -851,6 +853,8 @@ def _step(step: dict[str, Any], names: dict[int, str]) -> ProcessStep:
         label = "온통청년에서 정책 정보 받기"
     elif tool == BUILD_YOUTH:
         label = "온통청년 항목으로 지원 자격 정리"
+    elif tool == POSTER_TOOL:  # 포스터 추출은 Vision 한 번이라 단계 이름이 다르다
+        label = EXTRACT_LABEL
     else:
         label = "지원 자격 정리" if tool == SUBMIT else tool
     failed = step.get("error") is True or (tool == SUBMIT and step.get("accepted") is False)
