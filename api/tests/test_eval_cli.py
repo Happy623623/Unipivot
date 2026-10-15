@@ -1,0 +1,255 @@
+"""시나리오 실행의 DB 없이 볼 수 있는 부분: 고르기·출력·녹화 응답·안전장치(app/eval)."""
+
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+
+from app.calendar.google import GoogleEvent
+from app.config import Settings
+from app.eligibility import KST
+from app.eval.cli import _moment, main, managed_database
+from app.eval.fakes import (
+    RecordedCalendar,
+    RecordedLlm,
+    RecordedStorage,
+    nationwide,
+    poster_bytes,
+    poster_submit,
+    sido_codes,
+    youth_policy,
+)
+from app.eval.models import Check, CheckFailed, Report, ScenarioResult, percentile, plain
+from app.eval.runner import _check_drained, run_scenarios
+from app.eval.scenarios import SCENARIOS, pick
+from app.eval.world import DEFAULT_NOW, eval_settings
+from app.llm import Blob, UserTurn
+from app.posters.prompt import SUBMIT
+from app.uploads.storage import StorageError
+
+pytestmark = pytest.mark.anyio
+
+# PRD 8장 표의 P0 시나리오 중 이번에 만든 것. S09·S10은 실제 파일이 있어야 해서 아직 없다
+EXPECTED_CODES = ("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S11", "S12", "S13")
+
+
+def test_the_scenario_list_matches_the_prd_table() -> None:
+    assert tuple(scenario.code for scenario in SCENARIOS) == EXPECTED_CODES
+    assert all(scenario.priority == "P0" for scenario in SCENARIOS)
+    assert all(scenario.title and scenario.run.__doc__ for scenario in SCENARIOS)
+
+
+def test_picking_scenarios_by_code() -> None:
+    assert [scenario.code for scenario in pick(None)] == list(EXPECTED_CODES)
+    assert [scenario.code for scenario in pick(["S13", "S01"])] == ["S13", "S01"]
+    with pytest.raises(KeyError, match="S99"):
+        pick(["S01", "S99"])
+    with pytest.raises(KeyError, match="번호를 적어"):
+        pick([])  # --scenarios "," 로 전부 돌아 버리지 않게
+
+
+def test_a_real_supabase_url_is_refused() -> None:
+    """시나리오는 사용자·공고를 만들고 지운다. 실제 DB에서 돌면 남의 데이터를 지운다."""
+    problem = managed_database("postgresql://postgres:pw@db.abcdefgh.supabase.co:5432/postgres")
+    assert problem is not None
+    assert "abcdefgh" not in problem and "pw" not in problem  # 주소·비밀번호를 보여 주지 않는다
+    assert managed_database("postgresql://postgres:postgres@localhost:5432/unipivot_test") is None
+
+
+async def test_the_runner_itself_refuses_a_supabase_url() -> None:
+    """CLI만 막으면 pytest로 부를 때 샌다(테스트도 run_scenarios를 바로 부른다)."""
+    with pytest.raises(RuntimeError, match="Supabase"):
+        await run_scenarios("postgresql://postgres:pw@db.abcdefgh.supabase.co:5432/postgres", [])
+
+
+async def test_the_cli_refuses_a_supabase_url_before_connecting(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = "postgresql://postgres:pw@db.abcdefgh.supabase.co:5432/postgres"
+    monkeypatch.setattr("app.eval.cli.Settings", lambda: Settings(database_url=url))
+    assert await main(["--scenarios", "S02"]) == 1
+    printed = capsys.readouterr().out
+    assert "Supabase" in printed and "abcdefgh" not in printed
+
+
+def test_the_clock_can_be_given_without_a_time_zone() -> None:
+    assert _moment(None) == DEFAULT_NOW
+    assert _moment("2026-10-12T09:00:00+09:00") == DEFAULT_NOW
+    assert _moment("2026-10-12T09:00") == DEFAULT_NOW  # 시간대를 적지 않으면 KST
+    assert _moment("2026-03-01T00:00:00Z").astimezone(KST).date() == date(2026, 3, 1)
+    with pytest.raises(ValueError, match="--now"):
+        _moment("내일")
+
+
+async def test_the_cli_stops_without_a_database_url(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # api/.env나 CI에 DATABASE_URL이 있어도 같은 결과여야 한다
+    monkeypatch.setattr("app.eval.cli.Settings", lambda: Settings(database_url=""))
+    assert await main(["--scenarios", "S01"]) == 1
+    assert "DATABASE_URL" in capsys.readouterr().out
+
+
+async def test_the_cli_lists_scenarios_without_touching_the_database(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert await main(["--list"]) == 0
+    printed = capsys.readouterr().out
+    assert all(code in printed for code in EXPECTED_CODES)
+
+
+async def test_an_unknown_scenario_is_named(capsys: pytest.CaptureFixture[str]) -> None:
+    assert await main(["--scenarios", "S42"]) == 1
+    assert "S42" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("raw", [",", " ", ""])
+async def test_an_empty_scenario_list_is_not_everything(
+    raw: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--scenarios를 비워 적으면 전부 돌지 않는다(DB에 11개를 만들고 지운다)."""
+    assert await main(["--scenarios", raw]) == 1
+    assert "번호를 적어" in capsys.readouterr().out
+
+
+def test_an_unfinished_background_job_fails_the_scenario() -> None:
+    """뒤에서 도는 일을 못 끝내면 비용이 빠지고 기록도 반쪽이 된다."""
+    assert _check_drained(0, "S01") is None
+    with pytest.raises(TimeoutError, match="S01"):
+        _check_drained(2, "S01")
+
+
+def test_settings_never_reuse_the_real_login_secret() -> None:
+    first, second = eval_settings("postgresql://x/y"), eval_settings("postgresql://x/y")
+    assert first.supabase_jwt_secret and first.supabase_jwt_secret != second.supabase_jwt_secret
+    assert first.token_encryption_key != second.token_encryption_key
+    assert first.supabase_url == ""  # 공개키를 받으러 나가지 않는다(HS256으로 검증)
+    assert first.database_url == "postgresql://x/y"
+
+
+def test_a_check_records_both_sides() -> None:
+    assert Check("판정", "eligible", "eligible").ok
+    failed = Check("판정", "eligible", "ineligible")
+    assert not failed.ok
+    assert failed.json() == {
+        "what": "판정",
+        "expected": "eligible",
+        "actual": "ineligible",
+        "ok": False,
+    }
+    assert "기대 'eligible'" in str(CheckFailed(failed))
+
+
+def test_values_are_turned_into_json_before_they_are_stored() -> None:
+    assert plain({"when": datetime(2026, 10, 12, 9, tzinfo=KST)}) == {
+        "when": "2026-10-12T09:00:00+09:00"
+    }
+    # 집합은 순서를 정해 준다. 정수는 해시가 고정이라 {8, 1}은 그대로 쓰면 [8, 1] 순서로 나온다
+    assert plain({8, 1}) == [1, 8]
+    assert plain({"fields", "clauses"}) == ["clauses", "fields"]
+    assert plain([Decimal("0.5"), (1, date(2026, 1, 2))]) == [0.5, [1, "2026-01-02"]]
+
+
+def test_percentiles_pick_one_of_the_measured_values() -> None:
+    """시나리오가 몇 개뿐이라 값을 섞지 않는다(가장 가까운 순위)."""
+    assert percentile([], 50) == 0
+    assert percentile([7], 95) == 7
+    assert percentile([10, 20, 30, 40], 50) == 20
+    assert percentile([10, 20, 30, 40], 95) == 40
+
+
+def test_the_report_sums_what_the_baseline_keeps() -> None:
+    report = Report(
+        now=DEFAULT_NOW,
+        priced_on=date(2026, 10, 15),
+        results=[
+            ScenarioResult(
+                "S01", "하나", True, 100, api_ms=7.5, cost_usd=Decimal("0.001"), llm_calls=1
+            ),
+            ScenarioResult("S02", "둘", False, 300, error="판정: 기대 …", llm_calls=2),
+        ],
+    )
+    saved = report.json()
+    assert (saved["passed"], saved["scenarios"], saved["success_rate"]) == (1, 2, 0.5)
+    assert saved["latency_ms"] == {"p50": 100, "p95": 300}
+    assert (saved["cost_usd"], saved["llm_calls"]) == (0.001, 3)
+    assert saved["now"] == "2026-10-12T09:00:00+09:00"
+    # 단가는 돌린 날로 고른다. 베이스라인끼리 비교할 때 이 날짜가 같아야 비용을 비교할 수 있다
+    assert saved["priced_on"] == "2026-10-15"
+    assert saved["api_ms"] == 7.5 and saved["results"][0]["api_ms"] == 7.5
+    assert saved["results"][1]["error"] == "판정: 기대 …"
+
+
+async def test_the_recorded_model_answers_in_order_and_then_complains() -> None:
+    llm = RecordedLlm("첫 답")
+    reply = await llm.generate(
+        model="gemini-vision",
+        system="규칙",
+        turns=[UserTurn("보기", (Blob(b"\xff", "image/jpeg"),))],
+    )
+    assert reply.turn.text == "첫 답"
+    assert llm.asks[0].blobs == [Blob(b"\xff", "image/jpeg")]
+    assert reply.usage.input_tokens > 0  # 비용이 0이 되지 않게 토큰을 녹화해 둔다
+    with pytest.raises(AssertionError, match="녹화한 답보다"):
+        await llm.generate(model="gemini-vision", system=None, turns=[])
+
+
+async def test_the_recorded_storage_gives_back_what_was_uploaded() -> None:
+    storage = RecordedStorage()
+    assert storage.ready  # 설정이 비어 StorageError가 되지 않는다
+    await storage.upload("u/poster/1.jpg", poster_bytes(), "image/jpeg")
+    assert await storage.download("u/poster/1.jpg") == poster_bytes()
+    await storage.remove("u/poster/1.jpg")
+    assert storage.removed == ["u/poster/1.jpg"]
+    with pytest.raises(StorageError):
+        await storage.download("u/poster/1.jpg")
+
+
+async def test_the_recorded_calendar_keeps_one_event_per_number() -> None:
+    calendar = RecordedCalendar()
+    ends_at = datetime(2026, 11, 20, 18, tzinfo=KST)
+    first = await calendar.insert("token", event_id="abc", title="[마감] 공고", ends_at=ends_at)
+    again = await calendar.insert("token", event_id="abc", title="[마감] 공고", ends_at=ends_at)
+    assert isinstance(first, GoogleEvent) and first == again
+    assert (calendar.inserts, len(calendar.events)) == (2, 1)  # 두 번 불러도 일정은 하나
+    assert calendar.titles == {"abc": "[마감] 공고"}
+    # 실제 클라이언트처럼 이번에 보낸 시각으로 돌려준다(마감일이 바뀐 재등록을 가리지 않게)
+    moved = await calendar.insert(
+        "token", event_id="abc", title="[마감] 공고", ends_at=ends_at + timedelta(days=1)
+    )
+    assert moved.ends_at == ends_at + timedelta(days=1)
+    assert await calendar.refresh("refresh-token") == ("recorded-access-token", 3600)
+    await calendar.delete("token", "abc")
+    assert calendar.events == {} and calendar.titles == {} and calendar.deletes == ["abc"]
+
+
+def test_the_recorded_poster_answer_calls_the_submit_tool() -> None:
+    turn = poster_submit(date(2026, 10, 12), confidence=0.42)
+    assert [call.name for call in turn.tool_calls] == [SUBMIT]
+    args = turn.tool_calls[0].args
+    assert args["confidence"] == 0.42
+    assert args["requirements"][0]["evidence_text"] in args["poster_text"]  # 근거가 원문에 있다
+    # 날짜는 사진을 올린 날에서 센다. --now를 바꿔도 마감이 지난 포스터가 되지 않는다
+    assert args["deadline"].startswith("2026-11-20")
+    assert poster_submit(date(2027, 3, 5)).tool_calls[0].args["deadline"].startswith("2027-04-13")
+
+
+def test_the_recorded_policy_number_is_not_a_real_one() -> None:
+    """save_policy는 (출처, 번호)로 덮어쓰기다. 실제 번호면 수집해 둔 공고를 고치고 지운다."""
+    assert not youth_policy()["plcyNo"].isdigit()
+    assert "eval" in youth_policy()["plcyNo"]
+
+
+def test_the_recorded_policy_is_nationwide_unless_a_region_is_given() -> None:
+    assert youth_policy()["zipCd"] == nationwide()
+    seoul = youth_policy(zipCd=sido_codes("서울특별시"))["zipCd"].split(",")
+    assert len(seoul) == 25 and all(code.startswith("11") for code in seoul)
+    with pytest.raises(AssertionError, match="모르는 시도"):
+        sido_codes("서울시")
+
+
+def test_the_poster_bytes_look_like_a_jpeg() -> None:
+    from app.uploads import inspect_poster
+
+    assert inspect_poster(poster_bytes()).type.mime == "image/jpeg"
+    assert inspect_poster(poster_bytes()).sha256 != inspect_poster(poster_bytes(b"x")).sha256
