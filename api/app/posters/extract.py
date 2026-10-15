@@ -133,6 +133,7 @@ def _requirement(req: RequirementDraft) -> PosterRequirementDraft:
         field=req.field,
         operator=req.operator,
         value=req.value,
+        basis=req.basis,
         condition_text=condition_text(shown),
         evidence_text=req.evidence_text,
         is_ambiguous=req.is_ambiguous,

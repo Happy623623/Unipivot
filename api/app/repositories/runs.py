@@ -15,9 +15,16 @@ from pydantic import ValidationError
 
 from app.db import get_conn
 from app.eligibility import KST
-from app.posters.prompt import SUBMIT as POSTER_TOOL
 from app.schemas.opportunities import DocumentItem, ProcessStep
-from app.schemas.posters import DuplicateCandidate, PosterDraft, PosterExtractResult
+from app.schemas.posters import (
+    EXTRACT_LABEL,
+    DuplicateCandidate,
+    PosterDraft,
+    PosterExtractResult,
+)
+from app.schemas.posters import (
+    EXTRACT_TOOL as POSTER_TOOL,
+)
 from app.schemas.prepare import PrepareResult, PrepTask, RunError
 
 # 준비하기 단계 이름(화면의 처리 과정). 정해진 순서로 도는 단계라 chosen_by는 pipeline이다.
@@ -27,7 +34,7 @@ PREPARE_LABELS = {
     "build_prep_plan": "마감일에서 거꾸로 일정 짜기",
 }
 # 포스터 추출 단계 이름. Vision 한 번이라 단계도 하나다(app/posters/service.py)
-POSTER_LABELS = {POSTER_TOOL: "포스터에서 글자·날짜 읽기"}
+POSTER_LABELS = {POSTER_TOOL: EXTRACT_LABEL}
 FAILED_MESSAGE = "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요."
 _CODED = re.compile(r"^([A-Z][A-Z_]+): (.+)$", re.S)  # agent_log.error_text의 "코드: 문구"
 logger = logging.getLogger(__name__)
