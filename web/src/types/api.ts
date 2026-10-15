@@ -248,6 +248,16 @@ export interface PosterExtractResult {
   };
   duplicate_candidate: { opportunity_id: string; title: string } | null;
 }
+// POST /calendar/events (F-32). 마감 시각으로 끝나는 1시간짜리 일정이다
+export interface CalendarEvent {
+  id: string;
+  provider: "google" | "ics";
+  external_event_id: string | null;
+  title: string;
+  starts_at: string;
+  all_day: boolean;
+}
+
 // POST /opportunities/{id}/prepare: 202(새 실행)·200(이미 준비했거나 준비 중)
 export interface PrepareStarted {
   run_id: string | null;                 // 실행 기록이 지워진 옛 계획은 null

@@ -5,13 +5,12 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.schemas.calendar import CalendarEventView
 from app.schemas.opportunities import DocumentItem, ProcessStep, RunStatus
 
 
 class PrepareRequest(BaseModel):
-    # 마감일 캘린더 등록(F-32)은 다음 작업이다. 지금은 받기만 하고 등록하지 않는다(결과의 calendar_event null)
-    register_calendar: bool = False
-    calendar_provider: Literal["google", "ics"] = "google"
+    # 마감일 캘린더 등록은 준비하기와 따로 한다(POST /calendar/events, F-32)
     target_date: date | None = None  # 상시 공고(마감일 없음)는 꼭 준다. 오늘이나 그 뒤
     force: bool = False  # 지원 어려움 공고를 "그래도 준비하기"로 다시 보낼 때
 
@@ -28,18 +27,12 @@ class PrepTask(BaseModel):
     document_id: str | None
 
 
-class CalendarEventView(BaseModel):
-    id: str
-    provider: Literal["google", "ics"]
-    external_event_id: str | None
-    starts_at: datetime
-
-
 class PrepareResult(BaseModel):
     kind: Literal["prepare"] = "prepare"
     prep_plan_id: str
     documents: list[DocumentItem]  # 상세의 documents와 같은 모양(서류 할 일 id·완료 포함)
     tasks: list[PrepTask]  # 서류 순서대로, 마지막이 신청 제출
+    # 마감일 캘린더는 따로 등록한다(F-32). 준비하기 결과에는 담지 않는다
     calendar_event: CalendarEventView | None
     calendar_error: str | None
 

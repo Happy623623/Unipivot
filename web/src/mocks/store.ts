@@ -3,6 +3,7 @@ import { opportunities } from "@/mocks/opportunities";
 import { planner } from "@/mocks/planner";
 import { mockToday } from "@/mocks/account";
 import type {
+  CalendarEvent,
   OpportunityItem,
   OpportunityDetail,
   OpportunityMark,
@@ -17,6 +18,8 @@ function clone<T>(value: T): T {
 
 const detailsState = clone(opportunityDetails);
 const plannerState = clone(planner);
+// 마감일 캘린더 등록(F-32). 메모리에만 있어 새로고침하면 사라진다
+const calendarState: { opportunity_id: string; event: CalendarEvent }[] = [];
 
 function subtractDays(date: string, days: number): string {
   const value = new Date(`${date.slice(0, 10)}T00:00:00Z`);
@@ -43,11 +46,7 @@ export function getStoredPlanner(): PlannerResponse {
   return plannerState;
 }
 
-export function prepareStoredOpportunity(
-  id: string,
-  includeCalendar: boolean,
-  targetDate?: string,
-): PrepareResult {
+export function prepareStoredOpportunity(id: string, targetDate?: string): PrepareResult {
   const detail = detailsState[id];
   if (!detail) throw new Error("공고를 찾을 수 없어요.");
 
@@ -108,10 +107,7 @@ export function prepareStoredOpportunity(
     prep_plan_id: prepPlanId,
     tasks_total: tasks.length,
     tasks_done: tasks.filter((task) => task.is_done).length,
-    calendar_events:
-      includeCalendar && detail.deadline_at
-        ? [{ id: `gcal-${id}`, provider: "google" }]
-        : [],
+    calendar_events: detail.prep.calendar_events ?? [], // 캘린더는 따로 등록한다(F-32)
   };
   detail.process.prepare_run_id = `run-prepare-${id}`;
 
@@ -126,16 +122,39 @@ export function prepareStoredOpportunity(
       document_id:
         detail.documents.find((document) => document.task_id === task.id)?.id ?? null,
     })),
-    calendar_event:
-      includeCalendar && detail.deadline_at
-        ? {
-            id: `gcal-${id}`,
-            provider: "google",
-            starts_at: detail.deadline_at,
-          }
-        : null,
+    calendar_event: null, // 마감일 캘린더는 준비하기와 따로 등록한다(F-32)
     calendar_error: null,
   };
+}
+
+// 마감일 캘린더 등록(F-32). 준비한 공고만 넣고, 같은 공고를 다시 넣어도 하나다
+export function addStoredCalendarEvent(opportunityId: string): CalendarEvent {
+  const detail = detailsState[opportunityId];
+  if (!detail) throw new Error("공고를 찾을 수 없어요.");
+  if (!detail.prep.prepared) throw new Error("준비 일정을 먼저 만들어 주세요.");
+  if (!detail.deadline_at) throw new Error("마감일이 없는 공고예요. 캘린더에 넣을 수 없어요.");
+  const existing = calendarState.find((event) => event.opportunity_id === opportunityId);
+  if (existing) return existing.event;
+  const ends = new Date(detail.deadline_at);
+  const event: CalendarEvent = {
+    id: `gcal-${opportunityId}`,
+    provider: "google",
+    external_event_id: `ext-${opportunityId}`,
+    title: `[마감] ${detail.title}`,
+    starts_at: new Date(ends.getTime() - 60 * 60 * 1000).toISOString(),
+    all_day: false,
+  };
+  calendarState.push({ opportunity_id: opportunityId, event });
+  detail.prep.calendar_events = [{ id: event.id, provider: "google" }];
+  return event;
+}
+
+export function removeStoredCalendarEvent(eventId: string): void {
+  const index = calendarState.findIndex((entry) => entry.event.id === eventId);
+  if (index < 0) throw new Error("캘린더 일정을 찾을 수 없어요.");
+  const [removed] = calendarState.splice(index, 1);
+  const detail = detailsState[removed.opportunity_id];
+  if (detail) detail.prep.calendar_events = [];
 }
 
 // 준비·강의계획서 할 일 옮기기(날짜만). 직접 추가한 할 일은 updateStoredManualTask가 제목까지 고친다.

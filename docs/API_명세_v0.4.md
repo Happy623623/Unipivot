@@ -34,6 +34,8 @@
 >
 > v0.4 보강(10/15, 플래너): 출처별 수정 범위(준비 할 일은 날짜만), 기간 상한 400일, include_done 기본값, 마커는 준비를 마친 공고의 마감일
 >
+> v0.4 보강(10/15, 캘린더): 마감일 등록은 준비하기와 따로 한다(prepare에서 register_calendar 삭제), 마감 1시간 전 시작, 일정 번호를 서버가 정해 중복을 막는다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -620,7 +622,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 ```json
 // Request
-{ "register_calendar": true, "calendar_provider": "google", "target_date": null }
+{ "target_date": null, "force": false }
 
 // Response 202 (처음) 또는 200 (이미 준비한 공고면 기존 결과)
 { "run_id": "uuid", "status": "running" }
@@ -628,14 +630,8 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 - 누를 때 공고 상세와 같은 방법으로 지금 프로필로 다시 판정한다. 이미 준비했거나 준비하는 중이면 `200`과 그 실행이다(`run_id`는 실행 기록이 지워진 옛 계획이면 null). 5분 넘게 `running`인 실행은 멈춘 것으로 보고 그 계획을 지운 뒤 새로 만든다. 실패한 실행의 계획은 남지 않아 다시 누르면 새로 만든다. 두 번 눌러도 계획은 하나다
 - 마감이 지났거나 마감 상태인 공고는 `409 DEADLINE_PASSED`. 멈춘·실패한 계획은 이 검사들을 모두 지난 뒤에 지운다(숨김 공고는 준비한 사람에게만 보이기 때문)
-- `register_calendar`·`calendar_provider`는 받기만 하고 등록은 F-32에서 한다. 그 전까지 결과의 `calendar_event`·`calendar_error`는 null이다
+- 마감일 캘린더 등록은 준비하기와 따로 한다(`POST /calendar/events`, F-32). 준비하기 요청은 캘린더 항목을 받지 않고, 결과의 `calendar_event`·`calendar_error`는 늘 null이다
 - 판정이 `ineligible`이면 `409 NOT_ELIGIBLE`. 프론트는 "그래도 준비하기"를 누르면 `{"force": true}`로 다시 보낸다
-- `calendar_provider`가 `ics`면 캘린더 API를 부르지 않고 결과에 .ics 링크를 포함
-- 캘린더 연결이 없는데 `register_calendar`가 true이면, 준비 일정은 그대로 만든다. 결과의 `calendar_event`는 null이고 `calendar_error`는 `CALENDAR_NOT_CONNECTED`다. 프론트는 캘린더를 연결(4장)한 뒤 `POST /calendar/events`로 등록한다
-
-```json
-{ "kind": "prepare", "...": "위 result와 같은 형식", "calendar_event": null, "calendar_error": "CALENDAR_NOT_CONNECTED" }
-```
 - `target_date`는 `deadline_at`이 null인 상시 공고에서 **필수**다. `planner_tasks.due_date`가 NOT NULL이라 화면에서 목표일을 받는다. 오늘보다 앞선 날짜면 `422 VALIDATION_FAILED`이고 `details.fields.target_date`에 이유를 담는다
 - `build_prep_plan` 역산 규칙: 서류 할 일 "○○ 준비" = 마감 2일 전 − `lead_days`(모르면 1일), 마지막 "신청 제출" = 마감 1일 전. 오늘보다 앞서면 오늘로 둬서 지난 날짜가 생기지 않게 한다. 상시 공고는 `target_date`를 마감일처럼 쓴다
 
@@ -716,6 +712,10 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 ### `POST /calendar/events`
 
 - 연결이 없거나 만료됐으면 `409 CALENDAR_NOT_CONNECTED`(`details.reason`)를 돌려준다
+- 지금은 공고 마감일만 넣는다(`opportunity_id`). `syllabus_item_id`·`lms_assignment_id`는 그 기능(F-14·F-51)과 함께 열고, 지금 보내면 `422`다. `provider`는 `google`만 받는다(`ics`는 F-34)
+- **준비를 마친** 공고만 넣을 수 있다(공고 상세의 `prep.prepared`와 같은 기준). 아니면 `422`이고 `details.fields.opportunity_id`에 이유를 담는다. 마감일이 없는 상시 공고도 `422`, 마감이 지난 공고는 `409 DEADLINE_PASSED`다
+- 일정은 **마감 시각으로 끝나는 1시간짜리**다(18:00 마감이면 17:00~18:00, `all_day: false`, 시간대 `Asia/Seoul`). 제목은 `[마감] 공고 제목`이다
+- 일정 번호는 서버가 `calendar_events.id`에서 만들어 Google에 보낸다. 그래서 응답을 받지 못하고 다시 눌러도 캘린더에 일정이 하나다(Google이 같은 번호를 409로 거절하면 이미 넣은 것으로 본다). Google에 넣기 전의 기록은 `external_event_id`가 null이고, 공고 상세의 `prep.calendar_events`에는 번호가 붙은 것만 들어간다
 
 ```json
 // Request: 대상 셋 중 정확히 하나
@@ -724,14 +724,14 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 { "provider": "google", "lms_assignment_id": "uuid" }
 
 // Response 201 (이미 등록돼 있으면 200 + 기존 이벤트)
-{ "id": "uuid", "provider": "google", "external_event_id": "abc123", "title": "[마감] 2026-2 한양브레인 장학금", "starts_at": "2026-10-15T23:59:00+09:00", "all_day": false }
+{ "id": "uuid", "provider": "google", "external_event_id": "abc123", "title": "[마감] 2026-2 한양브레인 장학금", "starts_at": "2026-10-15T22:59:00+09:00", "all_day": false }
 ```
 
-에러: `CALENDAR_NOT_CONNECTED`(409, 재로그인 유도), `GOOGLE_API_ERROR`(502)
+에러: `CALENDAR_NOT_CONNECTED`(409, `details.reason`은 `not_connected` 또는 `expired`. 권한이 없어졌거나(401) 갱신하지 못했을 때다. 프론트는 캘린더 연결(4장)로 보낸다), `GOOGLE_API_ERROR`(502, 403·5xx·연결 오류)
 
 ### `DELETE /calendar/events/{id}`
 
-`204`. Google 캘린더에서도 삭제한다.
+`204`. Google 캘린더에서도 삭제한다. 이미 Google에 없으면(404·410) 지운 것으로 본다. 캘린더 권한이 없어졌으면 Google에서는 지우지 못하므로 우리 기록만 지운다(그 일정은 학생이 Google에서 직접 지운다). Google이 잠깐 멈춘 것(502)은 기록을 두고 다시 누르게 한다.
 
 ### `GET /calendar/ics` (P1)
 
@@ -1129,7 +1129,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - 토큰 수·비용은 사용자 응답에 넣지 않고 내부 지표로만 쓴다
 - 실패 시 `status: "failed"`, `error: { "code": "LLM_TIMEOUT", "message": "..." }`
 - `error`는 서버가 정한 에러(13장 코드)만 그대로 보여 준다. 그 밖의 예외는 `INTERNAL_ERROR`와 정해진 문구로 바꿔 내부 내용이 나가지 않게 한다
-- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다. 준비하기는 get_document_guide → 필요 서류 확인, build_prep_plan → 마감일에서 거꾸로 일정 짜기, create_calendar_event → 캘린더에 마감일 넣기다(모두 pipeline).
+- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다. 준비하기는 get_document_guide → 필요 서류 확인, build_prep_plan → 마감일에서 거꾸로 일정 짜기다(둘 다 pipeline). 마감일 캘린더 등록은 준비하기 단계가 아니라 따로 부르는 API다(7장).
 - 앞에서 읽은 곳의 뒷부분을 읽은 호출(시작 위치가 0보다 큼, Vision은 PDF 2쪽부터)은 "이어 읽기"다(예: 첨부 '파일명' 이어 읽기).
 - 도구가 오류를 돌려줬거나 제출이 거절된 호출은 status failed다. tool_calls.status에는 succeeded로 남는다.
 - note는 주소를 지우고 공백을 한 칸으로 줄인 한 줄이고 최대 200자다.
@@ -1225,3 +1225,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 > 10/14 반영: PrepareStarted 타입, PrepareResult.calendar_error, 준비하기 화면의 실행 단계 표시·"그래도 준비하기"·상시 공고 목표일.
 
 > 10/15 반영: 플래너 화면을 실제 API에 연결, 공고 상세의 서류 체크, 준비 할 일은 날짜만 옮기기.
+
+> 10/15 반영: CalendarEvent 타입, 준비 결과 창의 캘린더 체크와 공고 상세의 "마감일 캘린더" 줄, 연결에서 돌아오면 이어서 등록.

@@ -9,13 +9,16 @@ import {
   getStoredPlanner,
   addStoredManualTask,
   deleteStoredManualTask,
+  addStoredCalendarEvent,
   moveStoredTask,
   prepareStoredOpportunity,
+  removeStoredCalendarEvent,
   setStoredPlannerTaskDone,
   setStoredDocumentDone,
   updateStoredManualTask,
 } from "@/mocks/store";
 import type {
+  CalendarEvent,
   Category,
   FeedResponse,
   MarkResult,
@@ -109,9 +112,6 @@ export async function setOpportunityMark(id: string, mark: OpportunityMark | nul
   else await apiFetch<MarkResult>(path, { method: "PUT", body: JSON.stringify({ mark }) });
 }
 
-// 마감일 캘린더 등록(F-32)은 아직이다. TODO(api): POST /calendar/events가 생기면 지운다
-export const CALENDAR_READY = USE_MOCKS; // 마감일을 Google Calendar에 넣기
-export const CALENDAR_NOT_READY = "마감일 캘린더 등록은 아직 준비 중이에요. 준비 일정은 이 화면에서 확인해 주세요.";
 
 // GET /planner/tasks (F-43). 기간 안의 할 일과 마커(준비 중인 공고의 마감일). 날짜는 KST다
 export function getPlanner(from: string, to: string): Promise<PlannerResponse> {
@@ -167,6 +167,25 @@ function patchTask(id: string, body: Record<string, unknown>): Promise<PlannerTa
   });
 }
 
+// POST /calendar/events (F-32). 준비한 공고의 마감일을 Google 캘린더에 넣는다.
+// 이미 넣었으면 서버가 그 일정을 그대로 준다(중복 등록 없음)
+export function registerCalendarEvent(opportunityId: string): Promise<CalendarEvent> {
+  if (USE_MOCKS) return respond(addStoredCalendarEvent(opportunityId));
+  return apiFetch<CalendarEvent>("/calendar/events", {
+    method: "POST",
+    body: JSON.stringify({ provider: "google", opportunity_id: opportunityId }),
+  });
+}
+
+// DELETE /calendar/events/{id}. Google 캘린더에서도 지운다
+export function removeCalendarEvent(eventId: string): Promise<void> {
+  if (USE_MOCKS) {
+    removeStoredCalendarEvent(eventId);
+    return respond(undefined);
+  }
+  return apiFetch<void>(`/calendar/events/${encodeURIComponent(eventId)}`, { method: "DELETE" });
+}
+
 export interface PrepareOptions {
   force?: boolean; // 지원 어려움 공고를 "그래도 준비하기"로 다시 보낸다
   onProgress?: (steps: ProcessStep[]) => void; // 실행 단계(GET /runs/{id}의 steps)
@@ -176,17 +195,15 @@ export interface PrepareOptions {
 // 이미 준비한 공고는 200이고, 그 실행이 남아 있지 않으면 결과도 없다(null: 부른 쪽이 상세를 다시 받는다)
 export async function prepareOpportunity(
   id: string,
-  includeCalendar: boolean,
   targetDate?: string,
   options: PrepareOptions = {},
 ): Promise<PrepareResult | null> {
-  if (USE_MOCKS) return respond(prepareStoredOpportunity(id, includeCalendar, targetDate));
+  if (USE_MOCKS) return respond(prepareStoredOpportunity(id, targetDate));
   const started = await apiFetch<PrepareStarted>(
     `/opportunities/${encodeURIComponent(id)}/prepare`,
     {
       method: "POST",
       body: JSON.stringify({
-        register_calendar: includeCalendar && CALENDAR_READY,
         ...(targetDate ? { target_date: targetDate } : {}),
         ...(options.force ? { force: true } : {}),
       }),
