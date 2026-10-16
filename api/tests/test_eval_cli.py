@@ -29,8 +29,21 @@ from app.uploads.storage import StorageError
 
 pytestmark = pytest.mark.anyio
 
-# PRD 8장 표의 P0 시나리오 중 이번에 만든 것. S09·S10은 실제 파일이 있어야 해서 아직 없다
-EXPECTED_CODES = ("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S11", "S12", "S13")
+# PRD 8장 표의 P0 시나리오 중 이번에 만든 것. S09·S10은 실제 파일, S15–S18은 LMS 기능이 먼저다
+EXPECTED_CODES = (
+    "S01",
+    "S02",
+    "S03",
+    "S04",
+    "S05",
+    "S06",
+    "S07",
+    "S08",
+    "S11",
+    "S12",
+    "S13",
+    "S14",
+)
 
 
 def test_the_scenario_list_matches_the_prd_table() -> None:

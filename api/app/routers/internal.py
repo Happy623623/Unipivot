@@ -2,6 +2,8 @@
 
 - `GET /internal/metrics` 기간별 성공률·응답시간·호출비용 + 판정 혼동행렬 + 제품 지표 5개(PRD 8장)
 - `POST /internal/eval/run` 테스트 시나리오를 돌린다(CLI `python -m app.eval.cli`와 같은 함수)
+- `POST /internal/jobs/schedule-notifications` 공고 알림 예약(하루 한 번)
+- `POST /internal/jobs/send-notifications` 예약된 알림 발송(5분마다)
 
 키가 틀렸을 때와 서버에 키가 없을 때 모두 403이다. 부른 쪽에 서버 설정 상태를 알려 주지 않는다.
 키 값은 응답·로그에 남기지 않는다.
@@ -19,6 +21,7 @@ from app.config import Settings, get_settings
 from app.eligibility import KST
 from app.errors import ApiError
 from app.repositories.metrics import MetricsRepoDep
+from app.repositories.notifications import NotificationRepoDep
 from app.schemas.metrics import (
     EvalCheck,
     EvalRunRequest,
@@ -27,6 +30,7 @@ from app.schemas.metrics import (
     Latency,
     Metrics,
 )
+from app.schemas.notifications import ScheduleResult, SendResult
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/internal", tags=["내부"])
@@ -70,6 +74,30 @@ async def read_metrics(
     if end < start:
         raise _invalid({"to": "끝 날짜는 시작 날짜보다 뒤여야 해요."})
     return await repo.metrics((start, end))
+
+
+@router.post("/jobs/schedule-notifications", response_model=ScheduleResult)
+async def schedule_notifications(
+    repo: NotificationRepoDep, now: NowDep, _: InternalKeyDep
+) -> ScheduleResult:
+    """공고 알림(새 적격·마감 임박·정보 필요)을 예약한다. 하루 한 번 도는 작업이다.
+
+    같은 알림은 한 번만 만들고(사용자당 `dedupe_key` 1행), 마감이 바뀌면 아직 보내지 않은 행의
+    시각만 고친다. 보낼 이유가 없어진 행은 지운다(저장소 머리말).
+    """
+    return await repo.schedule(now=now)
+
+
+@router.post("/jobs/send-notifications", response_model=SendResult)
+async def send_notifications(
+    repo: NotificationRepoDep, now: NowDep, _: InternalKeyDep
+) -> SendResult:
+    """보낼 때가 된 알림을 보낸다. 5분마다 도는 작업이다.
+
+    숨긴 공고의 알림과 하루 한도를 넘는 알림은 보내지 않고 둔다. 푸시 구독이 없거나 푸시를 끈
+    사용자는 푸시만 건너뛰고 알림함에는 남는다. 실제 푸시 발송은 F-33이다.
+    """
+    return await repo.send(now=now)
 
 
 @router.post("/eval/run", response_model=EvalRunResult)
