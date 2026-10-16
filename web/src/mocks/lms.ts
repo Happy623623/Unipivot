@@ -14,7 +14,7 @@ export const lmsConnection: LmsConnection = {
 };
 
 export const courses: Course[] = [
-  { id: "linear-algebra", canvas_course_id: 2101, name: "선형대수", short_name: "선형대수", has_syllabus: true, portal_syllabus_url: "https://portal.example.edu/linear", open_assignments: 1, new_materials: 2, next_due: { kind: "syllabus", title: "Homework 4", due_at: "2026-10-13T23:59:00+09:00" } },
+  { id: "linear-algebra", canvas_course_id: 2101, name: "선형대수", short_name: "선형대수", has_syllabus: true, portal_syllabus_url: "https://portal.example.edu/linear", open_assignments: 1, new_materials: 2, next_due: { kind: "syllabus_item", title: "Homework 4", due_at: "2026-10-13T23:59:00+09:00" } },
   { id: "analysis", canvas_course_id: 2102, name: "해석학", short_name: "해석학", has_syllabus: true, portal_syllabus_url: "https://portal.example.edu/analysis", open_assignments: 2, new_materials: 2, next_due: { kind: "assignment", title: "Homework 4", due_at: "2026-10-07T23:59:00+09:00" } },
   { id: "capstone", canvas_course_id: 2103, name: "DS창업캡스톤디자인1", short_name: "DS창업캡스톤디자인1", has_syllabus: true, portal_syllabus_url: "https://portal.example.edu/capstone", open_assignments: 1, new_materials: 2, next_due: { kind: "assignment", title: "창업아이템 정의", due_at: "2026-10-06T23:59:00+09:00" } },
   { id: "database", canvas_course_id: 2104, name: "데이터베이스", short_name: "데이터베이스", has_syllabus: false, portal_syllabus_url: "https://portal.example.edu/database", open_assignments: 2, new_materials: 2, next_due: { kind: "assignment", title: "SQL 실습", due_at: "2026-10-08T23:59:00+09:00" } },

@@ -25,6 +25,8 @@
 > v0.9 보강(10/14, F-30·F-31): 준비한 공고 = 실행이 성공한 계획, opportunity_documents의 안내 칸은 준비하기가 채운다(스키마 변경 없음)
 >
 > v0.9 보강(10/14, F-30 후속): 다시 수집·추출해도 서류 행은 이름으로 맞춰 갱신한다(스키마 변경 없음)
+>
+> v0.9 보강(10/16): LMS 응답 규칙 확정(10/16 녹화), 허용 경로 여섯 개
 
 ---
 
@@ -660,6 +662,7 @@ erDiagram
 - **새 자료 감지**: 동기화 때 `canvas_item_id`가 처음 보이면 `lms_module_items`에 넣고, 그 과목 수강생에게 `new_material` 알림을 만든다. 같은 제목의 항목이 여러 개인 과목이 있어서(영상·슬라이드 추정) 비교 기준은 제목이 아니라 ID다
 - **제출 연동**: `submission_state`가 submitted·graded로 바뀌면 연결된 `planner_tasks.is_done = true`로 바꾸고, 아직 안 보낸 마감 임박 알림을 취소한다
 - **공지 → 공고**: 기회성 공지는 `opportunities`에 `source_type = 'lms_announcement'`, `visible_canvas_course_id = 과목 ID`로 넣는다. 이 공고는 해당 과목 수강생에게만 보이고, 배치 판정도 수강생에게만 돌린다
+- **LMS 응답 규칙(10/16 녹화)**: `lms_assignments.due_at`은 Canvas `due_at ?? lock_at`이다(녹화 17건 중 5건이 `due_at` null). `submission_state`는 Canvas `submission.workflow_state`를 그대로 쓰고(`unsubmitted`·`submitted`·`graded` 관측, `pending_review`는 아직 못 봄), 과목 전체 기준인 `has_submitted_submissions`는 쓰지 않는다. `lms_module_items.canvas_item_id`가 유일 키다 — 한 모듈에 제목이 같은 항목이 둘씩 있다(87건 중 15쌍). `item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`가 관측됐고 `File`은 0건이다. `module_name`은 `1주차`·`Week 3 : …` 꼴이 섞이고 Canvas `position`은 연속이 아니라 저장하지 않는다. `lms_courses.term`은 과목명에서 만든 `2026-2`이고, 과목명 꼴이 다르면 LearningX가 준 학기 이름(`2026년 2학기`)을 넣는다
 - **강의계획서**: LMS 계획서는 포털 iframe이고 포털은 robots.txt로 자동 접근을 막아서 서버가 수집하지 않는다. 과목명 `202620HY23525_선형대수`를 파싱해 `portal_year = 2026`, `portal_term = 20`, `portal_course_no = '23525'`를 저장하고, 이 값으로 사용자 브라우저에서 열 포털 계획서 링크를 만든다. 사용자가 PDF로 저장해 올리면 `syllabi.lms_course_id`로 과목에 연결한다 (과목당 1개)
 - **강의자료 저작권**: 공지 첨부를 자동 수집할 때도 사용자별로 `files`에 따로 저장한다(`origin = 'lms_attachment'`, `external_ref = Canvas 첨부 ID`). 같은 첨부를 두 번 받지 않도록 `(user_id, external_ref)` 유니크를 건다
 

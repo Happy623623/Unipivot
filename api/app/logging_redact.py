@@ -24,7 +24,8 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"), _REDACTED),
     (re.compile(r"ya29\.[A-Za-z0-9._-]+"), _REDACTED),
     (re.compile(r"1//[A-Za-z0-9._-]{10,}"), _REDACTED),
-    (re.compile(r"\b\d{2,6}~[A-Za-z0-9]{20,}"), _REDACTED),
+    # LearningX(Canvas) 개인 액세스 토큰: `18742~...`. 접두 자릿수와 뒤 길이·글자가 제각각이다
+    (re.compile(r"\b\d{1,8}~[A-Za-z0-9_~-]{8,}"), _REDACTED),
     (re.compile(r"gAAAAA[A-Za-z0-9_=-]{20,}"), _REDACTED),
     (re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}"), _REDACTED),
     (re.compile(r"AIza[0-9A-Za-z_-]{35}"), _REDACTED),
