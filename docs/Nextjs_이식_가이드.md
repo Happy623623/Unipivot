@@ -36,6 +36,7 @@ unipivot-web/
 | `{ name: "academics" }` | `/academics` | `(app)/academics/page.tsx` |
 | `{ name: "course", id, tab }` | `/academics/{id}?tab=materials` | `(app)/academics/[courseId]/page.tsx` |
 | `{ name: "upload" }` | `/upload` | `(app)/upload/page.tsx` |
+| `{ name: "notifications" }` | `/notifications` | `(app)/notifications/page.tsx` (이식 뒤 추가, F-35 알림함 전체 목록) |
 | `{ name: "settings" }` | `/settings` | `(app)/settings/page.tsx` |
 | `{ name: "onboarding" }` | `/onboarding` | `(auth)/onboarding/page.tsx` |
 | — | `/login`, `/auth/callback` | 온보딩_구현.md |
@@ -253,7 +254,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 
 ### 6. 라우트 변환과 AppFrame
 
-`AppFrame`은 Make `App.tsx`가 하던 일을 그대로 한다. 내 정보·알림을 불러오고, 동의 전이면 `/onboarding`으로 보내고, 상태 미리보기는 목 모드에서만 띄운다. 내 정보는 `useMe()`로 페이지에 나눠 준다.
+`AppFrame`은 Make `App.tsx`가 하던 일을 그대로 한다. 내 정보를 불러오고, 동의 전이면 `/onboarding`으로 보내고, 상태 미리보기는 목 모드에서만 띄운다. 알림 목록은 헤더 패널을 열 때 받고(`useNotifications`), `AppFrame`은 헤더 배지 숫자만 들고 있는다(알림함 응답이 오면 그 수로 맞춘다). 내 정보는 `useMe()`로 페이지에 나눠 준다.
 
 #### `src/lib/routes.ts`
 
@@ -309,21 +310,18 @@ export function useAppNavigate(): (route: Route) => void {
 ```tsx
 "use client";
 
-import { createContext, Fragment, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  getMe,
-  getNotifications,
-  markAllNotificationsRead,
-  markNotificationRead,
-} from "@/api/client";
+import { getMe, recordEvent } from "@/api/client";
 import AppShell from "@/components/AppShell";
 import StatusPreview from "@/dev/StatusPreview";
 import { pathnameToRoute, useAppNavigate } from "@/lib/routes";
 import useAsyncData from "@/lib/useAsyncData";
-import type { AppNotification, Me } from "@/types/api";
+import type { Me } from "@/types/api";
 
-// Make의 App.tsx가 하던 일: 내 정보·알림 불러오기, 동의 전이면 온보딩으로 보내기, 상태 미리보기
+// Make의 App.tsx가 하던 일: 내 정보 불러오기, 동의 전이면 온보딩으로 보내기, 상태 미리보기.
+// 동의를 마친 사용자가 앱을 열면 app_open을 한 번 기록한다(서버가 KST 하루 1건만 남긴다).
+// 알림 목록은 패널을 열 때 받고(useNotifications), 여기서는 배지 숫자만 들고 있는다
 const MeContext = createContext<Me | null>(null);
 export const useMe = () => useContext(MeContext);
 
@@ -334,35 +332,30 @@ export default function AppFrame({ children }: { children: ReactNode }) {
   const router = useRouter();
   const navigate = useAppNavigate();
   const [revision, setRevision] = useState(0);
-  const [notificationsOverride, setNotificationsOverride] = useState<AppNotification[] | null>(null);
-  const [unreadOverride, setUnreadOverride] = useState<number | null>(null);
+  const [unread, setUnread] = useState<number | null>(null);
   const meRequest = useAsyncData(getMe, [revision]);
-  const notificationsRequest = useAsyncData(getNotifications, [revision]);
+  const openRecorded = useRef(false);
 
   useEffect(() => {
-    setNotificationsOverride(null);
-    setUnreadOverride(null);
+    setUnread(null);
   }, [revision]);
 
   useEffect(() => {
     if (meRequest.data && !meRequest.data.consented) router.replace("/onboarding");
   }, [meRequest.data, router]);
 
+  useEffect(() => {
+    if (!meRequest.data?.consented || openRecorded.current) return;
+    openRecorded.current = true;
+    recordEvent("app_open");
+  }, [meRequest.data]);
+
   return (
     <MeContext.Provider value={meRequest.data}>
       <AppShell
         route={pathnameToRoute(pathname)}
-        notifications={notificationsOverride ?? notificationsRequest.data ?? []}
-        unreadNotifications={unreadOverride ?? meRequest.data?.unread_notifications ?? 0}
-        markNotificationRead={async (id) => {
-          const notifications = await markNotificationRead(id);
-          setNotificationsOverride(notifications);
-          setUnreadOverride(notifications.filter((item) => item.read_at === null).length);
-        }}
-        markAllNotificationsRead={async () => {
-          setNotificationsOverride(await markAllNotificationsRead());
-          setUnreadOverride(0);
-        }}
+        unreadNotifications={unread ?? meRequest.data?.unread_notifications ?? 0}
+        setUnreadNotifications={setUnread}
         navigate={navigate}
       >
         <Fragment key={revision}>{children}</Fragment>
@@ -553,7 +546,7 @@ npm run build      # 타입 검사 포함
 | `getCourses` · `getCourse` | `GET /lms/courses` · `GET /lms/courses/{id}` | |
 | `getLmsUpdates` | `GET /lms/updates` | |
 | `getMaterial` | `GET /materials/{file_id}` | 8장 필드 이름 대조 필요 |
-| `getNotifications` · 읽음 처리 | `GET /notifications` · `POST /notifications/read` | API 전까지 실제 모드는 빈 목록 |
+| `getNotifications` · `markNotificationRead` · `markAllNotificationsRead` | `GET /notifications` · `POST /notifications/read` | 실제 API 연결(10/16) · 목록은 `{items, unread_count, next_cursor}`이고 읽음 처리는 새 안 읽은 수를 돌려준다. 헤더 패널과 알림함 화면이 `useNotifications`로 받는다 |
 | `reconnectCalendar` | Google 화면으로 이동(증분 승인, `connectGoogleCalendar("/settings")`) → 콜백이 `POST /auth/google/tokens` | 돌아오면 `/settings?calendar=connected`·`error`. 실제 API 연결(10/11) |
 | `deleteAccount` | `DELETE /me` | API 전까지 실제 모드는 탈퇴 창에서 준비 중 안내 |
 | `updateIncomeConsent` | `PATCH /me/consents` | 실제 API 연결(10/11) |

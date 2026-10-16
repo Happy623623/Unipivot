@@ -8,7 +8,8 @@ Figma Make 시안을 옮긴 코드다. 아래 화면·데이터 규칙을 지키
 
 - `src/app/` 라우트. `(app)`은 사이드바가 있는 화면(`AppFrame`), `(auth)`는 로그인·온보딩, `auth/callback`은 로그인 콜백
 - `src/screens/` 화면, `src/components/` 공통 조각. 페이지 파일은 화면에 `navigate`와 주소에서 읽은 값만 넘긴다
-- `src/lib/routes.ts` Route ↔ URL 변환, `src/components/AppFrame.tsx` 내 정보·알림·동의 확인
+- `src/lib/routes.ts` Route ↔ URL 변환, `src/components/AppFrame.tsx` 내 정보·동의 확인과 헤더 배지 숫자
+- `src/lib/useNotifications.ts` 알림함 목록·읽음 처리. 헤더 패널(`NotificationPanel`)과 전체 목록(`screens/Notifications.tsx`)이 각각 하나씩 쓰고, 배지 숫자는 `AppShell`의 `setUnreadNotifications`로 올린다
 - `src/api/client.ts` 화면이 쓰는 데이터 함수. 계정 함수는 `accountClient.ts`, LMS 함수는 `lmsClient.ts`에 두고 client.ts가 다시 내보낸다
 - `src/api/http.ts` 실제 API 호출과 오류 도구(`apiFetch`, `errorMessage`, `fieldErrors`, `waitForRun`), `src/api/mockClient.ts` 목 모드 구현
 - `src/mocks/` 목데이터, `src/dev/` 상태 미리보기(목 모드에서만 보인다)

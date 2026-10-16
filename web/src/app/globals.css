@@ -99,6 +99,8 @@ button {
   *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
+    /* 시간차로 나타나는 목록(알림 줄)이 움직임을 줄인 화면에서 늦게 보이지 않게 지연도 지운다 */
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }

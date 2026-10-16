@@ -19,6 +19,8 @@ export function routeToHref(route: Route): string {
       return `/academics/${encodeURIComponent(route.id)}${route.tab ? `?tab=${route.tab}` : ""}`;
     case "upload":
       return "/upload";
+    case "notifications":
+      return "/notifications";
     case "settings":
       return "/settings";
     case "onboarding":
@@ -33,6 +35,7 @@ export function pathnameToRoute(pathname: string): Route {
   if (first === "academics") return { name: "academics" };
   if (first === "planner") return { name: "planner" };
   if (first === "upload") return { name: "upload" };
+  if (first === "notifications") return { name: "notifications" };
   if (first === "settings") return { name: "settings" };
   if (first === "onboarding") return { name: "onboarding" };
   return { name: "home" };

@@ -307,6 +307,12 @@ export interface PlannerMarker { kind: "deadline"; date: string; title: string; 
 export interface PlannerResponse { items: PlannerTask[]; markers: PlannerMarker[]; }
 
 // GET /notifications
+export interface NotificationLink {
+  type: "opportunity" | "planner_task" | "lms_assignment" | "lms_module_item" | "lms_announcement";
+  id: string;
+  course_id?: string | null;             // lms_* 링크의 과목 ID (API v0.3 보완)
+  focus?: "profile_input" | null;
+}
 export interface AppNotification {
   id: string;
   type: NotificationType;
@@ -314,10 +320,13 @@ export interface AppNotification {
   body: string | null;
   scheduled_at: string;
   read_at: string | null;
-  link: {
-    type: "opportunity" | "planner_task" | "lms_assignment" | "lms_module_item" | "lms_announcement";
-    id: string;
-    course_id?: string;                  // lms_* 링크의 과목 ID (API v0.3 보완)
-    focus?: "profile_input";
-  };
+  link: NotificationLink | null;         // 갈 곳이 없으면 null (눌러도 읽음 처리만 한다)
+}
+export interface NotificationList {
+  items: AppNotification[];
+  unread_count: number;                  // 필터와 상관없이 전체 기준
+  next_cursor: string | null;
+}
+export interface NotificationReadResult {
+  unread_count: number;
 }
