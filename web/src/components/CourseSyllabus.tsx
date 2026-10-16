@@ -78,14 +78,17 @@ export default function CourseSyllabus({ course }: CourseSyllabusProps) {
             포털에서 강의계획서 열기 후 PDF로 저장해 올려 주세요
           </p>
           <div className="mt-5 flex justify-center gap-2">
-            <a
-              href={course.course.portal_syllabus_url}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex h-[42px] items-center rounded-[10px] border border-[#e5e7eb] px-[18px] text-[14px] font-semibold"
-            >
-              포털에서 강의계획서 열기
-            </a>
+            {/* 과목명에서 과목 번호를 못 뽑으면 포털 링크가 없다(계절·비정규 과목) */}
+            {course.course.portal_syllabus_url && (
+              <a
+                href={course.course.portal_syllabus_url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-[42px] items-center rounded-[10px] border border-[#e5e7eb] px-[18px] text-[14px] font-semibold"
+              >
+                포털에서 강의계획서 열기
+              </a>
+            )}
             <label className="inline-flex h-[42px] cursor-pointer items-center rounded-[10px] bg-[#4f6ef7] px-[18px] text-[14px] font-semibold text-white">
               PDF 올리기
               <input

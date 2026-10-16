@@ -48,6 +48,8 @@
 >
 > v0.4 보강(10/15, 알림): 알림 예약 작업 `POST /internal/jobs/schedule-notifications` 추가, 공고 알림 세 종류의 예약 규칙과 시각(KST 09:00) 확정
 >
+> v0.4 보강(10/16, LMS): LMS 응답 규칙 확정(10/16 녹화), 허용 경로 여섯 개
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -886,7 +888,26 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 ### 클라이언트 규칙
 
 - 백엔드 LearningX 클라이언트는 GET 요청만 보낸다. 허용 경로 밖이면 요청을 보내기 전에 예외를 던진다
-- 허용 경로는 9/28 점검 스크립트에서 쓴 기능만이다: 사용자 확인, 수강 과목 목록, 과목별 과제(제출 상태 포함), 모듈과 항목, 과목 공지, 공지 첨부 다운로드(P1). 실제 경로 문자열은 점검 스크립트 기준으로 코드 상수에 둔다
+- **10/16 녹화로 확정한 필드 규칙**(6과목·과제 17건·주차 항목 87건):
+  - 과제 마감일은 `due_at ?? lock_at`이다. 녹화한 17건 중 5건은 `due_at`이 null이고 `lock_at`만 있었다
+  - 제출 여부는 `submission.workflow_state`가 `submitted`·`graded`인지로 본다. **`has_submitted_submissions`는 과목 전체 기준**이라 내가 안 낸 과제에도 true다(쓰지 않는다). 퀴즈는 자동 채점돼 바로 `graded`로 온다
+  - 주차 항목은 `canvas_item_id`로만 같은 항목인지 가린다. 제목이 같은 항목이 한 모듈에 둘씩 있다(녹화 87건 중 15쌍)
+  - 항목 `type`은 `ExternalTool`(LearningX 출석·영상 LTI)·`Page`·`Quiz`·`Assignment`였고 **`File`은 한 건도 없었다**. 자료 파일은 Canvas에 없고 LearningX 안에서만 열린다(PRD 5-6). 바로가기는 `html_url`을 쓴다
+  - `Assignment` 항목의 `content_id`는 과제 id, `Quiz` 항목의 `content_id`는 퀴즈 id(과제의 `quiz_id`)다 → 주차와 과제를 이어 "4주차 과제"로 보여줄 수 있다
+  - 모듈 `position`과 항목 `position`은 연속이 아니고 1부터 시작하지도 않는다(지운 항목·재배치). 정렬에만 쓰고 주차 번호는 모듈 이름에서 읽는다. 이름은 `1주차`·`5주차 (개천절 대체휴일)`·`Week 3 : …`가 섞인다
+  - 과제가 0건이고 모듈 항목이 모두 비어 있는 과목이 흔하다(녹화 6과목 중 2과목). 빈 과목은 오류가 아니다
+- 허용 경로는 10/16 녹화로 확정했다(코드 상수는 `api/app/lms/client.py`의 `ALLOWED_PATHS`). 이 여섯 개뿐이고, 쿼리는 아래 그대로 보낸다(`per_page=100`):
+
+  | 쓰임 | 경로 | 쿼리 |
+  | --- | --- | --- |
+  | 토큰 확인 | `GET /api/v1/users/self` | — |
+  | 수강 과목 | `GET /api/v1/courses` | `enrollment_state=active&include[]=term` |
+  | 과제·제출 | `GET /api/v1/courses/{id}/assignments` | `include[]=submission` |
+  | 주차 모듈·항목 | `GET /api/v1/courses/{id}/modules` | `include[]=items` |
+  | 모듈 항목(보충) | `GET /api/v1/courses/{id}/modules/{module_id}/items` | — |
+  | 과목 공지 | `GET /api/v1/courses/{id}/discussion_topics` | `only_announcements=true` |
+
+  쪽이 나뉘면 `Link: rel="next"`를 따라가되 **스킴·호스트가 우리 LearningX와 같고 허용 경로일 때만** 따라간다(`https`를 `http`로 바꿔 주면 토큰이 평문으로 나가고, 남의 주소를 주면 그곳으로 토큰을 보낸다). 리다이렉트는 따라가지 않고 3xx도 오류로 본다. 한 목록은 10쪽(1,000건)·60초까지만 받고, **끝까지 받지 못하면 부분 목록을 쓰지 않고 오류로 끝낸다**(부분 목록을 전체로 쓰면 수강 과목을 지운다). 공지 첨부 다운로드(P1)는 아직 허용 경로가 아니다
 - 테스트는 녹화한 응답(개인정보 제거)을 재생하는 가짜 클라이언트로 돌린다
 
 ### `POST /lms/connection`
@@ -903,8 +924,13 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 ```
 
 - 저장 전에 `GET /api/v1/users/self`로 검증한다. 실패하면 저장하지 않고 `422 LMS_TOKEN_INVALID`
-- 성공하면 바로 첫 동기화를 시작하고 `first_sync_run_id`를 돌려준다
-- 이미 연결돼 있으면 토큰을 교체한다
+- 성공하면 바로 첫 동기화를 시작하고 `first_sync_run_id`를 돌려준다. **F-50의 첫 동기화는 수강 과목 목록까지**이고(실행 하나 = `trigger_type` `lms_sync`), 과제·주차 항목·공지는 F-51·F-52가 채운다
+- `courses`는 저장한 과목 수다. **학생 등록(`enrollments[].type = student`)이 아닌 과목과 아직 열지 않은 과목(`workflow_state`가 `available`·`completed`가 아닌 것)은 세지 않는다**
+- 과목 목록을 읽지 못하면(끝까지 받지 못한 경우도) `502 LMS_API_ERROR`이고 토큰도 저장하지 않는다(과목을 못 읽으면 과제·자료도 못 읽어서 연결해 둘 뜻이 없다). 과목 목록에서 401이면 `422 LMS_TOKEN_INVALID`다
+- 이번 목록에 없던 과목은 `is_active`를 내려 목록에서 뺀다(기록은 남긴다). **목록이 비어 오면 내리지 않는다** — 학기 사이나 필터 때문에 비어 올 수 있고, 그때 전부 내리면 사용자가 토큰을 다시 붙여넣기 전까지 과목이 하나도 안 보인다
+- 토큰 확인과 과목 목록 호출은 같은 실행(`lms_sync`) 안의 도구 두 개(`check_lms_token`·`fetch_lms_courses`)로 기록한다. 실패한 토큰 확인도 실행으로 남는다
+- 이미 연결돼 있으면 토큰을 교체한다(오류 표시도 지운다)
+- 토큰은 앞뒤 공백을 떼고 받는다(복사할 때 자주 섞인다)
 
 ### `GET /lms/connection`
 
@@ -912,7 +938,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 { "status": "active", "token_last4": "a9f2", "last_synced_at": "2026-10-01T10:30:00+09:00", "last_error": null }
 ```
 
-`status = error`이면 `last_error`에 사용자용 메시지(예: "토큰이 만료되었거나 삭제되었어요"). 연결 안 됨은 `404 LMS_NOT_CONNECTED`.
+`status`는 DB에 있는 값을 그대로 준다(`active` · `error` · `disconnected`, `GET /me`의 `lms.status`와 같은 세 가지). `status = error`이면 `last_error`에 사용자용 메시지(예: "토큰이 만료되었거나 삭제되었어요"). 연결 안 됨은 `404 LMS_NOT_CONNECTED`.
 
 ### `DELETE /lms/connection`
 
@@ -949,7 +975,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   "items": [
     {
       "id": "uuid",
-      "canvas_course_id": 23525,
+      "canvas_course_id": 214023,
       "name": "202620HY23525_데이터베이스",
       "short_name": "데이터베이스",
       "has_syllabus": false,
@@ -962,6 +988,8 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 }
 ```
 
+- `canvas_course_id`는 Canvas 과목 id(예: 214023)이고, 과목명 안의 과목번호(23525)와 다르다. 포털 링크에 들어가는 번호는 과목명에서 뽑는다
+- `short_name`은 과목명 `_` 뒤다. 과목명이 그 꼴이 아니면 이름 전체가 `short_name`이고 `portal_syllabus_url`은 null이다
 - `portal_syllabus_url`은 사용자 브라우저에서 여는 링크다. **서버는 이 주소에 요청하지 않는다**(포털 robots.txt)
 - `new_materials`는 `last_viewed_at` 이후 생긴 주차 항목 수다. `next_due`는 미제출 과제와 확정된 강의계획서 일정 중 가장 가까운 것이고, 없으면 null이다
 

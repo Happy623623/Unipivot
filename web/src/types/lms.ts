@@ -4,7 +4,7 @@ import type { RunStatus } from "@/types/api";
 // GET /lms/connection
 export interface LmsConnection {
   status: "active" | "error" | "disconnected";
-  token_last4: string;
+  token_last4: string | null;
   last_synced_at: string | null;
   last_error: string | null;
 }
@@ -16,17 +16,17 @@ export interface Course {
   name: string;
   short_name: string;
   has_syllabus: boolean;
-  portal_syllabus_url: string;
+  portal_syllabus_url: string | null;  // 과목명 꼴이 달라 번호를 못 뽑으면 null
   open_assignments: number;
   new_materials: number;
-  next_due: { kind: "assignment" | "syllabus"; title: string; due_at: string } | null;
+  next_due: { kind: "assignment" | "syllabus_item"; title: string; due_at: string } | null;
 }
 
 // GET /lms/courses/{id}
 export type SubmissionState = "unsubmitted" | "submitted" | "graded" | "pending_review";
 export type AnnouncementCategory = "schedule_change" | "material" | "opportunity" | "general";
 export interface CourseDetail {
-  course: { id: string; short_name: string; html_url: string; has_syllabus: boolean; portal_syllabus_url: string }; // html_url: 과목 홈 (API v0.3 보완)
+  course: { id: string; short_name: string; html_url: string; has_syllabus: boolean; portal_syllabus_url: string | null }; // html_url: 과목 홈 (API v0.3 보완)
   assignments: { id: string; title: string; due_at: string | null; submission_state: SubmissionState; html_url: string }[];
   module_items: { id: string; module_name: string; title: string; html_url: string; is_new: boolean; uploaded_file_id: string | null }[];
   announcements: { id: string; title: string; summary: string | null; category: AnnouncementCategory | null; posted_at: string; opportunity_id: string | null }[];
