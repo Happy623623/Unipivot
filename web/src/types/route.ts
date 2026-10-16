@@ -9,6 +9,7 @@ export type Route =
       tab?: "assignments" | "materials" | "announcements" | "syllabus";
     }
   | { name: "upload" }
+  | { name: "notifications" }
   | { name: "settings" }
   | { name: "onboarding" };
 

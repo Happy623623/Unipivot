@@ -6,9 +6,9 @@ import { mockDepartments, mockNow } from "@/mocks/account";
 import { rejudgeStoredOpportunity } from "@/mocks/rejudge";
 import { setStoredMark } from "@/mocks/store";
 import {
-  getStoredNotifications,
+  listStoredNotifications,
   readAllStoredNotifications,
-  readStoredNotification,
+  readStoredNotifications,
 } from "@/mocks/notificationStore";
 import {
   connectStoredLms,
@@ -26,7 +26,6 @@ import {
   updateStoredSettings,
 } from "@/mocks/accountStore";
 import type {
-  AppNotification,
   Category,
   ConsentResult,
   Course,
@@ -38,6 +37,7 @@ import type {
   LmsUpdate,
   MaterialDetail,
   Me,
+  NotificationList,
   OpportunityDetail,
   OpportunityMark,
   Profile,
@@ -130,16 +130,14 @@ export function deleteAccount(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, WAIT_MS));
 }
 
-export function getNotifications(): Promise<AppNotification[]> {
-  return respond(getStoredNotifications());
+// 목 모드는 cursor·limit를 쓰지 않는다(여섯 건이라 한 쪽에 다 들어간다)
+export function getNotifications(unreadOnly: boolean): Promise<NotificationList> {
+  return respond(listStoredNotifications(unreadOnly));
 }
 
-export function markNotificationRead(id: string): Promise<AppNotification[]> {
-  return respond(readStoredNotification(id, mockNow));
-}
-
-export function markAllNotificationsRead(): Promise<AppNotification[]> {
-  return respond(readAllStoredNotifications(mockNow));
+export function markNotificationsRead(body: { ids: string[] } | { all: true }): Promise<number> {
+  if ("all" in body) return respond(readAllStoredNotifications(mockNow));
+  return respond(readStoredNotifications(body.ids, mockNow));
 }
 
 // 공고 피드·상세 (client.ts)

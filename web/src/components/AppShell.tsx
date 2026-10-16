@@ -1,13 +1,10 @@
 import { createContext, useContext, type ReactNode } from "react";
 import Sidebar from "@/components/Sidebar";
-import type { AppNotification } from "@/types/api";
 import type { Route } from "@/types/route";
 
 interface AppShellContextValue {
-  notifications: AppNotification[];
-  unreadNotifications: number;
-  markNotificationRead: (id: string) => Promise<void>;
-  markAllNotificationsRead: () => Promise<void>;
+  unreadNotifications: number; // 헤더 배지. 알림함 응답이 오면 그 수로 맞춘다
+  setUnreadNotifications: (count: number) => void;
   navigate: (route: Route) => void;
 }
 
@@ -28,22 +25,14 @@ export function useAppShell() {
 
 export default function AppShell({
   route,
-  notifications,
   unreadNotifications,
-  markNotificationRead,
-  markAllNotificationsRead,
+  setUnreadNotifications,
   navigate,
   children,
 }: AppShellProps) {
   return (
     <AppShellContext.Provider
-      value={{
-        notifications,
-        unreadNotifications,
-        markNotificationRead,
-        markAllNotificationsRead,
-        navigate,
-      }}
+      value={{ unreadNotifications, setUnreadNotifications, navigate }}
     >
       <div className="min-h-dvh bg-[#f7f8fa] text-[#181a20]">
         <Sidebar route={route} navigate={navigate} />
