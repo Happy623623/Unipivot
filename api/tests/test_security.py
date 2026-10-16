@@ -43,6 +43,10 @@ def test_redact_patterns() -> None:
     cleaned = redact(text)
     assert not [secret for secret in secrets if secret in cleaned]
     assert redact("input_tokens=1200, 장학금 3건") == "input_tokens=1200, 장학금 3건"
+    # LearningX 토큰은 접두 자릿수와 뒤 길이·글자가 제각각이다(명세 8장 예시는 짧다)
+    for token in ("18742~xxxxxxxx", "18742~abc_def-ghi0000", "1234567~" + "a" * 30):
+        assert token not in redact(f"lms={token}")
+    assert redact("12~short") == "12~short"  # 토큰 모양이 아닌 글자는 그대로 둔다
 
 
 def test_log_records_are_redacted(caplog: pytest.LogCaptureFixture) -> None:

@@ -251,3 +251,45 @@ class FakeMetricsRepository:
                 weekly_return=empty,
             ),
         )
+
+
+class FakeLogCursor:
+    """agent_log가 쓰는 커서 흉내. `returning id`면 행을 하나 준다."""
+
+    def __init__(self, row: dict[str, Any] | None) -> None:
+        self.row = row
+
+    async def fetchone(self) -> dict[str, Any] | None:
+        return self.row
+
+
+class FakeLogConnection:
+    """실행 로그용 autocommit 연결 흉내(DB 없이 agent_run을 돌린다).
+
+    쓴 문장을 statements에 모아 둬서, 테스트가 실행·도구 기록이 남았는지 본다.
+    """
+
+    autocommit = True
+
+    def __init__(self, run_id: str = "00000000-0000-4000-8000-0000000000a1") -> None:
+        self.run_id = run_id
+        self.statements: list[tuple[str, Any]] = []
+
+    async def execute(self, query: str, params: Any = None) -> FakeLogCursor:
+        self.statements.append((query, params))
+        if "returning id" not in query:
+            return FakeLogCursor(None)
+        if "agent_runs" in query:
+            return FakeLogCursor({"id": self.run_id})
+        return FakeLogCursor({"id": "00000000-0000-4000-8000-0000000000a2"})
+
+    def wrote(self, needle: str) -> bool:
+        return any(needle in query for query, _ in self.statements)
+
+    def tools(self) -> list[str]:
+        """기록된 도구 이름(tool_calls에 넣은 순서대로)."""
+        return [
+            params[2]
+            for query, params in self.statements
+            if "insert into tool_calls" in query and isinstance(params, tuple)
+        ]
