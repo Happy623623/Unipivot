@@ -22,7 +22,7 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -69,6 +69,17 @@ FEED_PAGES = 40  # 피드를 넘겨 볼 쪽 수 상한. 더 많으면 공고가 
 MANAGED_HOSTS = ("supabase.co", "supabase.com", "supabase.in")
 
 
+@dataclass
+class Clock:
+    """시나리오가 보는 현재 시각. 앱의 `current_time`이 이 값을 읽어서, 시나리오가 옮길 수 있다.
+
+    S14처럼 "예약한 뒤 그날이 되면 보낸다"를 보려면 한 시나리오 안에서 시각이 두 번 필요하다.
+    옮겨도 주입 시계라서 며칠 뒤에 다시 돌려도 같은 결과가 나온다.
+    """
+
+    now: datetime
+
+
 @dataclass(frozen=True)
 class Rule:
     """공고 요건 한 줄. 같은 clause_no끼리 "또는", 다른 번호끼리 "그리고"다(판정엔진_규칙 2장)."""
@@ -101,6 +112,7 @@ def eval_settings(database_url: str) -> Settings:
         supabase_url="",
         supabase_jwt_secret=secrets.token_urlsafe(32),
         token_encryption_key=Fernet.generate_key().decode(),
+        internal_api_key=secrets.token_urlsafe(32),
     )
 
 
@@ -120,7 +132,7 @@ class EvalWorld:
         conn: psycopg.AsyncConnection,
         app: FastAPI,
         settings: Settings,
-        now: datetime,
+        clock: Clock,
         run: AgentRun,
         scenario_code: str,
         llm: RecordedLlm,
@@ -130,8 +142,8 @@ class EvalWorld:
         self.conn = conn  # autocommit. 세계를 만들고 치운다
         self.app = app
         self.settings = settings
-        self.now = now
-        self.today = now.astimezone(KST).date()
+        self.clock = clock
+        self.started = clock.now  # 시나리오를 시작한 시각(옮겨도 그대로)
         self.run = run
         self.scenario_code = scenario_code
         self.llm, self.storage, self.calendar = llm, storage, calendar
@@ -143,6 +155,20 @@ class EvalWorld:
         self._departments: list[str] = []  # 이 시나리오가 새로 넣은 학과(치울 때 지운다)
         self.extra_runs: list[str] = []  # 세계를 만들며 생긴 실행(공고에 붙이는 수집 실행)
         self._extraction_run: str | None = None
+
+    @property
+    def now(self) -> datetime:
+        """시나리오가 보는 지금. travel로 옮긴 값이다."""
+        return self.clock.now
+
+    @property
+    def today(self) -> date:
+        return self.clock.now.astimezone(KST).date()
+
+    def travel(self, **ahead: float) -> datetime:
+        """시계를 앞으로 옮긴다(`world.travel(days=3)`). 앱도 옮긴 시각을 본다."""
+        self.clock.now += timedelta(**ahead)
+        return self.clock.now
 
     # ── 녹화 응답 ────────────────────────────────────────────────────────────
 
@@ -157,10 +183,17 @@ class EvalWorld:
 
     def client(self, user_id: str) -> httpx.AsyncClient:
         """그 사용자로 로그인한 클라이언트. 응답마다 걸린 시간을 더한다. 끝나면 함께 닫는다."""
+        return self._client({"Authorization": f"Bearer {self._token(user_id)}"})
+
+    def internal(self) -> httpx.AsyncClient:
+        """서비스 키를 붙인 클라이언트(`/internal/*`). 스케줄러가 부르는 작업을 시나리오가 부른다."""
+        return self._client({"X-Internal-Key": self.settings.internal_api_key})
+
+    def _client(self, headers: dict[str, str]) -> httpx.AsyncClient:
         http = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app),
             base_url="http://eval",
-            headers={"Authorization": f"Bearer {self._token(user_id)}"},
+            headers=headers,
             timeout=RUN_TIMEOUT_SECONDS,
             event_hooks={"response": [self._measure]},
         )
@@ -458,7 +491,7 @@ class Scenario:
 async def open_app(
     settings: Settings,
     *,
-    now: datetime,
+    clock: Clock,
     llm: RecordedLlm,
     storage: RecordedStorage,
     calendar: RecordedCalendar,
@@ -488,7 +521,7 @@ async def open_app(
     app.dependency_overrides.update(
         {
             get_settings: lambda: settings,
-            current_time: lambda: now,  # 주입 시계(PRD 8장)
+            current_time: lambda: clock.now,  # 주입 시계(PRD 8장). travel로 옮긴다
             get_llm: lambda: llm,
             get_storage: lambda: storage,
             get_calendar_service: recorded_calendar,
