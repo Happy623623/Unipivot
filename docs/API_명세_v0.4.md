@@ -46,6 +46,8 @@
 >
 > v0.4 보강(10/15, 지표 집계): `GET /internal/metrics` 응답 필드 확정(scenarios·eligibility·product), 에러 코드 `EVAL_NOT_ALLOWED` 추가
 >
+> v0.4 보강(10/15, 알림): 알림 예약 작업 `POST /internal/jobs/schedule-notifications` 추가, 공고 알림 세 종류의 예약 규칙과 시각(KST 09:00) 확정
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1047,7 +1049,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 
 ## 10. 알림
 
-- 알림 행은 `(user_id, dedupe_key)`로 upsert한다(키 형식은 ERD 5장). 같은 공고의 마감 임박 알림은 D-3과 D-1에 한 번씩이다
+- 알림 행은 `(user_id, dedupe_key)`로 upsert한다(키 형식은 ERD 5장). 같은 공고의 마감 임박 알림은 D-3과 D-1에 한 번씩이다. 알림 시각은 KST 09:00이고, 그 시점이 이미 지난 알림은 만들지 않는다(마감이 가까워 들어온 공고는 D-1만 받는다). 마감 임박은 적격이거나 준비한 공고에만 만든다
 - 공고 마감이 바뀌면 같은 키의 pending 알림에서 시각만 고친다. 과제를 제출했거나 준비를 취소하면 pending 알림을 지운다
 - 관심 없음(F-45)으로 표시한 공고는 공고 알림(new_eligible, 공고 deadline_soon, profile_needed)을 만들지 않고, 보내기 전에 다시 보고 표시가 있으면 건너뛴다(F-33 배치를 만들 때 적용)
 
@@ -1085,6 +1087,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - `scheduled_at`이 지난 알림만 최신순으로 내려준다
 - `link.type`은 `opportunity` \| `planner_task` \| `lms_assignment` \| `lms_module_item` \| `lms_announcement`이고, `focus: profile_input`이면 상세에서 정보 입력창을 바로 연다
 - `lms_*` 링크에는 `course_id`를 함께 내려준다. `link.id`는 과제·자료·공지 ID라서 그것만으로는 과목 탭으로 이동할 수 없다
+- `?unread_only=true`면 안 읽은 알림만 준다. `unread_count`는 필터와 상관없이 전체 기준이다. `cursor`는 `unread_only`가 같은 목록에서만 쓸 수 있고, 다르면 422 `VALIDATION_FAILED`(`details.fields.cursor`)다
 
 ### `POST /notifications/read`
 
@@ -1096,6 +1099,8 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 // Response 200
 { "unread_count": 0 }
 ```
+
+- `ids`와 `all` 중 하나만 보낸다. 둘 다 보내거나 둘 다 비우면 422다. 남의 알림과 아직 보낼 때가 안 된 알림은 바뀌지 않는다
 
 ### `POST /push/subscriptions`
 
@@ -1179,7 +1184,8 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `POST /internal/jobs/fetch-policies` | 스케줄러 | 온통청년 정책 수집 (담당 Dev 2). 지금은 사람이 `python -m app.youth.cli fetch`로 돌린다. 배포 때 같은 수집 함수(`app/youth/importer.collect`)를 부른다 |
 | `POST /internal/jobs/crawl-contests` | 스케줄러 | 공모전 수집 (P1) |
 | `POST /internal/jobs/lms-sync` | 스케줄러(30분) | LMS 연결된 전체 사용자 동기화 |
-| `POST /internal/jobs/send-notifications` | 스케줄러(5분) | 예약된 알림 발송 |
+| `POST /internal/jobs/schedule-notifications` | 스케줄러(매일) | 공고 알림 예약(새 적격·마감 임박 D-3·D-1·정보 필요). 사용자당 `dedupe_key` 1행으로 upsert하고, 마감이 바뀌면 아직 보내지 않은 행의 시각만 고치며, 보낼 이유가 없어진 pending 행은 지운다. 응답은 `{created, rescheduled, removed, by_type}` |
+| `POST /internal/jobs/send-notifications` | 스케줄러(5분) | 예약된 알림 발송. 보내기 전에 숨김을 다시 보고, `profile_needed`는 사용자당 KST 하루 1건까지만 보낸다. 푸시 구독이 없거나 푸시를 끈 사용자는 푸시만 건너뛰고 행은 알림함에 남는다. 응답은 `{due, sent, pushable, skipped}`이고 `pushable`은 푸시를 보낼 수 있었던 알림 수다 |
 | `POST /internal/jobs/expire-opportunities` | 스케줄러(매일) | 마감 지난 공고 `expired` 처리 |
 | `POST /internal/eval/run` | 개발자 | 요청 예: `{ "scenario_codes": ["S01", "S09"], "now": "2026-10-12T09:00:00+09:00", "fixtures": "recorded" }`. `now`로 시계를 고정하고, `fixtures: recorded`면 LMS·Google·온통청년 대신 녹화한 응답을 쓴다. 테스트용 Google 계정에 만든 이벤트는 끝나면 지운다. `agent_runs.scenario_code`로 기록. 지금은 사람이 `python -m app.eval.cli`로 돌린다(배포 때 같은 함수 `app/eval.run_scenarios`를 부른다). 시나리오 하나가 `agent_runs` 한 줄(trigger `eval`)이고, 확인한 것은 그 아래 `tool_calls`에 `check`로 남는다. 시나리오가 만든 실행(준비하기·포스터 추출)에도 같은 `scenario_code`를 붙이므로, 비용은 `agent_runs.cost_usd`가 아니라 `scenario_code`로 묶은 `llm_calls`를 더해서 센다. 응답은 `now`·`priced_on`·`scenarios`·`passed`·`success_rate`·`latency{p50_ms,p95_ms}`·`cost_usd`·`llm_calls`·`results[]`다. 시험용 DB가 아니면(Supabase 주소) 409 `EVAL_NOT_ALLOWED`로 거절한다 — 시나리오가 사용자·공고를 만들고 지우기 때문이다 |
 | `GET /internal/metrics` | 개발자 | 기간별 성공률·응답시간(p50·p95)·호출비용 집계에 두 가지를 더한다. 하나는 제품 지표 5개(판정 불가 비율과 원인 상위 3개, 즉석 입력 응답률, 준비하기 전환율, LMS 연결 완료율, 주간 재방문율)이고, 다른 하나는 최근 eval 실행 기준의 판정 혼동행렬이다. 비용은 모델 단가표(적용 날짜 포함)로 계산한다. 호출비용은 `scenario_code`로 묶은 `llm_calls`를 더한다(시나리오 실행 행의 `cost_usd`는 0이다). 기간은 `?from=&to=`(KST 날짜, 양 끝 포함)이고 주지 않으면 오늘까지 30일이다. 응답은 `from`·`to`와 세 묶음이다 — `scenarios`(`runs`·`passed`·`success_rate`·`latency{p50_ms,p95_ms}`·`cost_usd`·`llm_calls`·`by_scenario[]`), `eligibility`(`run_started_at`·`checks`·`correct`·`accuracy`·`rows[]{expected,counts,total}`·`eligible_to_ineligible`·`ineligible_to_eligible`), `product`(`undetermined`·`profile_prompt`·`prepare_conversion`·`lms_connect`·`weekly_return`, 각각 `{numerator,denominator,rate}`이고 `undetermined`에는 `top_missing_fields[]`가 더 있다). 비율은 분모가 0이면 `rate`가 `null`이다. 혼동행렬은 시나리오 번호마다 가장 최근 실행만 센다. 판정 불가 비율만 기간이 아니라 지금 저장된 판정(활성 공고) 기준이다 |
@@ -1268,3 +1274,5 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 > 10/15 반영: 시나리오 실행을 CLI로 돌린다(`python -m app.eval.cli`). 시나리오 하나 = `agent_runs` 한 줄(trigger `eval`, `scenario_code`), 확인 하나 = `tool_calls` 한 줄(`check`). 비용은 `scenario_code`로 묶은 `llm_calls` 합이다.
 
 > 10/15 반영: `GET /internal/metrics` 응답 필드, `POST /internal/eval/run` 응답과 409 `EVAL_NOT_ALLOWED`, 서비스 키 검증 규칙.
+
+> 10/15 반영: 알림 예약 작업 추가, 공고 알림 세 종류의 예약·발송 규칙, 알림함 조회·읽음 규칙.

@@ -3,12 +3,12 @@
 시나리오는 세계를 만들고(사용자·공고) 실제 엔드포인트를 부르며, `world.check`로 기대 결과에 닿았는지
 본다. 다르면 그 자리에서 멈추고 실패로 남는다 — 뒤 단계가 앞 단계의 결과를 쓰기 때문이다.
 
-판정·요건이 S01–S08, 포스터·준비하기·캘린더가 S11–S13이다. PRD 8장의 P0는 S01–S18 열여덟 개이고,
+판정·요건이 S01–S08, 포스터·준비하기·캘린더·알림이 S11–S14다. PRD 8장의 P0는 S01–S18 열여덟 개이고,
 여기 있는 것은 그중 열한 개다. 없는 것과 이유:
 
 - S09(요건이 첨부에만 있는 공고)·S10(공지 수정 재수집): 입력이 실제 HWP·PDF 파일과 저장한 공지
   폴더다. 그 파일을 레포에 둔 뒤에 붙인다
-- S14(마감 D-3·D-1 알림)·S15–S18(LMS 과제·자료): 그 기능(F-14·F-50대)을 아직 만들지 않았다
+- S15–S18(LMS 과제·자료): 그 기능(F-14·F-50대)을 아직 만들지 않았다
 """
 
 from __future__ import annotations
@@ -513,6 +513,80 @@ async def s13(world: EvalWorld) -> None:
     await world.check("상세에 1건", expected=1, actual=len(detail["prep"]["calendar_events"]))
 
 
+# ── S14: 마감 임박 알림 ────────────────────────────────────────────────────
+
+
+async def s14(world: EvalWorld) -> None:
+    """마감 D-3·D-1 공고 → 웹 푸시와 알림함에 한 번씩, 같은 알림 중복 없음.
+
+    예약(하루 한 번)과 발송(5분마다)은 스케줄러가 부르는 작업이라 시나리오가 서비스 키로 직접 부른다.
+    예약한 뒤 그날이 되어야 보내지므로 중간에 시계를 옮긴다(`world.travel`).
+
+    실제 푸시 발송은 F-33이다. 여기서는 "푸시를 보낼 수 있는 알림"으로 세고, 알림함을 눈으로 본다.
+    """
+    student = await world.user(grade=3, gpa_last_semester=3.5)
+    opportunity = await world.add("마감 임박 교내 장학", days=4.5, requirements=(GRADE_RULE,))
+    client, jobs = world.client(student), world.internal()
+
+    # 판정이 저장되어야 알림을 예약한다(적격이거나 준비한 공고만)
+    detail = await _detail(world, client, opportunity)
+    await world.judged("판정", expected="eligible", actual=detail["eligibility"]["status"])
+
+    first = await jobs.post(world.path("/internal/jobs/schedule-notifications"))
+    await world.check("예약", expected=200, actual=first.status_code)
+    await world.check("D-3·D-1 두 건", expected=2, actual=first.json()["by_type"]["deadline_soon"])
+    await world.check("새로 만든 알림", expected=2, actual=first.json()["created"])
+    # 상세를 열어 본 공고는 "새 공고" 알림을 만들지 않는다(ERD: opportunity_views에 행이 없는 공고)
+    await world.check(
+        "새 공고 알림 없음", expected=0, actual=first.json()["by_type"]["new_eligible"]
+    )
+
+    again = (await jobs.post(world.path("/internal/jobs/schedule-notifications"))).json()
+    await world.check("다시 예약해도 안 늘어남", expected=0, actual=again["created"])
+    await world.check("지운 것 없음", expected=0, actual=again["removed"])
+
+    # 아직 보낼 때가 아니다(마감 임박은 D-3 아침에 보낸다)
+    early = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
+    await world.check("D-3 전에는 보낼 것이 없음", expected=0, actual=early["due"])
+    await world.check(
+        "알림함에 마감 알림 없음", expected=[], actual=await _deadlines(world, client)
+    )
+
+    world.travel(days=2)  # D-3 아침이 지났다
+    sent = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
+    await world.check("D-3 발송", expected=1, actual=sent["sent"])
+    await world.check("푸시 구독 없음", expected=0, actual=sent["pushable"])
+    await world.check("알림함에 D-3 하나", expected=["D-3"], actual=await _deadlines(world, client))
+
+    world.travel(days=2)  # D-1 아침이 지났다
+    await jobs.post(world.path("/internal/jobs/send-notifications"))
+    await world.check(
+        "D-3·D-1 한 번씩", expected=["D-1", "D-3"], actual=sorted(await _deadlines(world, client))
+    )
+
+    # 보낸 알림을 또 보내지 않는다
+    nothing = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
+    await world.check("보낼 것 없음", expected=0, actual=nothing["due"])
+    rows = await world.rows(
+        "select count(*) as count from notifications where user_id = %s and type = 'deadline_soon'",
+        student,
+    )
+    await world.check("알림 행도 두 개뿐", expected=2, actual=rows[0]["count"])
+
+    box = (await client.get(world.path("/notifications"))).json()
+    await world.check("안 읽은 수", expected=2, actual=box["unread_count"])
+    read = await client.post(world.path("/notifications/read"), json={"all": True})
+    await world.check("읽음 처리", expected=0, actual=read.json()["unread_count"])
+
+
+async def _deadlines(world: EvalWorld, client: httpx.AsyncClient) -> list[str]:
+    """알림함에 보이는 마감 임박 알림의 D-day."""
+    box = (await client.get(world.path("/notifications"))).json()
+    return [
+        item["body"].rsplit("· ", 1)[-1] for item in box["items"] if item["type"] == "deadline_soon"
+    ]
+
+
 # ── 공통 ───────────────────────────────────────────────────────────────────
 
 
@@ -549,6 +623,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("S11", "공모전 포스터 업로드 → 추출·확인 → 본인 피드에만", "P0", s11),
     Scenario("S12", "흐릿한 포스터 → 저신뢰도 배지, 수정 가능", "P0", s12),
     Scenario("S13", "준비하기 → 캘린더 연결 → 등록 → 다시 눌러도 하나", "P0", s13),
+    Scenario("S14", "마감 D-3·D-1 → 알림함에 한 번씩, 중복 없음", "P0", s14),
 )
 
 BY_CODE = {scenario.code: scenario for scenario in SCENARIOS}

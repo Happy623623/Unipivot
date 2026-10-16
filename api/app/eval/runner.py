@@ -29,6 +29,7 @@ from app.eval.fakes import RecordedCalendar, RecordedLlm, RecordedStorage
 from app.eval.models import CheckFailed, Report, ScenarioResult
 from app.eval.world import (
     DEFAULT_NOW,
+    Clock,
     EvalWorld,
     Scenario,
     connect,
@@ -78,6 +79,7 @@ async def _one(
     now: datetime,
 ) -> ScenarioResult:
     llm, storage, calendar = RecordedLlm(), RecordedStorage(), RecordedCalendar()
+    clock = Clock(now)  # 시나리오가 옮길 수 있다(world.travel)
     world: EvalWorld | None = None
     run_id: str | None = None
     children: list[str] = []
@@ -85,7 +87,7 @@ async def _one(
     ok, error = True, None
     try:
         app, pool, log_pool = await open_app(
-            settings, now=now, llm=llm, storage=storage, calendar=calendar
+            settings, clock=clock, llm=llm, storage=storage, calendar=calendar
         )
         try:
             async with agent_run(using(log), trigger=TRIGGER, scenario_code=scenario.code) as run:
@@ -94,7 +96,7 @@ async def _one(
                     conn=setup,
                     app=app,
                     settings=settings,
-                    now=now,
+                    clock=clock,
                     run=run,
                     scenario_code=scenario.code,
                     llm=llm,
