@@ -2,12 +2,13 @@ import { ApiError, apiFetch, notReady, USE_MOCKS } from "@/api/http";
 import * as mock from "@/api/mockClient";
 import { connectGoogleCalendar } from "@/lib/googleCalendar";
 import type {
-  AppNotification,
   ClientEvent,
   ConsentResult,
   Department,
   IncomeConsentResult,
   Me,
+  NotificationList,
+  NotificationReadResult,
   Profile,
   ProfileUpdateResponse,
   Settings,
@@ -108,17 +109,41 @@ export function saveSettings(settings: Settings): Promise<Settings> {
   return mock.saveSettings(settings);
 }
 
-// TODO(api): GET /notifications · POST /notifications/read(10장). 그 전까지 실제 모드는 알림이 없다
-export function getNotifications(): Promise<AppNotification[]> {
-  return USE_MOCKS ? mock.getNotifications() : Promise.resolve([]);
+// 알림함 한 쪽에 담는 알림 수. 서버 최대값은 50이다(API 명세 10장)
+export const NOTIFICATION_PAGE_SIZE = 20;
+
+export interface NotificationParams {
+  unreadOnly?: boolean;
+  limit?: number;
+  cursor?: string | null;
 }
 
-export function markNotificationRead(id: string): Promise<AppNotification[]> {
-  return USE_MOCKS ? mock.markNotificationRead(id) : Promise.resolve([]);
+// GET /notifications (10장). 보낼 때가 지난 알림만 최신순으로 오고, unread_count는 필터와 상관없이 전체 기준이다.
+// cursor는 unread_only가 같은 목록에서만 쓸 수 있어 다르면 422다(부르는 쪽이 처음부터 다시 받는다)
+export function getNotifications(params: NotificationParams = {}): Promise<NotificationList> {
+  if (USE_MOCKS) return mock.getNotifications(Boolean(params.unreadOnly));
+  const query = new URLSearchParams({ limit: String(params.limit ?? NOTIFICATION_PAGE_SIZE) });
+  if (params.unreadOnly) query.set("unread_only", "true");
+  if (params.cursor) query.set("cursor", params.cursor);
+  return apiFetch<NotificationList>(`/notifications?${query}`);
 }
 
-export function markAllNotificationsRead(): Promise<AppNotification[]> {
-  return USE_MOCKS ? mock.markAllNotificationsRead() : Promise.resolve([]);
+// POST /notifications/read. 새 안 읽은 수를 돌려준다(헤더 배지에 쓴다)
+export function markNotificationRead(id: string): Promise<number> {
+  return readNotifications({ ids: [id] });
+}
+
+export function markAllNotificationsRead(): Promise<number> {
+  return readNotifications({ all: true });
+}
+
+async function readNotifications(body: { ids: string[] } | { all: true }): Promise<number> {
+  if (USE_MOCKS) return mock.markNotificationsRead(body);
+  const result = await apiFetch<NotificationReadResult>("/notifications/read", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return result.unread_count;
 }
 
 // 탈퇴를 받을지. TODO(api): DELETE /me(4장)가 생기면 deleteAccount를 바꾸고 지운다.

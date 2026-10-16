@@ -2,21 +2,16 @@
 
 import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  getMe,
-  getNotifications,
-  markAllNotificationsRead,
-  markNotificationRead,
-  recordEvent,
-} from "@/api/client";
+import { getMe, recordEvent } from "@/api/client";
 import AppShell from "@/components/AppShell";
 import StatusPreview from "@/dev/StatusPreview";
 import { pathnameToRoute, useAppNavigate } from "@/lib/routes";
 import useAsyncData from "@/lib/useAsyncData";
-import type { AppNotification, Me } from "@/types/api";
+import type { Me } from "@/types/api";
 
-// Make의 App.tsx가 하던 일: 내 정보·알림 불러오기, 동의 전이면 온보딩으로 보내기, 상태 미리보기.
-// 동의를 마친 사용자가 앱을 열면 app_open을 한 번 기록한다(서버가 KST 하루 1건만 남긴다)
+// Make의 App.tsx가 하던 일: 내 정보 불러오기, 동의 전이면 온보딩으로 보내기, 상태 미리보기.
+// 동의를 마친 사용자가 앱을 열면 app_open을 한 번 기록한다(서버가 KST 하루 1건만 남긴다).
+// 알림 목록은 패널을 열 때 받고(useNotifications), 여기서는 배지 숫자만 들고 있는다
 const MeContext = createContext<Me | null>(null);
 export const useMe = () => useContext(MeContext);
 
@@ -27,15 +22,12 @@ export default function AppFrame({ children }: { children: ReactNode }) {
   const router = useRouter();
   const navigate = useAppNavigate();
   const [revision, setRevision] = useState(0);
-  const [notificationsOverride, setNotificationsOverride] = useState<AppNotification[] | null>(null);
-  const [unreadOverride, setUnreadOverride] = useState<number | null>(null);
+  const [unread, setUnread] = useState<number | null>(null);
   const meRequest = useAsyncData(getMe, [revision]);
   const openRecorded = useRef(false);
-  const notificationsRequest = useAsyncData(getNotifications, [revision]);
 
   useEffect(() => {
-    setNotificationsOverride(null);
-    setUnreadOverride(null);
+    setUnread(null);
   }, [revision]);
 
   useEffect(() => {
@@ -52,17 +44,8 @@ export default function AppFrame({ children }: { children: ReactNode }) {
     <MeContext.Provider value={meRequest.data}>
       <AppShell
         route={pathnameToRoute(pathname)}
-        notifications={notificationsOverride ?? notificationsRequest.data ?? []}
-        unreadNotifications={unreadOverride ?? meRequest.data?.unread_notifications ?? 0}
-        markNotificationRead={async (id) => {
-          const notifications = await markNotificationRead(id);
-          setNotificationsOverride(notifications);
-          setUnreadOverride(notifications.filter((item) => item.read_at === null).length);
-        }}
-        markAllNotificationsRead={async () => {
-          setNotificationsOverride(await markAllNotificationsRead());
-          setUnreadOverride(0);
-        }}
+        unreadNotifications={unread ?? meRequest.data?.unread_notifications ?? 0}
+        setUnreadNotifications={setUnread}
         navigate={navigate}
       >
         <Fragment key={revision}>{children}</Fragment>
