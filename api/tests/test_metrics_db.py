@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+from app.clock import current_time
+from app.eligibility import to_kst_date
 from app.eval.models import percentile
 from app.eval.runner import run_scenarios
 from app.eval.scenarios import SCENARIOS, pick
@@ -263,7 +265,8 @@ async def test_the_product_metrics_count_what_the_prd_asks_for() -> None:
             (fresh,),
         )
 
-        today = date.today()
+        # KST 날짜다. date.today()는 러너의 시간대를 따라서 UTC 러너의 00:00~09:00 KST에 하루 어긋난다
+        today = to_kst_date(current_time())
         product = (await aggregate((today - timedelta(days=RETURN_DAYS * 2), today))).product
         assert product.profile_prompt.numerator == 2
         assert product.profile_prompt.denominator == 3
