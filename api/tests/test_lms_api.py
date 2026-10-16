@@ -17,7 +17,7 @@ from app.crypto import decrypt
 from app.db import get_log_connect
 from app.lms.parse import course_name
 from app.main import create_app
-from app.repositories.lms import Connection, get_lms_repo
+from app.repositories.lms import Connection, get_lms_repo, ordered
 from app.schemas.lms import CourseItem
 from tests.conftest import USER_ID, make_token
 from tests.fakes import FakeLogConnection
@@ -277,6 +277,43 @@ def test_courses_i_only_assist_or_that_are_not_open_yet_are_left_out(
     response = client.post(CONNECTION, json={"access_token": TOKEN}, headers=headers())
     assert response.json()["courses"] == len(MINE)
     assert [one["id"] for one in repo.saved_courses] == [one["id"] for one in MINE]
+
+
+def test_the_course_list_order_does_not_depend_on_the_database() -> None:
+    """정렬은 ordered()가 한다. DB의 정렬 규칙(collation)은 환경마다 한글·숫자 앞뒤가 바뀐다.
+
+    DB 없이 도는 테스트라 CI에서만 걸리는 일이 없다(2026-10-16에 그렇게 한 번 걸렸다).
+    """
+    names = [
+        "202620HY23534_기계학습",
+        "대학원 세미나(비정규)",
+        "2026 겨울 특강",
+        "202620HY25123_AI+X공학융합프로젝트",
+        "202620HY23525_데이터베이스",
+    ]
+    items = [
+        CourseItem(
+            id=f"course-{index}",
+            canvas_course_id=index,
+            name=name,
+            short_name=course_name(name).short_name,
+            has_syllabus=False,
+            portal_syllabus_url=None,
+            open_assignments=0,
+            new_materials=0,
+            next_due=None,
+        )
+        for index, name in enumerate(names, start=1)
+    ]
+    assert [one.short_name for one in ordered(items)] == [
+        "2026 겨울 특강",  # 과목명 꼴이 아니라 이름 전체가 화면 이름이다
+        "AI+X공학융합프로젝트",
+        "기계학습",
+        "대학원 세미나(비정규)",
+        "데이터베이스",
+    ]
+    # 어느 순서로 들어와도 결과가 같다
+    assert [one.name for one in ordered(items[::-1])] == [one.name for one in ordered(items)]
 
 
 def test_it_refuses_a_body_with_another_field(client: TestClient) -> None:

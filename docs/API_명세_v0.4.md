@@ -992,6 +992,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - `short_name`은 과목명 `_` 뒤다. 과목명이 그 꼴이 아니면 이름 전체가 `short_name`이고 `portal_syllabus_url`은 null이다
 - `portal_syllabus_url`은 사용자 브라우저에서 여는 링크다. **서버는 이 주소에 요청하지 않는다**(포털 robots.txt)
 - `new_materials`는 `last_viewed_at` 이후 생긴 주차 항목 수다. `next_due`는 미제출 과제와 확정된 강의계획서 일정 중 가장 가까운 것이고, 없으면 null이다
+- 항목은 `short_name` 순(글자 코드 순)으로 내려준다. 순서는 서버가 정하고 DB의 정렬 규칙(collation)에 맡기지 않는다 — 환경마다 한글과 숫자의 앞뒤가 달라진다
 
 ### `GET /lms/courses/{id}`
 

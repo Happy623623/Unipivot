@@ -120,11 +120,11 @@ POST /lms/connection
 
 | 확인 | 결과 |
 | --- | --- |
-| api 테스트 | DB 없이 `764 passed, 170 skipped`, DB를 붙이면 `934 passed`. 새 테스트 51개(파싱 8 · 클라이언트 15 · API 14 · DB 14) |
+| api 테스트 | DB 없이 `765 passed, 170 skipped`, DB를 붙이면 `935 passed`. 새 테스트 52개(파싱 8 · 클라이언트 15 · API 15 · DB 14) |
 | 클라이언트(respx로 가로채기) | 허용 경로 6개만 통과하고 7가지 경로는 막힘(로그인 정보·과목 상세·같이 듣는 학생·남의 제출·계정·OAuth·숫자 아닌 과목) · 토큰은 헤더로만 · `per_page=100`·`include[]` 확인 · 쪽 이어 받기 · **남의 호스트·허용 외 경로·평문 http·`javascript:` 다음 쪽은 따라가지 않음** · 리다이렉트(302) 거부 · 쪽 상한에 걸리면 부분 목록을 주지 않고 예외 · 401/403/429 구분 · 연결 실패 문구와 로그에 토큰 없음 · `rel="next"`가 두 번째 조각이 아니어도 읽음 |
 | API | 연결 성공(끝 4자리·과목 수·실행 id, 토큰은 암호문으로만 저장) · 조교·미개설·열린지 모를 과목·bigint 넘는 번호 제외 · 틀린 토큰 422에 아무것도 저장 안 함(실행은 `check_lms_token`까지만 남음) · 과목 목록 500 → 502, 401 → 422 · 다시 연결하면 토큰 교체(공백 제거) · **빈 목록이 와도 앞서 받은 과목이 남음** · 상태 조회·해제·해제 뒤 404 · 과목 목록의 `short_name`·포털 링크(꼴이 다른 과목은 null) · 다른 칸이 섞인 요청 422 · 네 경로 모두 로그인 필요 |
-| DB(실제 스키마) | 토큰 저장·교체(한 사용자 한 줄) · 오류 표시가 재연결로 지워짐 · 상태 세 값이 그대로 나감 · 암호문이 `repr`에 안 찍힘 · 해제하면 토큰만 지워지고 과목은 남음 · 과목명 → 포털 칸 파싱(꼴이 다르면 LearningX 학기 이름) · 수강 뺀 과목 내리기와 되살리기 · **빈 목록으로는 안 내림** · 미제출 수(마감 지난 것도 셈)·가장 가까운 할 일(과제 vs 확정된 계획서 일정) · 새 자료는 마지막으로 과목을 본 뒤 생긴 것만 · 주차 항목은 같은 과목을 듣는 사람 모두에게 셈 · 이름순 정렬 · 남의 연결·과목과 섞이지 않음 |
-| 되돌림 시험 35가지 | 허용 경로 검사 · 다음 쪽의 호스트·경로·**스킴(평문 http)** · 첫 쪽만 받기 · 쪽 상한 · 못 받은 목록을 그대로 주기 · `rel=next` 조각 · 리다이렉트 따라가기 · 3xx를 성공으로 보기 · 오류 문구에 토큰 넣기 · 학생 과목 필터 · 열린지 모를 과목 세기 · bigint 넘는 번호 저장 · 토큰 확인을 실행 밖에서 하기 · 422/502 가르기 둘 · 저장 순서 · 암호화 · 끝 4자리 · 과목명 파싱 · 계획서 링크 가드 · 과목 내리기 · 빈 목록으로 내리기 · `is_active` 필터 · `user_id` 조건 · 새 자료 기준 시각 · 지난 과제 넣기 · 제출 상태 필터 · 오류 표시 지우기 · 상태 뭉개기 · 암호문 `repr` · 요청 추가 칸 · **LearningX 토큰 모양을 로그 가림에서 빼기** → **모두 잡혔다** |
+| DB(실제 스키마) | 토큰 저장·교체(한 사용자 한 줄) · 오류 표시가 재연결로 지워짐 · 상태 세 값이 그대로 나감 · 암호문이 `repr`에 안 찍힘 · 해제하면 토큰만 지워지고 과목은 남음 · 과목명 → 포털 칸 파싱(꼴이 다르면 LearningX 학기 이름) · 수강 뺀 과목 내리기와 되살리기 · **빈 목록으로는 안 내림** · 미제출 수(마감 지난 것도 셈)·가장 가까운 할 일(과제 vs 확정된 계획서 일정) · 새 자료는 마지막으로 과목을 본 뒤 생긴 것만 · 주차 항목은 같은 과목을 듣는 사람 모두에게 셈 · **화면 이름순 정렬(DB가 어떤 순서로 주든)** · 남의 연결·과목과 섞이지 않음 |
+| 되돌림 시험 38가지 | 허용 경로 검사 · 다음 쪽의 호스트·경로·**스킴(평문 http)** · 첫 쪽만 받기 · 쪽 상한 · 못 받은 목록을 그대로 주기 · `rel=next` 조각 · 리다이렉트 따라가기 · 3xx를 성공으로 보기 · 오류 문구에 토큰 넣기 · 학생 과목 필터 · 열린지 모를 과목 세기 · bigint 넘는 번호 저장 · 토큰 확인을 실행 밖에서 하기 · 422/502 가르기 둘 · 저장 순서 · 암호화 · 끝 4자리 · 과목명 파싱 · 계획서 링크 가드 · 과목 내리기 · 빈 목록으로 내리기 · `is_active` 필터 · `user_id` 조건 · **정렬을 빼기 · 화면 이름 대신 과목명으로 정렬 · 정렬을 DB에 맡기기** · 새 자료 기준 시각 · 지난 과제 넣기 · 제출 상태 필터 · 오류 표시 지우기 · 상태 뭉개기 · 암호문 `repr` · 요청 추가 칸 · **LearningX 토큰 모양을 로그 가림에서 빼기** → **모두 잡혔다** |
 | 빌드·검사 | api `ruff check`·`ruff format --check` 통과(191 파일). web `npm run typecheck`·`npm run build` 통과. 실제 LearningX에는 접속하지 않았다(모든 테스트는 respx로 가로챈 가짜 응답이다) |
 
 ### 검토에서 고친 것
@@ -146,6 +146,12 @@ POST /lms/connection
 | 포털 링크 테스트가 코드와 같은 서식을 써서 항상 통과한다 | 전체 주소를 리터럴로 고정했다 |
 | 가짜 저장소에 `user_id` 단정이 빠진 메서드가 둘 | 넣었다 |
 | 주석의 녹화 숫자가 문서와 어긋난다(8과목 vs 6과목) | 과목 목록은 8과목, 과제·모듈·공지는 6과목이라고 적었다 |
+
+### CI에서 고친 것
+
+| 걸린 것 | 고친 것 |
+| --- | --- |
+| **과목 목록을 `order by c.name`으로 DB에 맡겨서 CI에서만 순서가 달랐다**(DB의 정렬 규칙은 환경마다 한글과 숫자의 앞뒤가 다르다. 샌드박스에는 `C` 로케일밖에 없어 미리 못 잡았다) | SQL의 `order by`를 빼고 `ordered()`가 **화면 이름(`short_name`) 순**으로 정렬한다. 학생이 보는 이름 순이라 목록 순서도 자연스러워진다. DB 없이 도는 테스트를 더해서 이제 로컬에서도 잡힌다(명세 8장에 순서 규칙을 적었다) |
 
 고치지 않은 지적은 "남은 것"에 적었다(재시도·호출 제한·`mark_error`가 아직 안 불리는 것).
 
@@ -257,12 +263,19 @@ POST /lms/connection
 | check_lms_token | **외부 API** · LearningX(Canvas) | 토큰 확인(`GET /api/v1/users/self`). 연결(F-50) 때 저장 전에 부른다 |
 | fetch_lms_courses | **외부 API** · LearningX(Canvas) | 수강 과목 목록과 학기. 토큰 연결(F-50)의 첫 동기화에서 부른다 |
 
+[10] docs/API_명세_v0.4.md — `GET /lms/courses` 목록 순서
+찾을 줄:
+- `new_materials`는 `last_viewed_at` 이후 생긴 주차 항목 수다. `next_due`는 미제출 과제와 확정된 강의계획서 일정 중 가장 가까운 것이고, 없으면 null이다
+이 줄 **뒤에** 아래 한 줄을 넣어:
+
+- 항목은 `short_name` 순(글자 코드 순)으로 내려준다. 순서는 서버가 정하고 DB의 정렬 규칙(collation)에 맡기지 않는다 — 환경마다 한글과 숫자의 앞뒤가 달라진다
+
 문서 머리의 보강 이력 줄이 있으면 "v0.9 보강 (2026-10-16): LMS 응답 규칙 확정(10/16 녹화), 허용 경로 여섯 개"를 같은 꼴로 한 줄 더해 줘.
 ````
 
 ## 코드
 
-아래 파일 21개를 그대로 만들거나 바꾼다. 샌드박스에서 `ruff`·`pytest`(DB 포함)·web `typecheck`·`build`를 통과하고 되돌림 시험 35가지를 잡은 코드다. 실제 LearningX에는 접속하지 않았다.
+아래 파일 21개를 그대로 만들거나 바꾼다. 샌드박스에서 `ruff`·`pytest`(DB 포함)·web `typecheck`·`build`를 통과하고 되돌림 시험 38가지를 잡은 코드다. 실제 LearningX에는 접속하지 않았다.
 
 ### api (새 파일)
 
@@ -739,6 +752,7 @@ class CourseList(BaseModel):
 - 과목은 `(user_id, canvas_course_id)`로 upsert하고, 이번 동기화에 없던 과목은 `is_active`를 내린다
   (수강을 뺀 과목이다 — 과제·공지 기록은 남겨 두고 목록에서만 뺀다). **목록이 비어 오면 내리지 않는다**
 - 과목 목록의 숫자는 지금 저장된 것으로 센다. 과제·주차 항목 동기화는 F-51·F-52라 그때까지 0이다
+- 목록 순서는 `ordered()`가 정한다(화면 이름 순). DB의 정렬 규칙은 환경마다 달라서 쓰지 않는다
 """
 
 from dataclasses import dataclass, field
@@ -795,7 +809,7 @@ _COURSES = (
     "      and i.starts_at >= %(now)s"
     "  ) as due order by due.at limit 1) as next_due"
     " from lms_courses c where c.user_id = %(uid)s and coalesce(c.is_active, true)"
-    " order by c.name"
+    # 정렬은 ordered()가 한다. DB의 정렬 규칙(collation)은 환경마다 달라서 순서를 맡기지 않는다
 )
 
 _SAVE = (
@@ -901,7 +915,7 @@ class LmsRepository:
 
     async def courses(self, user_id: str, *, now: datetime) -> list[CourseItem]:
         rows = await self._rows(_COURSES, {"uid": user_id, "now": now})
-        return [_course(row) for row in rows]
+        return ordered([_course(row) for row in rows])
 
     # ── 조회 ────────────────────────────────────────────────────────────────
 
@@ -910,6 +924,15 @@ class LmsRepository:
 
     async def _row(self, query: str, params: Any) -> dict[str, Any] | None:
         return await (await self.conn.execute(query, params)).fetchone()
+
+
+def ordered(items: list[CourseItem]) -> list[CourseItem]:
+    """화면 이름 순. 같은 이름이면 과목명으로 가른다.
+
+    DB에 `order by`를 맡기지 않는다 — 정렬 규칙(collation)이 환경마다 달라서 한글과 숫자의 앞뒤가
+    바뀐다(2026-10-16 CI에서 걸렸다). 파이썬 글자 코드 순으로 정하면 어디서나 같다.
+    """
+    return sorted(items, key=lambda one: (one.short_name, one.name))
 
 
 def _course(row: dict[str, Any]) -> CourseItem:
@@ -1370,7 +1393,7 @@ from app.crypto import decrypt
 from app.db import get_log_connect
 from app.lms.parse import course_name
 from app.main import create_app
-from app.repositories.lms import Connection, get_lms_repo
+from app.repositories.lms import Connection, get_lms_repo, ordered
 from app.schemas.lms import CourseItem
 from tests.conftest import USER_ID, make_token
 from tests.fakes import FakeLogConnection
@@ -1630,6 +1653,43 @@ def test_courses_i_only_assist_or_that_are_not_open_yet_are_left_out(
     response = client.post(CONNECTION, json={"access_token": TOKEN}, headers=headers())
     assert response.json()["courses"] == len(MINE)
     assert [one["id"] for one in repo.saved_courses] == [one["id"] for one in MINE]
+
+
+def test_the_course_list_order_does_not_depend_on_the_database() -> None:
+    """정렬은 ordered()가 한다. DB의 정렬 규칙(collation)은 환경마다 한글·숫자 앞뒤가 바뀐다.
+
+    DB 없이 도는 테스트라 CI에서만 걸리는 일이 없다(2026-10-16에 그렇게 한 번 걸렸다).
+    """
+    names = [
+        "202620HY23534_기계학습",
+        "대학원 세미나(비정규)",
+        "2026 겨울 특강",
+        "202620HY25123_AI+X공학융합프로젝트",
+        "202620HY23525_데이터베이스",
+    ]
+    items = [
+        CourseItem(
+            id=f"course-{index}",
+            canvas_course_id=index,
+            name=name,
+            short_name=course_name(name).short_name,
+            has_syllabus=False,
+            portal_syllabus_url=None,
+            open_assignments=0,
+            new_materials=0,
+            next_due=None,
+        )
+        for index, name in enumerate(names, start=1)
+    ]
+    assert [one.short_name for one in ordered(items)] == [
+        "2026 겨울 특강",  # 과목명 꼴이 아니라 이름 전체가 화면 이름이다
+        "AI+X공학융합프로젝트",
+        "기계학습",
+        "대학원 세미나(비정규)",
+        "데이터베이스",
+    ]
+    # 어느 순서로 들어와도 결과가 같다
+    assert [one.name for one in ordered(items[::-1])] == [one.name for one in ordered(items)]
 
 
 def test_it_refuses_a_body_with_another_field(client: TestClient) -> None:
@@ -1914,11 +1974,15 @@ async def test_the_next_thing_due_can_be_a_syllabus_item(world: dict[str, Any]) 
     assert nearest is not None and (nearest.kind, nearest.title) == ("assignment", "실습 7주차")
 
 
-async def test_the_list_is_sorted_by_course_name(world: dict[str, Any]) -> None:
+async def test_the_list_is_sorted_by_the_name_on_screen(world: dict[str, Any]) -> None:
+    """DB가 어떤 순서로 주든 화면 이름 순으로 정렬해 내려준다(정렬 규칙은 환경마다 다르다)."""
     repo, me, now = world["repo"], world["me"], world["now"]
     await repo.save_courses(me, MINE, now=now)
-    names = [one.name for one in await repo.courses(me, now=now)]
-    assert names == sorted(names)
+    assert [one.short_name for one in await repo.courses(me, now=now)] == [
+        "기계학습",
+        "대학원 세미나(비정규)",
+        "데이터베이스",
+    ]
 
 
 async def test_a_module_item_counts_for_everyone_taking_that_course(world: dict[str, Any]) -> None:

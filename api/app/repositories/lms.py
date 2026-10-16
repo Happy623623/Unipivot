@@ -4,6 +4,7 @@
 - 과목은 `(user_id, canvas_course_id)`로 upsert하고, 이번 동기화에 없던 과목은 `is_active`를 내린다
   (수강을 뺀 과목이다 — 과제·공지 기록은 남겨 두고 목록에서만 뺀다). **목록이 비어 오면 내리지 않는다**
 - 과목 목록의 숫자는 지금 저장된 것으로 센다. 과제·주차 항목 동기화는 F-51·F-52라 그때까지 0이다
+- 목록 순서는 `ordered()`가 정한다(화면 이름 순). DB의 정렬 규칙은 환경마다 달라서 쓰지 않는다
 """
 
 from dataclasses import dataclass, field
@@ -60,7 +61,7 @@ _COURSES = (
     "      and i.starts_at >= %(now)s"
     "  ) as due order by due.at limit 1) as next_due"
     " from lms_courses c where c.user_id = %(uid)s and coalesce(c.is_active, true)"
-    " order by c.name"
+    # 정렬은 ordered()가 한다. DB의 정렬 규칙(collation)은 환경마다 달라서 순서를 맡기지 않는다
 )
 
 _SAVE = (
@@ -166,7 +167,7 @@ class LmsRepository:
 
     async def courses(self, user_id: str, *, now: datetime) -> list[CourseItem]:
         rows = await self._rows(_COURSES, {"uid": user_id, "now": now})
-        return [_course(row) for row in rows]
+        return ordered([_course(row) for row in rows])
 
     # ── 조회 ────────────────────────────────────────────────────────────────
 
@@ -175,6 +176,15 @@ class LmsRepository:
 
     async def _row(self, query: str, params: Any) -> dict[str, Any] | None:
         return await (await self.conn.execute(query, params)).fetchone()
+
+
+def ordered(items: list[CourseItem]) -> list[CourseItem]:
+    """화면 이름 순. 같은 이름이면 과목명으로 가른다.
+
+    DB에 `order by`를 맡기지 않는다 — 정렬 규칙(collation)이 환경마다 달라서 한글과 숫자의 앞뒤가
+    바뀐다(2026-10-16 CI에서 걸렸다). 파이썬 글자 코드 순으로 정하면 어디서나 같다.
+    """
+    return sorted(items, key=lambda one: (one.short_name, one.name))
 
 
 def _course(row: dict[str, Any]) -> CourseItem:

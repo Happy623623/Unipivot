@@ -255,11 +255,15 @@ async def test_the_next_thing_due_can_be_a_syllabus_item(world: dict[str, Any]) 
     assert nearest is not None and (nearest.kind, nearest.title) == ("assignment", "실습 7주차")
 
 
-async def test_the_list_is_sorted_by_course_name(world: dict[str, Any]) -> None:
+async def test_the_list_is_sorted_by_the_name_on_screen(world: dict[str, Any]) -> None:
+    """DB가 어떤 순서로 주든 화면 이름 순으로 정렬해 내려준다(정렬 규칙은 환경마다 다르다)."""
     repo, me, now = world["repo"], world["me"], world["now"]
     await repo.save_courses(me, MINE, now=now)
-    names = [one.name for one in await repo.courses(me, now=now)]
-    assert names == sorted(names)
+    assert [one.short_name for one in await repo.courses(me, now=now)] == [
+        "기계학습",
+        "대학원 세미나(비정규)",
+        "데이터베이스",
+    ]
 
 
 async def test_a_module_item_counts_for_everyone_taking_that_course(world: dict[str, Any]) -> None:
