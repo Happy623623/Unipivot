@@ -56,6 +56,8 @@ class Profile:
     region_sigungu: str | None = None
     income_bracket: int | None = None
     median_income_pct: int | None = None
+    annual_income: int | None = None  # 본인 연 소득, 만 원 단위
+    job_status: str | None = None  # employed·unemployed… (catalog.ENUM_LABELS)
     welfare_status: str | None = None
     is_international: bool | None = None
 

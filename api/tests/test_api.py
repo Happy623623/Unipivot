@@ -71,7 +71,7 @@ def test_first_me_creates_profile(client: TestClient, auth: dict[str, str]) -> N
         False,
         False,
     )
-    assert body["profile_completion"] == {"filled": 0, "total": 17}
+    assert body["profile_completion"] == {"filled": 0, "total": 19}
 
 
 def test_profile_update_needs_consent(client: TestClient, auth: dict[str, str]) -> None:

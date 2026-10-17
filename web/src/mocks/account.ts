@@ -20,7 +20,9 @@ export const profile: Profile = {
   region_sigungu: null, // 시·군·구 단위 지역 조건은 "정보 필요"가 된다(목 공고 youth-capability)
   income_bracket: null, // 목 공고 data-certificate의 "정보 필요"
   median_income_pct: null,
+  annual_income: null,
   welfare_status: "none",
+  job_status: "unemployed",
   is_international: false,
 };
 

@@ -34,9 +34,10 @@ export function hasStoredConsent(): boolean {
 export function storeIncomeConsent(agree: boolean, agreedAt: string): IncomeConsentResult {
   meState.income_info_consented = agree;
   if (!agree) {
-    // 서버와 같은 규칙: 동의를 철회하면 소득 3항목을 지운다
+    // 서버와 같은 규칙: 동의를 철회하면 소득 4항목을 지운다
     profileState.income_bracket = null;
     profileState.median_income_pct = null;
+    profileState.annual_income = null;
     profileState.welfare_status = null;
   }
   return { income_info_agreed_at: agree ? agreedAt : null };

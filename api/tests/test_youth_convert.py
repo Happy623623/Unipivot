@@ -241,13 +241,29 @@ def test_major_special_job_marriage_income() -> None:
         (1, "welfare_status", "eq", "basic_livelihood"),
         (1, "other", "eq", {"text": "특화 대상: 여성"}),
     ]
+    # 아는 코드만 있으면 판정할 수 있는 조건이 된다
     assert conditions(jobCd="0013003,0013006") == [
-        (1, "other", "eq", {"text": "취업 상태: 미취업자·(예비)창업자"})
+        (1, "job_status", "in", ["unemployed", "founder"])
+    ]
+    # '기타'(0013009)가 섞이면 무엇을 받아 주는지 알 수 없어 원문 확인으로 둔다
+    assert conditions(jobCd="0013003,0013009") == [
+        (1, "other", "eq", {"text": "취업 상태: 미취업자·기타"})
     ]
     assert conditions(mrgSttsCd="0055002") == [(1, "other", "eq", {"text": "결혼: 미혼"})]
+    # 연소득 금액은 프로필 연 소득과 바로 비교한다
     assert conditions(earnCndSeCd="0043002", earnMinAmt="0", earnMaxAmt="5000") == [
-        (1, "other", "eq", {"text": "연소득 5,000만 원 이하"})
+        (1, "annual_income", "lte", 5000)
     ]
+    assert conditions(earnCndSeCd="0043002", earnMinAmt="1000", earnMaxAmt="5000") == [
+        (1, "annual_income", "between", {"min": 1000, "max": 5000})
+    ]
+    assert conditions(earnCndSeCd="0043002", earnMinAmt="1000", earnMaxAmt="0") == [
+        (1, "annual_income", "gte", 1000)
+    ]
+    # 덧글이 가구·중위소득 같은 다른 기준을 가리키면 금액 비교를 하지 않는다
+    assert conditions(
+        earnCndSeCd="0043002", earnMinAmt="0", earnMaxAmt="5000", earnEtcCn="가구 합산 기준"
+    ) == [(1, "other", "eq", {"text": "연소득 5,000만 원 이하 (가구 합산 기준)"})]
     text = "(청년독립가구) 기준 중위소득 60%이하 (원가구) 기준 중위소득 100% 이하"
     assert conditions(earnCndSeCd="0043003", earnEtcCn=text) == [
         (1, "other", "eq", {"text": f"소득: {text}"})
@@ -336,7 +352,7 @@ def test_broken_policy_values_become_ambiguous() -> None:
         ({"schoolCd": "0049008"}, "ineligible"),  # 석·박사만
         ({"schoolCd": "0049007"}, "ineligible"),  # 대학 졸업만: 학부 재학생은 아니다
         ({"plcyMajorCd": "0011003"}, "ineligible"),  # 상경계열(경상대학)
-        ({"jobCd": "0013003"}, "needs_review"),  # 취업 상태는 프로필에 없다
+        ({"jobCd": "0013003"}, "missing_info"),  # 취업 상태를 물어보면 판정할 수 있다
         ({"zipCd": "41271,12110"}, "eligible"),  # 내 지역이 판정할 수 있는 쪽에 있다
         ({"sbizCd": "0014003"}, "missing_info"),  # 수급 여부를 입력하지 않음
     ],

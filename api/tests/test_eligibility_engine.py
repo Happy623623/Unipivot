@@ -100,6 +100,31 @@ def test_clause_results_and_storage_row():
     assert row["condition_results"][1]["user_value"] == 10
 
 
+def test_annual_income_compares_the_students_own_income():
+    """연 소득은 만 원 단위 숫자 비교다. 값이 없으면 그 항목만 묻는다."""
+    cap = [req(1, "annual_income", "lte", 5000)]
+    assert judge(cap, annual_income=3000).status == "eligible"
+    assert judge(cap, annual_income=6000).status == "ineligible"
+    empty = judge(cap)
+    assert (empty.display_status, empty.missing_fields) == ("missing_info", ("annual_income",))
+    band = [req(1, "annual_income", "between", {"min": 1000, "max": 5000})]
+    assert judge(band, annual_income=900).status == "ineligible"
+    assert judge(band, annual_income=1000).status == "eligible"
+
+
+def test_job_status_is_an_enum_like_the_other_choices():
+    requirement = [req(1, "job_status", "in", ["unemployed", "founder"])]
+    assert judge(requirement, job_status="unemployed").status == "eligible"
+    assert judge(requirement, job_status="employed").status == "ineligible"
+    assert judge(requirement).missing_fields == ("job_status",)
+    # 모르는 값이 들어오면 부적격으로 내리지 않고 원문 확인으로 둔다
+    unknown = judge([req(1, "job_status", "in", ["student"])], job_status="unemployed")
+    assert (unknown.display_status, unknown.conditions[0].unknown_reason) == (
+        "needs_review",
+        "ambiguous",
+    )
+
+
 def test_no_requirements_is_eligible():
     """자격 제한이 없는 공고(추출이 빈 목록을 제출)는 지원 가능이다."""
     assert judge([]).status == "eligible"

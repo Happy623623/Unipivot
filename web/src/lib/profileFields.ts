@@ -39,7 +39,7 @@ export const DEGREE_LABELS: Record<DegreeProgram, string> = {
 
 // 소득·수급 3항목은 선택 동의(소득·수급 정보)를 해야 저장된다 (동의 없이 값을 보내면 403)
 export function withoutIncome(profile: Profile): Profile {
-  return { ...profile, income_bracket: null, median_income_pct: null, welfare_status: null };
+  return { ...profile, income_bracket: null, median_income_pct: null, annual_income: null, welfare_status: null };
 }
 
 // 거주 시·군·구 선택지는 고른 시·도에 따라 바뀐다. 목록에 없는 값(직접 입력하던 때의 값)은 그대로 보여 주고 다시 고르게 한다
@@ -142,6 +142,22 @@ export function buildProfileSteps(departments: Department[]): ProfileStepConfig[
           hint: "지금 다니는 학기는 빼고 세요. \"8학기 이내\" 같은 조건을 판정할 때 써요.",
         },
         {
+          key: "job_status",
+          label: "취업 상태",
+          kind: "select",
+          options: [
+            { value: "unemployed", label: "미취업" },
+            { value: "employed", label: "재직" },
+            { value: "self_employed", label: "자영업" },
+            { value: "freelancer", label: "프리랜서" },
+            { value: "short_term", label: "단기근로" },
+            { value: "daily_worker", label: "일용근로" },
+            { value: "founder", label: "(예비)창업자" },
+            { value: "farmer", label: "영농종사" },
+          ],
+          hint: "청년 정책은 미취업·재직 조건을 자주 걸어요. 재학 중이고 일하지 않으면 미취업이에요.",
+        },
+        {
           key: "is_international",
           label: "외국인 유학생",
           kind: "select",
@@ -227,6 +243,16 @@ export function buildProfileSteps(departments: Department[]): ProfileStepConfig[
           hint: "가구 기준이에요. 학자금 지원구간과 서로 바꿔 계산하지 않아요.",
         },
         {
+          key: "annual_income",
+          label: "본인 연 소득",
+          kind: "number",
+          min: 0,
+          max: 30000,
+          step: 100,
+          unit: "만 원",
+          hint: "본인 소득만 적어요. 가구 합산이 아니라 내 연 소득이에요. 모르면 비워 두세요.",
+        },
+        {
           key: "welfare_status",
           label: "기초생활수급·차상위",
           kind: "select",
@@ -244,6 +270,7 @@ export function buildProfileSteps(departments: Department[]): ProfileStepConfig[
 const numericKeys = new Set<ProfileKey>([
   "grade", "semesters_completed", "credits_total", "credits_last_semester", "gpa_total",
   "gpa_last_semester", "gpa_scale", "military_service_months", "income_bracket", "median_income_pct",
+  "annual_income",
 ]);
 const booleanKeys = new Set<ProfileKey>(["is_international"]);
 
