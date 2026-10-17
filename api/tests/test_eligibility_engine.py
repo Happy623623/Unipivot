@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 
 from app.eligibility import (
+    REQUIREMENTS_UNKNOWN_SUMMARY,
     Department,
     Profile,
     Requirement,
@@ -100,7 +101,33 @@ def test_clause_results_and_storage_row():
 
 
 def test_no_requirements_is_eligible():
+    """자격 제한이 없는 공고(추출이 빈 목록을 제출)는 지원 가능이다."""
     assert judge([]).status == "eligible"
+
+
+def test_no_requirements_but_unknown_is_needs_review():
+    """요건을 못 읽은 공고는 조건이 0개여도 지원 가능으로 내보내지 않는다."""
+    judgment = check_eligibility(
+        [], Profile(), basis_date=BASIS, departments=DEPARTMENTS, requirements_known=False
+    )
+    assert (judgment.status, judgment.display_status) == ("undetermined", "needs_review")
+    assert judgment.missing_fields == ()  # 물어볼 항목이 없다
+    assert judgment.reason_text == REQUIREMENTS_UNKNOWN_SUMMARY
+    row = judgment.storage_row()
+    json.dumps(row)
+    assert row["condition_results"] == []
+
+
+def test_unknown_flag_is_ignored_when_requirements_exist():
+    """요건이 있으면 플래그와 무관하게 평소대로 판정한다."""
+    judgment = check_eligibility(
+        [req(1, "grade", "lte", 4)],
+        Profile(grade=2),
+        basis_date=BASIS,
+        departments=DEPARTMENTS,
+        requirements_known=False,
+    )
+    assert judgment.status == "eligible"
 
 
 def test_ambiguous_condition_can_be_covered_by_or_partner():
