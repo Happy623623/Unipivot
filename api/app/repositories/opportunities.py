@@ -11,6 +11,8 @@
 - 시각은 요청이 넘긴 now 하나만 쓴다(판정 기준일, evaluated_at). 시각을 고정한 실행(평가 러너·테스트)도
   그 날짜로 판정한다(API 명세 v0.4 1장).
 - 요건 추출에 실패한 공고(extraction_run_id null)는 판정하지 않는다. 피드에는 원문 확인 필요로 보인다.
+- 추출은 됐지만 요건이 0개인 공고는 needs_review로 가른다: 꺼져 있으면 자격 제한 없음(지원 가능),
+  켜져 있으면 원문을 못 읽은 것으로 보고 원문 확인 필요다(engine.REQUIREMENTS_UNKNOWN_SUMMARY).
   엔진이 오류를 낸 공고는 "판정하지 못함" 판정을 저장해 같은 오류를 요청마다 되풀이하지 않는다(하루에
   한 번, 그리고 프로필·요건·엔진 버전이 바뀌면 다시 시도한다).
 - 요건을 추출했는데 판정이 없는 공고(이 요청이 판정한 뒤에 들어온 공고)는 이번 응답에서 뺀다.
@@ -267,7 +269,7 @@ def _stale_sql(scope: str) -> str:
     """다시 판정할 공고와 그 요건."""
     return (
         "select o.id, o.requirements_version, o.eligibility_basis_date, o.deadline_at,"
-        " o.apply_start_at, o.source_type::text as source_type,"
+        " o.apply_start_at, o.source_type::text as source_type, o.needs_review,"
         " e.user_id is not null as had_result, e.status::text as old_status,"
         " e.missing_fields as old_missing, " + _REQUIREMENTS_JSON + " as requirements"
         " from opportunities o"
@@ -718,13 +720,20 @@ def _judge(
     basis: date | None = None
     try:
         requirements = tuple(Requirement.from_row(r) for r in item["requirements"])
+        # 요건이 0개인 공고: 추출이 "자격 제한 없음"으로 제출한 것과, 원문을 못 읽고 비워 낸 것을
+        # 가른다. 추출이 스스로 원문 확인 필요를 켰다면 근거가 없으니 지원 가능으로 내보내지 않는다
+        known = bool(requirements) or not item["needs_review"]
         days = _basis_dates(item, today)
         basis = days[0]
         # 기준일이 둘이면(청년정책) 더 나은 쪽을 쓴다. 같으면 앞 날짜다(max는 처음 나온 것을 고른다)
         judgment = max(
             (
                 check_eligibility(
-                    list(requirements), profile, basis_date=day, departments=departments
+                    list(requirements),
+                    profile,
+                    basis_date=day,
+                    departments=departments,
+                    requirements_known=known,
                 )
                 for day in days
             ),

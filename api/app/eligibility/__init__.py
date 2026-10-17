@@ -15,6 +15,7 @@ from app.eligibility.describe import (
     user_value_text,
 )
 from app.eligibility.engine import (
+    REQUIREMENTS_UNKNOWN_SUMMARY,
     RequirementError,
     check_eligibility,
     evaluate_condition,
@@ -34,11 +35,14 @@ from app.eligibility.models import (
 # 2: 학위과정(degree_program) 항목 (2026-10-12)
 # 3: 프로필 시군구 앞에 붙은 시도 이름을 떼고 비교 (2026-10-13)
 # 4: 광주광역시·전라남도를 전남광주통합특별시로 통합 (2026-07-01 행정구역 개편 반영, 2026-10-14)
-ENGINE_VERSION = 4
+# 5: 요건을 읽지 못한 공고를 지원 가능으로 내보내지 않는다 (2026-10-17)
+# 6: 연 소득(annual_income)·취업 상태(job_status) 항목 추가 (2026-10-17)
+ENGINE_VERSION = 6
 
 __all__ = [
     "ALLOWED_OPERATORS",
     "ENGINE_VERSION",
+    "REQUIREMENTS_UNKNOWN_SUMMARY",
     "KST",
     "ClauseResult",
     "ConditionResult",

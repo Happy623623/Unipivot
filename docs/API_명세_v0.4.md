@@ -64,6 +64,8 @@
 >
 > v0.4 보강(10/17, 계획서 화면): 과목 상세에 `course.syllabus_id`(확인 전 일정을 다시 열 때 쓴다), 깨진 PDF 안내는 올린 종류에 맞춘다
 >
+> v0.4 보강(10/17, 연 소득·취업 상태): 프로필에 `annual_income`(본인 연 소득, 만 원, 0~30000)·`job_status` 추가, `profile_completion.total` 19, 소득 선택 동의 항목 4개
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -225,7 +227,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
   "hyin_verified": false,
   "calendar_connected": false,
   "lms": { "status": "active", "last_synced_at": "2026-10-01T10:30:00+09:00" },
-  "profile_completion": { "filled": 6, "total": 17 },
+  "profile_completion": { "filled": 6, "total": 19 },
   "consented": true,
   "income_info_consented": false,
   "unread_notifications": 3
@@ -235,7 +237,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `consented`: 약관·개인정보 동의를 마쳤는지. false면 프론트가 온보딩 동의 단계로 보낸다
 - `unread_notifications`: 헤더 알림 배지 숫자
 - `income_info_consented`: 소득·수급 정보 선택 동의를 했는지. false면 소득 입력란을 열지 않는다
-- `profile_completion.total`은 17이다. 유학생 여부로 16, 학위과정으로 17이 됐다. 평점 만점은 세지 않는다
+- `profile_completion.total`은 19다. 유학생 여부로 16, 학위과정으로 17, 취업 상태·본인 연 소득으로 19가 됐다(F-21). 평점 만점은 세지 않는다
 - `calendar_connected`는 로그인만 한 상태에서는 false다(증분 승인)
 - `hyin_verified`는 F-05가 P2라 MVP에서는 늘 false다
 
@@ -257,7 +259,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 ```
 
 - `agree_income_info`는 선택 동의다. 빼면 false로 본다
-- PATCH로 false를 보내면 동의 시각과 소득 3항목(`income_bracket`, `median_income_pct`, `welfare_status`)을 한 번에 지우고, 그 사용자의 판정을 다시 계산한다
+- PATCH로 false를 보내면 동의 시각과 소득 4항목(`income_bracket`, `median_income_pct`, `annual_income`, `welfare_status`)을 한 번에 지우고, 그 사용자의 판정을 다시 계산한다
 - 필수 동의 전에는 PATCH도 `403 CONSENT_REQUIRED`를 돌려준다
 - 둘 중 하나라도 false면 `422 VALIDATION_FAILED`
 - 동의 전에는 `/me/profile` 수정과 공고·플래너 API가 `403 CONSENT_REQUIRED`를 돌려준다
@@ -280,7 +282,8 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
     "gpa_total": 3.71, "gpa_last_semester": 3.62, "gpa_scale": 4.5,
     "birth_date": null, "military_service_months": null,
     "region_sido": "경기도", "region_sigungu": "안산시 단원구",
-    "income_bracket": null, "median_income_pct": null, "welfare_status": null,
+    "income_bracket": null, "median_income_pct": null, "annual_income": null, "welfare_status": null,
+    "job_status": "unemployed",
     "is_international": false,
     "admission_year": null, "hyin_verified_at": null
   },
@@ -291,7 +294,9 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `department`에는 `GET /meta/departments`의 이름만 쓸 수 있다. 없는 이름은 `422 VALIDATION_FAILED`(`details.fields.department`)
 - `is_international`을 추가한다(boolean, null이면 미입력)
 - `degree_program`(학위과정)을 추가한다. `bachelor` 학부, `master` 석사, `doctoral` 박사, `integrated` 석박사통합이고 null이면 미입력이다. 지금 다니는 과정이고, 졸업했으면 마지막으로 다닌 과정이다. 다른 값은 `422 VALIDATION_FAILED`(`details.fields.degree_program`)
-- 소득 3항목은 선택 동의 전이면 `403 CONSENT_REQUIRED`(`details.consent = "income_info"`)
+- 소득 4항목(`income_bracket`·`median_income_pct`·`annual_income`·`welfare_status`)은 선택 동의 전이면 `403 CONSENT_REQUIRED`(`details.consent = "income_info"`)
+- `annual_income`은 **본인** 연 소득이고 단위는 만 원이다(가구 합산·기준 중위소득은 `median_income_pct`가 맡는다). 0~30000(3억)이고 넘으면 `422 VALIDATION_FAILED`다 — DB 칸이 smallint라 그 안에 둔다
+- `job_status`(취업 상태)는 `unemployed`·`employed`·`self_employed`·`freelancer`·`short_term`·`daily_worker`·`founder`·`farmer`다. 소득 항목이 아니라 선택 동의 없이 저장한다. 다른 값은 `422 VALIDATION_FAILED`(`details.fields.job_status`)
 - 거주지역(`region_sido`, `region_sigungu`)은 주민등록 주소 기준이다. 입력 화면에 그렇게 적는다
 - `region_sigungu`는 시·도 안의 시·군·구 이름이고 구가 있는 시는 구까지 쓴다(예: `안산시 단원구`). 웹은 시·도를 고르면 그 안의 목록(법정동코드 2026-09-29 판의 끝 지역)에서 고르게 한다. 서버는 목록으로 검사하지 않고 그대로 저장하며, 판정할 때 앞에 붙은 시·도 이름을 뗀다(`docs/판정엔진_규칙.md` 4-2)
 - 보낸 항목 중 값이 실제로 바뀐 것만 저장하고, 바뀐 값이 있으면 그 사용자의 활성 공고를 모두 다시 판정한다. rejudged.changed는 판정이 있던 공고 중 라벨(display_status)이 바뀐 수이고, eligible·undetermined·ineligible은 GET /opportunities의 counts와 같은 기준이다.

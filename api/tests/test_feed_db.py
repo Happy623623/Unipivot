@@ -11,7 +11,7 @@ import pytest
 
 from app.config import Settings, get_settings
 from app.db import get_conn
-from app.eligibility import KST
+from app.eligibility import KST, REQUIREMENTS_UNKNOWN_SUMMARY
 from app.main import create_app
 from app.repositories import opportunities as feed_module
 from app.repositories.opportunities import (
@@ -287,6 +287,45 @@ async def test_new_arrivals_wait_for_the_next_request() -> None:
         assert (await repo.refresh_judgments(me, now=now)).judged == 1
         page = await repo.feed_page(me, FeedQuery(), now=now)
         assert late in [item.id for item in page.items]
+    finally:
+        await conn.rollback()
+        await conn.close()
+
+
+async def test_empty_requirements_follow_the_review_flag() -> None:
+    """요건이 0개인 공고: 자격 제한 없음이면 지원 가능, 원문을 못 읽었으면 원문 확인 필요다."""
+    conn = await connect()
+    try:
+        world, me, _ = await build(conn)
+        repo, now = OpportunityRepository(conn), world.now
+        target = world.ids["장학 A"]
+        await conn.execute("delete from requirements where opportunity_id = %s", (target,))
+        await conn.execute(
+            "update opportunities set needs_review = false,"
+            " requirements_version = requirements_version + 1 where id = %s",
+            (target,),
+        )
+        await repo.refresh_judgments(me, now=now, force=True)
+        page = await repo.feed_page(me, FeedQuery(), now=now)
+        item = next(item for item in page.items if item.id == target)
+        assert item.eligibility.display_status == "eligible"  # 자격 제한이 없는 공고
+
+        await conn.execute(
+            "update opportunities set needs_review = true,"
+            " requirements_version = requirements_version + 1 where id = %s",
+            (target,),
+        )
+        await repo.refresh_judgments(me, now=now, force=True)
+        page = await repo.feed_page(me, FeedQuery(), now=now)
+        item = next(item for item in page.items if item.id == target)
+        assert (item.eligibility.display_status, item.eligibility.summary) == (
+            "needs_review",
+            REQUIREMENTS_UNKNOWN_SUMMARY,
+        )
+        detail = await repo.detail(me, target, now=now)
+        assert detail is not None
+        assert detail.eligibility.display_status == "needs_review"
+        assert detail.eligibility.clauses == []
     finally:
         await conn.rollback()
         await conn.close()

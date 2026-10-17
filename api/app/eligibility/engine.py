@@ -45,6 +45,9 @@ from app.eligibility.regions import (
     region_verdict,
 )
 
+# 요건을 읽지 못한 공고의 사유 한 줄. 조건이 0개여서 describe.reason_text를 쓸 수 없다
+REQUIREMENTS_UNKNOWN_SUMMARY = "원문 확인 필요: 자격 요건을 아직 읽지 못함"
+
 
 class RequirementError(ValueError):
     """요건 값의 모양이 규칙과 다르다. 판정에서는 모호한 조건(원문 확인 필요)으로 처리한다."""
@@ -66,8 +69,14 @@ def check_eligibility(
     *,
     basis_date: date,
     departments: Iterable[Department] | Mapping[str, Department] = (),
+    requirements_known: bool = True,
 ) -> Judgment:
-    """한 사용자를 공고 요건 전체로 판정한다. 요건이 하나도 없으면 지원 가능이다."""
+    """한 사용자를 공고 요건 전체로 판정한다.
+
+    요건이 하나도 없으면 자격 제한이 없다는 뜻이라 지원 가능이다. 단 요건을 **모르는** 공고
+    (requirements_known=False)는 다르다: 근거가 없으니 지원 가능으로 내보내지 않고 원문 확인 필요로
+    둔다. 둘을 가르는 것은 호출하는 쪽이고, 추출이 스스로 원문 확인 필요를 켠 공고가 여기 들어온다.
+    """
     index = index_departments(departments)
     ordered = sorted(requirements, key=lambda r: r.clause_no)
     conditions = tuple(evaluate_condition(r, profile, basis_date, index) for r in ordered)
@@ -75,6 +84,17 @@ def check_eligibility(
         _clause(clause_no, list(members))
         for clause_no, members in groupby(conditions, key=lambda c: c.clause_no)
     )
+
+    if not clauses and not requirements_known:
+        return Judgment(
+            status="undetermined",
+            display_status="needs_review",
+            basis_date=basis_date,
+            clauses=(),
+            conditions=(),
+            missing_fields=(),
+            reason_text=REQUIREMENTS_UNKNOWN_SUMMARY,
+        )
 
     outcomes = [clause.outcome for clause in clauses]
     status: Status

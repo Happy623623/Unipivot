@@ -22,6 +22,8 @@ ALLOWED_OPERATORS: dict[str, frozenset[str]] = {
     "region": _SET,
     "income_bracket": _ALL,
     "median_income_pct": _ALL,
+    "annual_income": _ALL,
+    "job_status": _SET,
     "welfare_status": _SET,
     "is_international": frozenset({"eq", "neq"}),
     "degree_program": _SET,
@@ -36,6 +38,7 @@ NUMBER_FIELDS = frozenset(
         "credits_last_semester",
         "income_bracket",
         "median_income_pct",
+        "annual_income",
     }
 )
 GPA_FIELDS = frozenset({"gpa_total", "gpa_last_semester"})
@@ -51,6 +54,17 @@ ENUM_LABELS: dict[str, dict[str, str]] = {
         "none": "해당 없음",
         "near_poverty": "차상위",
         "basic_livelihood": "기초생활수급",
+    },
+    # 온통청년 jobCd 와 같은 구분. '기타'는 뜻이 정해져 있지 않아 항목에 두지 않고 원문 확인으로 남긴다
+    "job_status": {
+        "employed": "재직자",
+        "self_employed": "자영업자",
+        "unemployed": "미취업자",
+        "freelancer": "프리랜서",
+        "daily_worker": "일용근로자",
+        "founder": "(예비)창업자",
+        "short_term": "단기근로자",
+        "farmer": "영농종사자",
     },
     # 지금 다니는(졸업했으면 마지막으로 다닌) 과정. 석박사통합은 석사·박사 중 어느 단계인지 모른다
     "degree_program": {
@@ -86,6 +100,8 @@ FIELD_LABELS = {
     "region": "거주지역",
     "income_bracket": "학자금 지원구간",
     "median_income_pct": "기준 중위소득",
+    "annual_income": "연 소득",
+    "job_status": "취업 상태",
     "welfare_status": "수급 여부",
     "is_international": "외국인 유학생",
     "degree_program": "학위과정",
@@ -102,4 +118,5 @@ UNITS = {
     "credits_last_semester": "학점",
     "income_bracket": "구간",
     "median_income_pct": "%",
+    "annual_income": "만 원",
 }

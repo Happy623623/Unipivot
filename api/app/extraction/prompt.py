@@ -29,6 +29,8 @@ _VALUE_EXAMPLES = {
     "region": '["경기도 안산시", "경기도 시흥시"] (basis 필수)',
     "income_bracket": "8",
     "median_income_pct": "150",
+    "annual_income": '3000 · {"min": 0, "max": 5000} (본인 연 소득, 만 원. 가구 합산·중위소득 기준이면 쓰지 않는다)',
+    "job_status": '["unemployed"] · ["employed", "founder"]',
     "welfare_status": '["basic_livelihood", "near_poverty"]',
     "is_international": "true",
     "degree_program": '"bachelor" · ["master", "doctoral", "integrated"]',
