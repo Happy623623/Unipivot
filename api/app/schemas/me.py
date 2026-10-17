@@ -61,7 +61,9 @@ class ProfileFields(BaseModel):
     region_sigungu: str | None = Field(None, max_length=40)
     income_bracket: int | None = Field(None, ge=0, le=10)  # 학자금 지원구간, 0 = 기초·차상위
     median_income_pct: int | None = Field(None, ge=0, le=500)  # 기준 중위소득 % (가구)
-    annual_income: int | None = Field(None, ge=0, le=100000)  # 본인 연 소득, 만 원 단위
+    # 본인 연 소득, 만 원 단위. 상한은 화면(web/src/lib/profileFields.ts의 30000)과 맞추고,
+    # DB 칸이 smallint(최대 32767)라 그 안에 든다 — 넘는 값이 통과하면 저장에서 넘쳐 500이 된다
+    annual_income: int | None = Field(None, ge=0, le=30000)
     welfare_status: WelfareStatus | None = None
     job_status: JobStatus | None = None
     is_international: bool | None = None  # 외국인 유학생 여부

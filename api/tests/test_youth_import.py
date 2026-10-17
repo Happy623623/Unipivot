@@ -344,7 +344,12 @@ async def test_incomplete_fetch_does_not_hide_missing() -> None:
 
 async def test_feed_judgment_and_process_steps() -> None:
     """안산에 사는 22세 학부 재학생: 전국·안산 정책은 지원 가능, 평택 정책은 지원 어려움,
-    취업 상태 조건이 있는 정책은 원문 확인 필요. 상세의 처리 과정은 온통청년 두 단계다."""
+    취업 상태 조건이 있는 정책은 **정보 필요**(프로필에 취업 상태를 아직 안 적었다).
+    상세의 처리 과정은 온통청년 두 단계다.
+
+    F-21 전에는 취업 상태를 비교할 칸이 없어 원문 확인 필요로 떨어졌다. 이제는 조건을 읽고
+    학생에게 무엇을 적어야 하는지 알려 준다.
+    """
     conn, log_conn = await connect(), await connect(autocommit=True)
     try:
         await skip_if_other_youth_policies(conn, PREFIX)
@@ -377,9 +382,11 @@ async def test_feed_judgment_and_process_steps() -> None:
         assert mine == {
             "A": "eligible",
             "B": "eligible",
-            "J": "needs_review",
+            "J": "missing_info",  # 취업 상태를 적으면 판정된다
             "P": "ineligible",
         }
+        job = next(entry for entry in page.items if entry.title.endswith("J"))
+        assert job.eligibility.missing_fields == ["job_status"]
         b = (await rows(conn))["B"]
         detail = await repo.detail(me, str(b["id"]), now=NOW)
         steps = [(s.label, s.chosen_by, s.status) for s in detail.process.extraction]

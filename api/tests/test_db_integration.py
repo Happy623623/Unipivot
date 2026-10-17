@@ -49,7 +49,8 @@ async def test_profile_repository_roundtrip() -> None:
             False,
             False,
         )
-        assert (me.profile_completion.filled, me.profile_completion.total) == (0, 17)
+        # 항목 19개: 유학생 여부로 16, 학위과정으로 17, 취업 상태·본인 연 소득으로 19(F-21)
+        assert (me.profile_completion.filled, me.profile_completion.total) == (0, 19)
 
         result = await repo.save_consent(user_id, "2026-10-07", agree_income_info=False)
         assert (result.consent_version, result.income_info_agreed_at) == ("2026-10-07", None)
