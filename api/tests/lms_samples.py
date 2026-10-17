@@ -9,7 +9,15 @@
 - 학생 등록이 아닌 과목(조교·청강)과 `workflow_state`가 `unpublished`인 과목이 섞일 수 있다
 - 과목명 꼴이 다른 과목도 있을 수 있다(계절·비정규 과목) → 계획서 링크를 만들지 않는다
 
-과제·주차 항목·공지 샘플은 F-51·F-52에서 더한다(그 기능이 쓸 때 함께 넣는다).
+과제 샘플에서 확인한 것(F-51, 과제 17건 녹화):
+
+- `due_at`이 null이고 `lock_at`만 있는 과제가 있다(17건 중 5건) → 마감은 `due_at ?? lock_at`이다
+- `has_submitted_submissions`는 과목 전체 기준이라 내가 내지 않은 과제에도 true다 → 쓰지 않는다
+- 퀴즈(`submission_types: ["online_quiz"]`)는 자동 채점돼 `graded`로 온다(17건 중 4건)
+- 제출한 과제의 `submission.submitted_at`이 제출 시각이다. 점수는 null일 수 있다(0점 과제)
+- 시각은 모두 `...Z`(UTC)로 온다
+
+주차 항목·공지 샘플은 F-52·F-53에서 더한다(그 기능이 쓸 때 함께 넣는다).
 """
 
 from typing import Any
@@ -102,3 +110,150 @@ COURSES: list[dict[str, Any]] = [
     UNPUBLISHED,
 ]
 MINE: list[dict[str, Any]] = [DATABASE, MACHINE_LEARNING, SEMINAR]
+
+
+# ── 과제 (F-51) ─────────────────────────────────────────────────────────────
+# 마감이 있고 아직 내지 않은 과제. 가장 흔한 모양이다
+HOMEWORK: dict[str, Any] = {
+    "id": 2811242,
+    "due_at": "2026-10-20T14:59:59Z",  # 2026-10-20 23:59:59 KST
+    "unlock_at": "2026-10-13T00:00:00Z",
+    "lock_at": "2026-10-22T14:59:59Z",
+    "points_possible": 0.0,
+    "grading_type": "points",
+    "assignment_group_id": 579630,
+    "position": 1,
+    "allowed_attempts": -1,
+    "course_id": 214023,
+    "name": "실습 2주차 결과 제출",
+    "submission_types": ["online_upload"],
+    "has_submitted_submissions": True,  # 과목 전체 기준이라 내 제출과 무관하다
+    "is_quiz_assignment": False,
+    "workflow_state": "published",
+    "html_url": "https://lms.test/courses/214023/assignments/2811242",
+    "published": True,
+    "submission": {
+        "id": 106325980,
+        "assignment_id": 2811242,
+        "user_id": CANVAS_USER_ID,
+        "submitted_at": None,
+        "workflow_state": "unsubmitted",
+        "attempt": None,
+        "score": None,
+        "grade": None,
+        "graded_at": None,
+        "late": False,
+        "missing": False,
+        "submission_type": None,
+        "excused": None,
+        "seconds_late": 0,
+        "cached_due_date": "2026-10-20T14:59:59Z",
+    },
+}
+
+# `due_at`이 null이고 `lock_at`만 있는 과제(녹화 17건 중 5건). 마감은 lock_at으로 본다
+LAB_REPORT: dict[str, Any] = {
+    "id": 2811588,
+    "due_at": None,
+    "unlock_at": None,
+    "lock_at": "2026-10-18T14:59:59Z",
+    "points_possible": 0.0,
+    "grading_type": "points",
+    "assignment_group_id": 579630,
+    "position": 2,
+    "allowed_attempts": -1,
+    "course_id": 214023,
+    "name": "실습 3주차 결과 제출",
+    "submission_types": ["online_upload"],
+    "has_submitted_submissions": True,
+    "is_quiz_assignment": False,
+    "workflow_state": "published",
+    "html_url": "https://lms.test/courses/214023/assignments/2811588",
+    "published": True,
+    "lock_info": {
+        "lock_at": "2026-10-18T14:59:59Z",
+        "can_view": True,
+        "asset_string": "assignment_2811588",
+    },
+    "submission": {
+        "id": 106325981,
+        "assignment_id": 2811588,
+        "user_id": CANVAS_USER_ID,
+        "submitted_at": "2026-10-15T23:02:17Z",
+        "workflow_state": "submitted",
+        "attempt": 1,
+        "score": None,
+        "grade": None,
+        "graded_at": None,
+        "late": False,
+        "missing": False,
+        "submission_type": "online_upload",
+        "excused": None,
+        "seconds_late": 0,
+        "cached_due_date": None,
+    },
+}
+
+# 퀴즈는 자동 채점돼 바로 graded로 온다(녹화 17건 중 4건)
+QUIZ: dict[str, Any] = {
+    "id": 2799146,
+    "quiz_id": 85791,
+    "is_quiz_assignment": True,
+    "due_at": "2026-10-11T14:59:00Z",
+    "unlock_at": None,
+    "lock_at": "2026-10-11T14:59:00Z",
+    "points_possible": 3.0,
+    "grading_type": "points",
+    "assignment_group_id": 579631,
+    "position": 3,
+    "course_id": 216515,
+    "name": "3주차 퀴즈",
+    "submission_types": ["online_quiz"],
+    "has_submitted_submissions": True,
+    "workflow_state": "published",
+    "html_url": "https://lms.test/courses/216515/assignments/2799146",
+    "published": True,
+    "submission": {
+        "id": 106325982,
+        "assignment_id": 2799146,
+        "user_id": CANVAS_USER_ID,
+        "submitted_at": "2026-10-09T08:40:14Z",
+        "workflow_state": "graded",
+        "attempt": 1,
+        "score": None,
+        "grade": None,
+        "graded_at": "2026-10-09T08:40:20Z",
+        "submission_type": "online_quiz",
+        "late": False,
+        "missing": False,
+        "excused": None,
+        "seconds_late": 0,
+    },
+}
+
+# 아직 열지 않은 과제. 학생 화면에는 안 보이니 저장하지 않는다(녹화에는 없었다 — 과목에서 본 모양을 옮겼다)
+DRAFT_ASSIGNMENT: dict[str, Any] = {
+    "id": 2820001,
+    "due_at": "2026-12-01T14:59:59Z",
+    "lock_at": None,
+    "points_possible": 10.0,
+    "course_id": 214023,
+    "name": "기말 과제(준비 중)",
+    "submission_types": ["online_upload"],
+    "is_quiz_assignment": False,
+    "workflow_state": "unpublished",
+    "html_url": "https://lms.test/courses/214023/assignments/2820001",
+    "published": False,
+    "submission": {
+        "id": 106325983,
+        "assignment_id": 2820001,
+        "user_id": CANVAS_USER_ID,
+        "submitted_at": None,
+        "workflow_state": "unsubmitted",
+    },
+}
+
+# 데이터베이스 과목(214023)의 과제 목록 응답
+DB_ASSIGNMENTS: list[dict[str, Any]] = [HOMEWORK, LAB_REPORT, DRAFT_ASSIGNMENT]
+# 기계학습 과목(216515)의 과제 목록 응답
+ML_ASSIGNMENTS: list[dict[str, Any]] = [QUIZ]

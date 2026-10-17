@@ -286,6 +286,20 @@ class FakeLogConnection:
     def wrote(self, needle: str) -> bool:
         return any(needle in query for query, _ in self.statements)
 
+    def outputs(self) -> dict[str, Any]:
+        """도구 이름 → 그 도구가 남긴 출력. 도구는 겹치지 않으니 넣은 순서로 짝지어 읽는다."""
+        open_names: list[str] = []
+        found: dict[str, Any] = {}
+        for query, params in self.statements:
+            if not isinstance(params, tuple):
+                continue
+            if "insert into tool_calls" in query:
+                open_names.append(params[2])
+            elif "update tool_calls set output" in query and open_names:
+                value = params[0]
+                found[open_names.pop()] = getattr(value, "obj", value)
+        return found
+
     def tools(self) -> list[str]:
         """기록된 도구 이름(tool_calls에 넣은 순서대로)."""
         return [

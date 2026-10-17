@@ -1,8 +1,11 @@
-"""LearningX 연결과 과목 목록 (F-50·F-14, API 명세 8장).
+"""LearningX 연결·과목·과제 (F-50·F-51·F-14, API 명세 8장).
 
 토큰은 요청으로만 받고 응답에는 끝 4자리만 넣는다(`token_last4`). 과목 이름은 LearningX가 준
 `202620HY23525_데이터베이스`를 그대로 두고, 화면에 쓸 짧은 이름(`short_name`)과 포털 계획서 링크를
 함께 내려준다. 계획서 링크는 사용자 브라우저에서만 연다(서버는 포털에 요청하지 않는다).
+
+과제는 마감(`due_at`)이 없을 수 있다(녹화 17건 중 5건은 `due_at`이 null이고 `lock_at`만 있어서 그걸 쓴다).
+`submission_state`는 LearningX가 준 값 그대로다(`unsubmitted`·`submitted`·`graded`·`pending_review`).
 """
 
 from datetime import datetime
@@ -12,6 +15,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # DB enum(lms_connection_status)·GET /me의 lms.status·web 타입과 같은 세 가지
 ConnectionStatus = Literal["active", "error", "disconnected"]
+# DB enum(lms_submission_state)·web 타입과 같은 네 가지. LearningX가 준 값을 그대로 쓴다
+SubmissionState = Literal["unsubmitted", "submitted", "graded", "pending_review"]
+# `GET /lms/assignments?state=`. 주지 않으면 open이다(화면이 "할 일"로 먼저 보여 준다)
+AssignmentState = Literal["open", "submitted", "all"]
+# 동기화 결과를 남기는 도구 이름. app/lms/sync.py가 쓰고 GET /runs/{id}가 읽는다
+SAVE_TOOL = "save_lms_sync"
 
 
 class ConnectRequest(BaseModel):
@@ -56,3 +65,71 @@ class CourseItem(BaseModel):
 
 class CourseList(BaseModel):
     items: list[CourseItem]
+
+
+class SyncStarted(BaseModel):
+    """`POST /lms/sync` 202. 결과는 `GET /runs/{run_id}`로 본다."""
+
+    run_id: str
+    status: Literal["running"]
+
+
+class SyncSkipped(BaseModel):
+    """`POST /lms/sync` 200. 마지막 동기화가 얼마 안 돼 건너뛴 응답이다(명세 8장)."""
+
+    skipped: Literal[True] = True
+    last_synced_at: datetime | None  # KST 오프셋
+
+
+# 같은 엔드포인트가 202·200으로 서로 다른 모양을 준다(명세 8장). 두 모양은 겹치는 칸이 없다
+SyncResponse = SyncStarted | SyncSkipped
+
+
+class SyncCounts(BaseModel):
+    """이번 동기화에서 과제가 어떻게 바뀌었는지."""
+
+    new: int
+    due_changed: int
+    submitted: int
+
+
+class LmsSyncResult(BaseModel):
+    """`GET /runs/{id}`의 동기화 결과(명세 8장). 주차 항목·공지는 F-52·F-53이라 아직 0이다."""
+
+    kind: Literal["lms_sync"] = "lms_sync"
+    courses: int
+    assignments: SyncCounts
+    new_module_items: int = 0
+    new_announcements: int = 0
+
+
+class AssignmentCourse(BaseModel):
+    id: str
+    short_name: str
+
+
+class AssignmentItem(BaseModel):
+    id: str
+    course: AssignmentCourse
+    title: str
+    due_at: datetime | None  # KST 오프셋. 마감이 없는 과제는 null
+    submission_state: SubmissionState
+    html_url: str | None
+    planner_task_id: str | None
+    calendar_registered: bool
+
+
+class AssignmentList(BaseModel):
+    items: list[AssignmentItem]
+
+
+class SyncJobResult(BaseModel):
+    """`POST /internal/jobs/lms-sync`(30분 배치) 결과. 실패한 사용자는 다음 차례에 다시 본다."""
+
+    users: int  # 이번에 본 사용자 수(최근에 동기화한 사람은 빼고 센다)
+    synced: int
+    failed: int
+    skipped: int  # 그새 대시보드가 동기화를 시작했거나 연결이 사라진 사람
+    new_assignments: int
+    due_changed: int
+    submitted: int

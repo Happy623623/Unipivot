@@ -31,6 +31,8 @@
 > v0.9 보강 (2026-10-15): F-33 공고 알림 예약 규칙(누구에게·언제), F-35 알림함 조회·읽음
 >
 > v0.9 보강 (2026-10-16): LMS 응답 규칙 확정(10/16 녹화), 허용 경로 여섯 개
+>
+> v0.9 보강 (2026-10-17): LMS 과제 동기화 규칙(F-51)
 
 ---
 
@@ -257,7 +259,7 @@ flowchart LR
 
 ### 5-6. LMS 연동 (LearningX 개인 액세스 토큰)
 
-> 🔍 **2026-10-16 녹화 결과**(6과목·과제 17건·주차 항목 87건, 개인정보 지운 응답을 저장) — 토큰 발급·조회 모두 다시 성공. 확정한 것: 과제 마감일은 `due_at ?? lock_at`(17건 중 5건이 `due_at` null) · 제출 여부는 `submission.workflow_state`(과목 전체 기준인 `has_submitted_submissions`는 쓸 수 없다) · **주차 항목에 `File` 타입이 0건**이고 전부 LearningX 출석·영상 LTI(`ExternalTool`)·`Page`·`Quiz`·`Assignment`라 "새 자료"는 파일이 아니라 **새 항목**이다 · 한 모듈에 제목이 같은 항목이 둘씩 있어(15쌍) 중복은 `canvas_item_id`로만 가린다 · 모듈·항목 `position`은 연속이 아니다(1주차가 position 17인 과목이 있다) · 과제 0건·항목 0건인 과목이 흔하다(6과목 중 2과목). 자세한 필드 규칙은 API 명세 8장에 적었다
+> 🔍 **2026-10-16 녹화 결과**(6과목·과제 17건·주차 항목 87건, 개인정보 지운 응답을 저장) — 토큰 발급·조회 모두 다시 성공. 확정한 것: 과제 마감일은 `due_at ?? lock_at`(17건 중 5건이 `due_at` null) · 제출 여부는 `submission.workflow_state`(과목 전체 기준인 `has_submitted_submissions`는 쓸 수 없다) · **주차 항목에 `File` 타입이 0건**이고 전부 LearningX 출석·영상 LTI(`ExternalTool`)·`Page`·`Quiz`·`Assignment`라 "새 자료"는 파일이 아니라 **새 항목**이다 · 한 모듈에 제목이 같은 항목이 둘씩 있어(15쌍) 중복은 `canvas_item_id`로만 가린다 · 모듈·항목 `position`은 연속이 아니다(1주차가 position 17인 과목이 있다) · 과제 0건·항목 0건인 과목이 흔하다(6과목 중 2과목). 자세한 필드 규칙은 API 명세 9장에 적었다
 >
 > 🔍 **2026-09-28 실제 점검 결과** — 학생 계정으로 토큰 발급·인증 성공. 8개 과목 전체에서 과제와 제출 여부, 모듈(주차학습) 항목 제목, 과목 공지와 첨부파일 조회 가능. 공지 첨부 다운로드 성공. 반면 강의자료실·주차학습은 LearningX 외부 도구라 파일 자체는 토큰으로 접근 불가. 수업 계획서는 8개 과목 모두 포털 페이지를 띄우는 iframe이라 토큰으로 내용을 읽을 수 없음 (포털은 robots.txt로 자동 접근 차단).
 
@@ -321,7 +323,8 @@ flowchart LR
 | crawl_contests | 외부 · 웹 | 공모전·대외활동 메타데이터 수집 (P1) |
 | check_lms_token | **외부 API** · LearningX(Canvas) | 토큰 확인(`GET /api/v1/users/self`). 연결(F-50) 때 저장 전에 부른다 |
 | fetch_lms_courses | **외부 API** · LearningX(Canvas) | 수강 과목 목록과 학기. 토큰 연결(F-50)의 첫 동기화에서 부른다 |
-| fetch_lms_assignments | **외부 API** · LearningX(Canvas) | 과목별 과제·마감일·제출 여부. GET 요청과 허용 경로만 |
+| fetch_lms_assignments | **외부 API** · LearningX(Canvas) | 과목별 과제·마감일·제출 여부. GET 요청과 허용 경로만. 동기화(F-51)에서 과목을 차례로 돈다 |
+| save_lms_sync | 코드 | 동기화에서 바뀐 것(새 과제·마감 변경·제출)을 저장하고 수를 실행 기록에 남긴다. `GET /runs/{id}`의 결과가 이 출력이다 |
 | fetch_lms_modules | **외부 API** · LearningX(Canvas) | 주차별 모듈 항목 제목·유형·링크. GET 요청과 허용 경로만 |
 | fetch_lms_announcements | **외부 API** · LearningX(Canvas) | 과목 공지 본문·첨부파일. GET 요청과 허용 경로만 |
 | classify_announcement | LLM | 공지를 일정 변경 / 자료 배포 / 기회성 / 일반으로 분류하고 일정·요건 추출 |
