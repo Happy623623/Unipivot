@@ -4,6 +4,8 @@
 - 과목은 `(user_id, canvas_course_id)`로 upsert하고, 이번 동기화에 없던 과목은 `is_active`를 내린다
   (수강을 뺀 과목이다 — 과제·공지 기록은 남겨 두고 목록에서만 뺀다). **목록이 비어 오면 내리지 않는다**
 - 과목 목록의 숫자는 지금 저장된 것으로 센다. 주차 항목 동기화는 F-52라 `new_materials`는 그때까지 0이다
+- 주차 항목(`lms_module_items`)은 **과목 공통**이라 `user_id`가 없다(ERD 3-2). `canvas_item_id`로만
+  같은 항목인지 가리고, 사라진 항목은 지우지 않는다
 - 과제는 `(user_id, canvas_assignment_id)`로 upsert한다(제출 상태가 사람마다 달라 사용자별 표다, ERD 5장).
   이번 목록에 없던 과제는 `removed_at`을 찍고, 다시 나타나면 지운다. **목록이 비어 와도 찍는다** —
   과제는 과목과 달리 0건인 과목이 흔하고(녹화 6과목 중 2과목), 클라이언트가 끝까지 받지 못하면 예외라
@@ -15,7 +17,7 @@
 """
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import Depends
@@ -24,12 +26,16 @@ from psycopg import AsyncConnection
 from app.db import get_conn
 from app.eligibility import KST
 from app.lms.assignments import SUBMITTED, CanvasAssignment
+from app.lms.modules import CanvasModuleItem
 from app.lms.parse import course_name, is_canvas_id
+from app.repositories.opportunities import Cursor
 from app.schemas.lms import (
     AssignmentCourse,
     AssignmentItem,
+    AssignmentUpdate,
     ConnectionView,
     CourseItem,
+    ModuleItemUpdate,
     NextDue,
 )
 
@@ -75,6 +81,40 @@ class SavedAssignment:
 
 
 @dataclass(frozen=True)
+class SavedItem:
+    """막 저장한 주차 항목. 알림 문구를 만들 만큼만 담는다."""
+
+    id: str
+    module_name: str
+    title: str
+
+
+@dataclass(frozen=True)
+class ModuleChanges:
+    """한 과목의 주차 항목을 저장하고 바뀐 것.
+
+    `first_load`는 그 과목의 항목을 **이번에 처음** 받았다는 뜻이다. 연결하고 처음 받으면 한 학기
+    분량(녹화 87건)이 모두 "새 항목"이라 알림을 보내지 않는다(저장만 한다).
+    """
+
+    created: list[SavedItem] = field(default_factory=list)
+    first_load: bool = False
+
+    # 과목을 더해 합칠 때 first_load는 OR다(수를 세는 데만 쓴다). 알림은 과목마다 `notifiable`로
+    # 가려야 한다 — 합친 값으로 가리면 첫 수집 과목 하나가 다른 과목 알림까지 막는다
+    def __add__(self, other: "ModuleChanges") -> "ModuleChanges":
+        return ModuleChanges(
+            created=self.created + other.created,
+            first_load=self.first_load or other.first_load,
+        )
+
+    @property
+    def notifiable(self) -> list[SavedItem]:
+        """알림을 만들 항목. 첫 수집이면 없다."""
+        return [] if self.first_load else self.created
+
+
+@dataclass(frozen=True)
 class AssignmentChanges:
     """한 과목을 저장하고 바뀐 것. 수는 `POST /lms/sync` 결과에 그대로 들어간다(명세 9장)."""
 
@@ -96,6 +136,8 @@ class AssignmentChanges:
 
 
 _FAR = datetime.max.replace(tzinfo=UTC)  # 마감 없는 과제를 뒤로 보낼 때 쓰는 비교값
+UPDATE_LIMIT = 50  # `GET /lms/updates` 한 쪽
+DEADLINE_SOON = timedelta(days=3)  # 피드에 넣는 "마감 임박"(명세 9장: D-3 이내 미제출)
 
 _ASSIGNMENTS = (
     "select a.id, a.title, a.due_at, a.submission_state::text as submission_state, a.html_url,"
@@ -118,6 +160,31 @@ _STATE_FILTERS = {
     "all": "",
 }
 
+# 새 주차 항목과 과제를 한 피드로(명세 9장 `GET /lms/updates`). 둘을 같은 모양으로 맞춰 union한다.
+# 주차 항목은 과목 공통 표라 과목 번호로 내 수강 과목에 잇는다(그래서 남의 과목 항목은 안 나온다)
+_UPDATES = (
+    "select * from ("
+    "  select 'module_item' as kind, i.id, i.first_seen_at as at, c.id as course_id,"
+    "    c.name as course_name, i.module_name, i.title, i.item_type, i.html_url,"
+    "    null::timestamptz as due_at, null as submission_state,"
+    "    (select f.id from files f where f.lms_module_item_id = i.id and f.user_id = c.user_id"
+    "      order by f.created_at, f.id limit 1) as uploaded_file_id"
+    "  from lms_module_items i"
+    "  join lms_courses c on c.canvas_course_id = i.canvas_course_id and c.user_id = %(uid)s"
+    "    and coalesce(c.is_active, true)"
+    "  where i.first_seen_at >= %(since)s"
+    "  union all"
+    "  select 'assignment', a.id, a.first_seen_at, c.id, c.name, null, a.title, null, a.html_url,"
+    "    a.due_at, a.submission_state::text, null"
+    "  from lms_assignments a"
+    "  join lms_courses c on c.id = a.lms_course_id and c.user_id = a.user_id"
+    "  where a.user_id = %(uid)s and a.removed_at is null and coalesce(c.is_active, true)"
+    # 새 과제이거나, 마감이 가까운 미제출 과제다(명세 9장)
+    "    and (a.first_seen_at >= %(since)s or (a.submission_state = 'unsubmitted'"
+    "      and a.due_at >= %(now)s and a.due_at < %(soon)s))"
+    ") as feed where kind = any(%(kinds)s::text[])"
+)
+
 _UPSERT_ASSIGNMENT = (
     "insert into lms_assignments (user_id, lms_course_id, canvas_assignment_id, title, due_at,"
     " html_url, submission_state, submitted_at, first_seen_at, removed_at)"
@@ -138,8 +205,9 @@ _COURSES = (
     "   and a.lms_course_id = c.id and a.submission_state = 'unsubmitted'"
     "   and a.removed_at is null) as open_assignments,"
     # 주차 항목은 과목 공통 표라 과목 번호로 잇는다. 마지막으로 과목을 본 뒤 생긴 것만 센다
+    # (연결 전부터 있던 항목은 첫 수집 때 last_viewed_at을 올려서 빼고 센다, save_module_items)
     " (select count(*) from lms_module_items i where i.canvas_course_id = c.canvas_course_id"
-    "   and i.first_seen_at > coalesce(c.last_viewed_at, c.synced_at)) as new_materials,"
+    "   and i.first_seen_at > coalesce(c.last_viewed_at, to_timestamp(0))) as new_materials,"
     # 가장 가까운 것 하나: 미제출 과제와 확정된 계획서 일정 중에서(명세 9장)
     " (select json_build_object('kind', due.kind, 'title', due.title, 'due_at', due.at) from ("
     "    select 'assignment' as kind, a.title, a.due_at as at from lms_assignments a"
@@ -153,6 +221,18 @@ _COURSES = (
     "  ) as due order by due.at limit 1) as next_due"
     " from lms_courses c where c.user_id = %(uid)s and coalesce(c.is_active, true)"
     # 정렬은 ordered()가 한다. DB의 정렬 규칙(collation)은 환경마다 달라서 순서를 맡기지 않는다
+)
+
+_UPSERT_ITEM = (
+    "insert into lms_module_items (canvas_course_id, canvas_item_id, module_name, title,"
+    " item_type, html_url, first_seen_at)"
+    " values (%(canvas)s, %(item)s, %(module)s, %(title)s, %(kind)s, %(url)s, %(now)s)"
+    # 처음 본 때(`first_seen_at`)는 그대로 둔다. 새 자료 수(`GET /lms/courses`)가 그 시각을 본다
+    # 과목이 바뀐 항목(과목 복제 등)은 새 과목으로 다시 붙인다. 안 그러면 동기화마다 새 항목이 된다
+    " on conflict (canvas_item_id) do update set canvas_course_id = excluded.canvas_course_id,"
+    " module_name = excluded.module_name, title = excluded.title,"
+    " item_type = excluded.item_type, html_url = excluded.html_url"
+    " returning id"
 )
 
 _SAVE = (
@@ -380,6 +460,110 @@ class LmsRepository:
             )
         return created
 
+    async def updates(
+        self,
+        user_id: str,
+        *,
+        since: datetime,
+        now: datetime,
+        kinds: list[str],
+        course_id: str | None = None,
+        cursor: Cursor | None = None,
+        limit: int = UPDATE_LIMIT,
+    ) -> tuple[list[Any], Cursor | None]:
+        """새 주차 항목·과제 피드(F-52·F-51). 처음 본 순(최신 먼저)이고 한 쪽은 `limit`개다.
+
+        `cursor`는 같은 조건(지문)에서만 쓸 수 있다. 마지막 행의 (처음 본 시각, id) 뒤를 이어 읽는다.
+        """
+        query = _UPDATES
+        params: dict[str, Any] = {
+            "uid": user_id,
+            "since": since,
+            "now": now,
+            "soon": now + DEADLINE_SOON,
+            "kinds": kinds,
+        }
+        if course_id is not None:
+            query += " and course_id = %(course)s"
+            params["course"] = course_id
+        if cursor is not None:
+            query += " and (at, id) < (%(at)s, %(last)s)"
+            params["at"], params["last"] = cursor.value, cursor.id
+        query += " order by at desc, id desc limit %(limit)s"
+        params["limit"] = limit + 1  # 한 개 더 받아 다음 쪽이 있는지 본다
+        rows = await self._rows(query, params)
+        more = len(rows) > limit
+        rows = rows[:limit]
+        items = [_update(row) for row in rows]
+        if not more or not rows:
+            return items, None
+        last = rows[-1]
+        return items, Cursor(
+            scope=update_scope(kinds, course_id, since), value=last["at"], id=str(last["id"])
+        )
+
+    async def save_module_items(
+        self, user_id: str, canvas_course_id: int, items: list[CanvasModuleItem], *, now: datetime
+    ) -> ModuleChanges:
+        """주차 항목을 저장하고 처음 본 것을 돌려준다.
+
+        `lms_module_items`는 **과목 공통 표**라 `user_id`가 없다(ERD 3-2: 주차 항목은 수강생 모두에게
+        같다). 그래서 다른 수강생이 먼저 동기화했으면 나에게는 "처음 본 항목"이 아니다 — 알림은
+        그때 그 과목 수강생 모두에게 한 번 만든다(`add_material_notices`).
+
+        **첫 수집인지는 내 과목 행의 `modules_synced_at`으로 가린다.** 표에 행이 있는지로 가리면
+        안 된다 — 항목이 0건인 과목이 흔해서(녹화 6과목 중 2과목) 그 과목에 나중에 올라온 첫 자료가
+        영원히 "첫 수집"으로 묶인다. 첫 수집에는 `last_viewed_at`도 지금으로 올려서, 연결 전부터
+        있던 항목이 "새 자료" 수에 들어가지 않게 한다(ERD 알림함·조회 기록).
+
+        사라진 항목은 지우지 않는다(표에 `removed_at`이 없다). 교수가 항목을 지워도 기록은 남는다.
+        """
+        row = await self._row(
+            "select modules_synced_at from lms_courses"
+            " where user_id = %s and canvas_course_id = %s",
+            (user_id, canvas_course_id),
+        )
+        first_load = row is None or row["modules_synced_at"] is None
+        before = {
+            row["canvas_item_id"]
+            for row in await self._rows(
+                "select canvas_item_id from lms_module_items where canvas_course_id = %s",
+                (canvas_course_id,),
+            )
+        }
+        created: list[SavedItem] = []
+        for one in items:
+            row = await self._row(
+                _UPSERT_ITEM,
+                {
+                    "canvas": canvas_course_id,
+                    "item": one.canvas_item_id,
+                    "module": one.module_name,
+                    "title": one.title,
+                    "kind": one.item_type,
+                    "url": one.html_url,
+                    "now": now,
+                },
+            )
+            assert row is not None  # insert ... returning은 늘 한 행이다
+            if one.canvas_item_id not in before:
+                created.append(
+                    SavedItem(
+                        id=str(row["id"]),
+                        module_name=one.module_name,
+                        title=one.title,
+                    )
+                )
+        # 첫 수집 표시와 "여기까지 봤다"를 함께 올린다(둘 다 그 사용자 과목 행이다)
+        await self.conn.execute(
+            "update lms_courses set modules_synced_at = %(now)s,"
+            " last_viewed_at = greatest(coalesce(last_viewed_at, %(now)s), %(now)s)"
+            " where user_id = %(uid)s and canvas_course_id = %(canvas)s"
+            " and modules_synced_at is null",
+            {"uid": user_id, "canvas": canvas_course_id, "now": now},
+        )
+        return ModuleChanges(created=created, first_load=first_load)
+
     async def claim_sync(self, user_id: str, *, now: datetime, before: datetime) -> bool:
         """동기화를 시작한다고 한 문장으로 못 박는다. 이미 누가 가져갔으면 False다.
 
@@ -449,6 +633,55 @@ class LmsRepository:
 
     async def _row(self, query: str, params: Any) -> dict[str, Any] | None:
         return await (await self.conn.execute(query, params)).fetchone()
+
+
+def update_scope(kinds: list[str], course_id: str | None, since: datetime) -> str:
+    """피드 조건의 지문. 조건이 다른 목록에는 그 커서를 쓸 수 없다(명세 9장).
+
+    `since`는 UTC로 적는다 — 같은 시각을 다른 오프셋으로 보내도 같은 목록이다. 조건 부분과 `since`를
+    `|`로 나눠 두므로, 다음 쪽을 부를 때 커서에서 `since`를 되읽을 수 있다(기본값이 매 요청 달라지는
+    문제를 막는다).
+    """
+    return f"{update_filter(kinds, course_id)}|{since.astimezone(UTC).isoformat()}"
+
+
+def update_filter(kinds: list[str], course_id: str | None) -> str:
+    """지문에서 `since`를 뺀 부분(종류·과목)."""
+    return f"{','.join(sorted(kinds))}|{course_id or ''}"
+
+
+def update_since(scope: str) -> datetime | None:
+    """커서 지문에 적힌 `since`. 모양이 틀리면 None이다."""
+    try:
+        return datetime.fromisoformat(scope.rsplit("|", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _update(row: dict[str, Any]) -> ModuleItemUpdate | AssignmentUpdate:
+    course = AssignmentCourse(
+        id=str(row["course_id"]), short_name=course_name(row["course_name"]).short_name
+    )
+    if row["kind"] == "module_item":
+        return ModuleItemUpdate(
+            id=str(row["id"]),
+            course=course,
+            module_name=row["module_name"],
+            title=row["title"],
+            item_type=row["item_type"],
+            html_url=row["html_url"],
+            first_seen_at=row["at"].astimezone(KST),
+            uploaded_file_id=str(row["uploaded_file_id"]) if row["uploaded_file_id"] else None,
+        )
+    return AssignmentUpdate(
+        id=str(row["id"]),
+        course=course,
+        title=row["title"],
+        due_at=row["due_at"].astimezone(KST) if row["due_at"] else None,
+        submission_state=row["submission_state"],
+        html_url=row["html_url"],
+        first_seen_at=row["at"].astimezone(KST),
+    )
 
 
 def ordered(items: list[CourseItem]) -> list[CourseItem]:

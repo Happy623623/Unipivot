@@ -52,6 +52,8 @@
 >
 > v0.4 보강(10/17, LMS 과제 동기화): LMS 과제 동기화 규칙(F-51)
 >
+> v0.4 보강(10/17, LMS 새 자료): 주차 항목 첫 수집 표시(F-52)
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -977,7 +979,9 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - `courses`는 이번에 과제까지 받은 과목 수다. `new`는 처음 저장한 과제, `due_changed`는 마감이 바뀐 과제, `submitted`는 이번에 제출로 바뀐 과제 수다
 - **처음 저장한 과제가 이미 제출된 상태면 할 일도 알림도 만들지 않는다**(`new`에는 센다). 연결하고 처음 받을 때 지난 학기 과제까지 한꺼번에 들어오기 때문이다(녹화 17건 중 13건이 제출·채점 완료였다)
 - 새 과제는 플래너 할 일이 되고 `new_assignment` 알림이 생긴다(마감이 있는 미제출 과제만). 마감이 바뀌면 아직 끝내지 않은 할 일의 날짜만 고친다. 제출하면 할 일이 자동 완료되고 아직 보내지 않은 알림은 지워진다(10장)
-- 마감 날짜를 캘린더에 넣는 일은 이 동기화에서 하지 않는다(사용자 캘린더에 쓰는 일이라 따로 정한다). `new_module_items`·`new_announcements`는 F-52·F-53이 채운다
+- 마감 날짜를 캘린더에 넣는 일은 이 동기화에서 하지 않는다(사용자 캘린더에 쓰는 일이라 따로 정한다). `new_announcements`는 F-53이 채운다
+- `new_module_items`는 이번에 **처음 본 주차 항목** 수다. 그 과목의 항목을 처음 받는 동기화에서는 수만 세고 알림을 만들지 않는다 — 연결 직후에는 한 학기 분량이 한꺼번에 들어온다(녹화 87건). 그때 `lms_courses.last_viewed_at`도 지금으로 올려서 "새 자료" 수에도 들어가지 않게 한다
+- 새 주차 항목 알림(`new_material`)은 그 과목을 듣는 **수강생 모두에게** 간다(항목은 과목 공통이다, ERD 3-2). 연결을 끊은 사람과 설정에서 끈 사람은 뺀다
 
 ### `GET /lms/courses`
 
@@ -1084,6 +1088,10 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 }
 ```
 
+- `since`를 주지 않으면 최근 14일이다. 한 쪽은 50개이고, 더 있으면 `next_cursor`를 준다
+- `cursor`는 **종류·과목이 같은 목록**에서만 쓸 수 있다(다르면 422 `VALIDATION_FAILED`, `details.fields.cursor`). 다음 쪽은 커서에 적힌 `since`를 쓴다 — 기본값(지금 − 14일)은 요청마다 달라서 그대로 두면 다음 쪽을 부를 수 없다
+- 항목은 **처음 본 순**(최신 먼저)이다. `module_item`에는 `item_type`(`ExternalTool`·`Page`·`Quiz`·`Assignment`, 녹화에 `File`은 없었다)이 함께 간다. `module_name`·`html_url`·`item_type`은 null일 수 있다
+- `assignment` 항목은 `{type, id, course, title, due_at, submission_state, html_url, first_seen_at}`이다. 새로 본 과제이거나 **마감 D-3 이내 미제출** 과제가 들어온다(마감 임박은 `since`보다 오래된 것도 넣는다)
 - `uploaded_file_id`: 사용자가 이 항목 알림에서 넘어가 PDF를 올렸으면 해당 파일. 프론트는 "업로드하기" 버튼 대신 "요약 보기"를 띄운다
 - 공지 `category`: `schedule_change` \| `material` \| `opportunity` \| `general` \| `null`(분류 전)
 - `opportunity`로 분류된 공지는 `opportunity_id`로 공고 상세에 연결

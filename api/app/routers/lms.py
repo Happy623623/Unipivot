@@ -3,7 +3,8 @@
 토큰 연결·상태·해제, 수강 과목 목록, 동기화(202 + `run_id`), 과제 목록이다.
 """
 
-from typing import Annotated
+from datetime import datetime, timedelta
+from typing import Annotated, get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Response
@@ -13,7 +14,8 @@ from app.clock import NowDep
 from app.errors import ApiError
 from app.lms.service import NOT_CONNECTED, LmsServiceDep
 from app.lms.sync import LmsSyncServiceDep
-from app.repositories.lms import LmsRepoDep
+from app.repositories.lms import LmsRepoDep, update_filter, update_since
+from app.repositories.opportunities import decode_cursor, encode_cursor
 from app.schemas.lms import (
     AssignmentList,
     AssignmentState,
@@ -21,8 +23,10 @@ from app.schemas.lms import (
     ConnectRequest,
     ConnectResult,
     CourseList,
+    LmsUpdateList,
     SyncResponse,
     SyncSkipped,
+    UpdateType,
 )
 
 router = APIRouter(prefix="/lms", tags=["LMS"])
@@ -97,4 +101,64 @@ async def assignments(
             state=state,
             course_id=str(lms_course_id) if lms_course_id else None,
         )
+    )
+
+
+UPDATE_KINDS = get_args(UpdateType)  # 쓸 수 있는 종류(schemas/lms.py와 한 곳에서 본다)
+SINCE_DAYS = 14  # since를 주지 않으면 최근 이만큼
+
+
+@router.get("/updates", response_model=LmsUpdateList)
+async def updates(
+    user: CurrentUserDep,
+    repo: LmsRepoDep,
+    now: NowDep,
+    since: Annotated[datetime | None, Query(description="이 시각 뒤에 처음 본 것")] = None,
+    type: Annotated[str, Query(description="쉼표로 나눈 종류")] = "module_item,assignment",
+    lms_course_id: Annotated[UUID | None, Query(description="과목 하나만 볼 때")] = None,
+    cursor: Annotated[str | None, Query(description="다음 쪽")] = None,
+) -> LmsUpdateList:
+    """새 주차 항목·과제 피드(F-52·F-51). 처음 본 순이고, 마감 D-3 이내 미제출 과제도 넣는다.
+
+    `since`를 주지 않으면 최근 14일이다. `cursor`를 주면 그 커서에 적힌 `since`를 쓴다(기본값은 요청마다
+    달라서 그대로 두면 다음 쪽을 부를 수 없다). 종류·과목이 다른 목록의 커서는 422다.
+    한 쪽은 50개이고, 공지(`announcement`)는 F-53이 채운다.
+    """
+    kinds = [one.strip() for one in type.split(",") if one.strip()]
+    unknown = [one for one in kinds if one not in UPDATE_KINDS]
+    if not kinds or unknown:
+        raise ApiError(
+            422,
+            "VALIDATION_FAILED",
+            "볼 종류를 확인해 주세요.",
+            {"fields": {"type": f"{', '.join(UPDATE_KINDS)} 중에서 골라 주세요."}},
+        )
+    course = str(lms_course_id) if lms_course_id else None
+    start = since or now - timedelta(days=SINCE_DAYS)
+    last = None
+    if cursor is not None:
+        try:
+            last = decode_cursor(cursor)
+        except ValueError:
+            last = None
+        # `since`는 커서에 적힌 값을 쓴다. 기본값(지금 - 14일)은 요청마다 달라서, 지문에 넣고 그대로
+        # 비교하면 둘째 쪽이 늘 422가 된다
+        from_cursor = update_since(last.scope) if last else None
+        if (
+            last is None
+            or from_cursor is None
+            or not last.scope.startswith(f"{update_filter(kinds, course)}|")
+        ):
+            raise ApiError(
+                422,
+                "VALIDATION_FAILED",
+                "목록 조건이 바뀌었어요. 처음부터 다시 불러 주세요.",
+                {"fields": {"cursor": "조건이 다른 목록의 커서예요."}},
+            )
+        start = from_cursor
+    items, next_cursor = await repo.updates(
+        user.id, since=start, now=now, kinds=kinds, course_id=course, cursor=last
+    )
+    return LmsUpdateList(
+        items=items, next_cursor=encode_cursor(next_cursor) if next_cursor else None
     )

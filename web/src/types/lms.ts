@@ -100,8 +100,14 @@ export interface MaterialDetail {
   }[];
 }
 
-// GET /lms/updates
+// GET /lms/updates?since=&type=module_item,assignment&lms_course_id=&cursor=
+// since를 주지 않으면 최근 14일. announcement는 F-53이 채운다(그때까지 비어 있다)
+export type LmsUpdateType = "module_item" | "assignment" | "announcement";
 export type LmsUpdate =
-  | { type: "module_item"; id: string; course: { id: string; short_name: string }; module_name: string; title: string; html_url: string; first_seen_at: string; uploaded_file_id: string | null }
+  | { type: "module_item"; id: string; course: { id: string; short_name: string }; module_name: string | null; title: string; item_type: string | null; html_url: string | null; first_seen_at: string; uploaded_file_id: string | null }
   | { type: "announcement"; id: string; course: { id: string; short_name: string }; title: string; summary: string | null; posted_at: string; category: AnnouncementCategory | null; attachment_count: number; opportunity_id: string | null; planner_task_id: string | null }
-  | { type: "assignment"; id: string; course: { id: string; short_name: string }; title: string; due_at: string; submission_state: SubmissionState };
+  | { type: "assignment"; id: string; course: { id: string; short_name: string }; title: string; due_at: string | null; submission_state: SubmissionState; html_url: string | null; first_seen_at: string };
+export interface LmsUpdateList {
+  items: LmsUpdate[];
+  next_cursor: string | null;
+}
