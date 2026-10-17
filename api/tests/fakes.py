@@ -14,6 +14,7 @@ from app.schemas.me import (
     Me,
     Profile,
     ProfileCompletion,
+    Settings,
 )
 from app.schemas.meta import Department
 from app.schemas.metrics import (
@@ -32,6 +33,7 @@ class FakeProfileRepository:
     def __init__(self) -> None:
         self.profiles: dict[str, dict[str, Any]] = {}
         self.tokens: dict[str, dict[str, str]] = {}
+        self.settings: dict[str, Settings] = {}
         self.locks: list[str] = []
 
     async def lock(self, user_id: str) -> None:
@@ -109,6 +111,18 @@ class FakeProfileRepository:
         else:  # 철회하면 소득 값도 지운다 (DB 제약과 같은 규칙)
             row["income_agreed_at"] = None
             row["profile"] = row["profile"].model_copy(update=dict.fromkeys(INCOME_FIELDS))
+
+    async def get_settings(self, user_id: str) -> Settings:
+        return self.settings.get(
+            user_id,
+            Settings(push_enabled=True, muted_notification_types=[], calendar_auto_lms=True),
+        )
+
+    async def update_settings(self, user_id: str, changes: dict[str, Any]) -> Settings:
+        """실제 저장소처럼 보낸 항목만 얹는다(행이 없으면 기본값 위에)."""
+        current = await self.get_settings(user_id)
+        self.settings[user_id] = Settings(**{**current.model_dump(), **changes})
+        return self.settings[user_id]
 
     async def save_google_tokens(self, user_id: str, access_token: str, refresh_token: str) -> None:
         self.tokens[user_id] = {"access_token": access_token, "refresh_token": refresh_token}

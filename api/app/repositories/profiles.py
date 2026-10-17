@@ -16,6 +16,7 @@ from app.schemas.me import (
     Me,
     Profile,
     ProfileCompletion,
+    Settings,
 )
 
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
@@ -147,6 +148,44 @@ class ProfileRepository:
             )
         ).fetchone()
         return IncomeConsentResult.model_validate(row)
+
+    async def get_settings(self, user_id: str) -> Settings:
+        """알림·캘린더 설정. 행이 없으면 DB 기본값을 그대로 돌려준다(명세 4장)."""
+        row = await (
+            await self.conn.execute(
+                "select push_enabled, muted_notification_types, calendar_auto_lms"
+                " from user_settings where user_id = %s",
+                (user_id,),
+            )
+        ).fetchone()
+        if row is None:
+            return Settings(push_enabled=True, muted_notification_types=[], calendar_auto_lms=True)
+        return Settings(
+            push_enabled=row["push_enabled"],
+            muted_notification_types=list(row["muted_notification_types"] or []),
+            calendar_auto_lms=row["calendar_auto_lms"],
+        )
+
+    async def update_settings(self, user_id: str, changes: dict[str, Any]) -> Settings:
+        """보낸 항목만 바꾼다. 행이 없으면 기본값으로 만들고 그 위에 얹는다(명세 4장)."""
+        columns = sql.SQL(", ").join(
+            sql.SQL("{} = {}").format(sql.Identifier(name), sql.Placeholder(name))
+            for name in changes
+        )
+        await self.conn.execute(
+            sql.SQL(
+                "insert into user_settings (user_id) values (%(user)s)"
+                " on conflict (user_id) do nothing"
+            ),
+            {"user": user_id},
+        )
+        await self.conn.execute(
+            sql.SQL("update user_settings set {columns} where user_id = %(user)s").format(
+                columns=columns
+            ),
+            {**changes, "user": user_id},
+        )
+        return await self.get_settings(user_id)
 
     async def save_google_tokens(self, user_id: str, access_token: str, refresh_token: str) -> None:
         """토큰은 암호화된 값만 받는다. access token 만료는 Google 기본값(1시간)보다 조금 짧게 잡는다."""
