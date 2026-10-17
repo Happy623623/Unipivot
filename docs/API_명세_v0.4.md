@@ -935,6 +935,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 
 - 저장 전에 `GET /api/v1/users/self`로 검증한다. 실패하면 저장하지 않고 `422 LMS_TOKEN_INVALID`
 - 성공하면 바로 첫 동기화를 시작하고 `first_sync_run_id`를 돌려준다. **F-50의 첫 동기화는 수강 과목 목록까지**이고(실행 하나 = `trigger_type` `lms_sync`), 과제·주차 항목·공지는 F-51·F-52가 채운다
+- 연결은 `last_synced_at`을 **비워 둔다**(토큰을 갈아 끼울 때도 비운다). 과제를 아직 받지 않았기 때문이고, 그래야 프론트가 바로 부르는 `POST /lms/sync`가 "5분 안에 받았다"며 건너뛰지 않는다
 - `courses`는 저장한 과목 수다. **학생 등록(`enrollments[].type = student`)이 아닌 과목과 아직 열지 않은 과목(`workflow_state`가 `available`·`completed`가 아닌 것)은 세지 않는다**
 - 과목 목록을 읽지 못하면(끝까지 받지 못한 경우도) `502 LMS_API_ERROR`이고 토큰도 저장하지 않는다(과목을 못 읽으면 과제·자료도 못 읽어서 연결해 둘 뜻이 없다). 과목 목록에서 401이면 `422 LMS_TOKEN_INVALID`다
 - 이번 목록에 없던 과목은 `is_active`를 내려 목록에서 뺀다(기록은 남긴다). **목록이 비어 오면 내리지 않는다** — 학기 사이나 필터 때문에 비어 올 수 있고, 그때 전부 내리면 사용자가 토큰을 다시 붙여넣기 전까지 과목이 하나도 안 보인다
@@ -948,7 +949,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 { "status": "active", "token_last4": "a9f2", "last_synced_at": "2026-10-01T10:30:00+09:00", "last_error": null }
 ```
 
-`status`는 DB에 있는 값을 그대로 준다(`active` · `error` · `disconnected`, `GET /me`의 `lms.status`와 같은 세 가지). `status = error`이면 `last_error`에 사용자용 메시지(예: "토큰이 만료되었거나 삭제되었어요"). 연결 안 됨은 `404 LMS_NOT_CONNECTED`. `last_synced_at`은 마지막으로 동기화를 **시작한** 시각이다(`POST /lms/sync`).
+`status`는 DB에 있는 값을 그대로 준다(`active` · `error` · `disconnected`, `GET /me`의 `lms.status`와 같은 세 가지). `status = error`이면 `last_error`에 사용자용 메시지(예: "토큰이 만료되었거나 삭제되었어요"). 연결 안 됨은 `404 LMS_NOT_CONNECTED`. `last_synced_at`은 마지막으로 동기화를 **시작한** 시각이고(`POST /lms/sync`), 연결 직후에는 null이다(화면은 "아직 없음").
 
 ### `DELETE /lms/connection`
 

@@ -5,14 +5,19 @@ from decimal import Decimal
 
 import pytest
 
-from app.calendar.google import GoogleEvent
+from app.calendar.google import GoogleCalendarError, GoogleEvent
 from app.config import Settings
 from app.eligibility import KST
 from app.eval.cli import _moment, main, managed_database
 from app.eval.fakes import (
+    DB_COURSE_ID,
+    LMS_USER_ID,
+    ML_COURSE_ID,
     RecordedCalendar,
+    RecordedLearningX,
     RecordedLlm,
     RecordedStorage,
+    lms_moment,
     nationwide,
     poster_bytes,
     poster_submit,
@@ -29,7 +34,8 @@ from app.uploads.storage import StorageError
 
 pytestmark = pytest.mark.anyio
 
-# PRD 8장 표의 P0 시나리오 중 이번에 만든 것. S09·S10은 실제 파일, S15–S18은 LMS 기능이 먼저다
+# PRD 8장 표의 P0 시나리오 중 지금까지 만든 것. S09·S10은 실제 HWP·PDF 파일이, S15는 계획서
+# 추출(F-14)이 먼저다
 EXPECTED_CODES = (
     "S01",
     "S02",
@@ -43,6 +49,9 @@ EXPECTED_CODES = (
     "S12",
     "S13",
     "S14",
+    "S16",
+    "S17",
+    "S18",
 )
 
 
@@ -222,15 +231,19 @@ async def test_the_recorded_calendar_keeps_one_event_per_number() -> None:
     calendar = RecordedCalendar()
     ends_at = datetime(2026, 11, 20, 18, tzinfo=KST)
     first = await calendar.insert("token", event_id="abc", title="[마감] 공고", ends_at=ends_at)
-    again = await calendar.insert("token", event_id="abc", title="[마감] 공고", ends_at=ends_at)
-    assert isinstance(first, GoogleEvent) and first == again
+    assert isinstance(first, GoogleEvent)
+    # 같은 번호로 또 넣으면 실제 Google처럼 409다(일정을 고치지 않는다)
+    with pytest.raises(GoogleCalendarError) as conflict:
+        await calendar.insert("token", event_id="abc", title="[마감] 공고", ends_at=ends_at)
+    assert conflict.value.status == 409
     assert (calendar.inserts, len(calendar.events)) == (2, 1)  # 두 번 불러도 일정은 하나
     assert calendar.titles == {"abc": "[마감] 공고"}
-    # 실제 클라이언트처럼 이번에 보낸 시각으로 돌려준다(마감일이 바뀐 재등록을 가리지 않게)
-    moved = await calendar.insert(
+    # 시각을 바꾸는 것은 move다(클라이언트가 409 뒤에 그렇게 한다)
+    moved = await calendar.move(
         "token", event_id="abc", title="[마감] 공고", ends_at=ends_at + timedelta(days=1)
     )
     assert moved.ends_at == ends_at + timedelta(days=1)
+    assert calendar.events["abc"].ends_at == ends_at + timedelta(days=1)
     assert await calendar.refresh("refresh-token") == ("recorded-access-token", 3600)
     await calendar.delete("token", "abc")
     assert calendar.events == {} and calendar.titles == {} and calendar.deletes == ["abc"]
@@ -266,3 +279,53 @@ def test_the_poster_bytes_look_like_a_jpeg() -> None:
 
     assert inspect_poster(poster_bytes()).type.mime == "image/jpeg"
     assert inspect_poster(poster_bytes()).sha256 != inspect_poster(poster_bytes(b"x")).sha256
+
+
+def test_the_recorded_lms_moves_with_the_clock() -> None:
+    """녹화한 과제의 마감은 **주입한 시계**에서 며칠 뒤다. 그래야 어느 날 돌려도 같은 결과가 나온다."""
+    now = datetime(2026, 11, 3, 14, 20, tzinfo=KST)
+    lms = RecordedLearningX(now)
+
+    rows = {row["id"]: row for row in lms.assignment_rows[DB_COURSE_ID]}
+    homework = rows[9_901_242]
+    assert homework["due_at"] == lms_moment(now, 8)
+    assert homework["due_at"].endswith("14:59:59Z")  # 그날 23:59:59 KST
+    assert homework["submission"]["workflow_state"] == "unsubmitted"
+    # 마감이 lock_at에만 있는 과제(녹화 17건 중 5건)와 이미 낸 과제도 한 벌에 있다
+    assert rows[9_901_588]["due_at"] is None and rows[9_901_588]["lock_at"] == lms_moment(now, 6)
+    assert rows[9_901_588]["submission"]["submitted_at"] == lms_moment(now, -1)
+
+
+def test_the_recorded_lms_can_be_changed_between_syncs() -> None:
+    """S16–S18은 전/후 녹화 두 벌 대신 한 벌을 고친다(과제 추가·마감 변경·제출)."""
+    now = datetime(2026, 10, 12, 9, 0, tzinfo=KST)
+    lms = RecordedLearningX(now)
+
+    lms.add_assignment(DB_COURSE_ID, 9_901_900, "실습 4주차 결과 제출", in_days=12)
+    added = next(row for row in lms.assignment_rows[DB_COURSE_ID] if row["id"] == 9_901_900)
+    assert (added["name"], added["due_at"]) == ("실습 4주차 결과 제출", lms_moment(now, 12))
+
+    lms.change_due(9_901_242, in_days=15)
+    lms.submit(9_901_242, in_days=1)
+    changed = next(row for row in lms.assignment_rows[DB_COURSE_ID] if row["id"] == 9_901_242)
+    assert changed["due_at"] == lms_moment(now, 15)
+    assert changed["submission"]["workflow_state"] == "submitted"
+    assert changed["submission"]["submitted_at"] == lms_moment(now, 1)
+
+    with pytest.raises(KeyError, match="녹화에 없는 과제"):
+        lms.change_due(999, in_days=1)
+
+
+@pytest.mark.anyio
+async def test_the_recorded_lms_answers_like_the_client() -> None:
+    """클라이언트 자리에 그대로 끼우는 가짜다(부른 경로를 적어 둔다)."""
+    lms = RecordedLearningX(datetime(2026, 10, 12, 9, 0, tzinfo=KST))
+
+    assert (await lms.me("token"))["id"] == LMS_USER_ID
+    assert [course["id"] for course in await lms.courses("token")] == [DB_COURSE_ID, ML_COURSE_ID]
+    assert len(await lms.assignments("token", ML_COURSE_ID)) == 1
+    modules = await lms.modules("token", DB_COURSE_ID)
+    assert [item["title"] for item in modules[0]["items"]] == ["3주차 강의"]
+    assert await lms.module_items("token", DB_COURSE_ID, modules[0]["id"]) == modules[0]["items"]
+    assert await lms.announcements("token", DB_COURSE_ID) == []  # 공지는 F-53이 채운다
+    assert lms.calls[:3] == ["me", "courses", f"assignments:{ML_COURSE_ID}"]

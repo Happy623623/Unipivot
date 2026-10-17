@@ -41,13 +41,7 @@ class FakeLmsRepository:
         return self.row
 
     async def save_connection(
-        self,
-        user_id: str,
-        *,
-        token: str,
-        last4: str,
-        canvas_user_id: int | None,
-        now: datetime,
+        self, user_id: str, *, token: str, last4: str, canvas_user_id: int | None
     ) -> None:
         assert user_id == USER_ID
         self.row = Connection(
@@ -55,7 +49,7 @@ class FakeLmsRepository:
             token_last4=last4,
             access_token=token,
             canvas_user_id=canvas_user_id,
-            last_synced_at=now,
+            last_synced_at=None,  # 연결은 과목까지만 받는다(첫 동기화가 받는다)
             last_error=None,
         )
 
@@ -225,7 +219,7 @@ def test_it_shows_the_connection_and_forgets_it_on_disconnect(
     assert view.json() == {
         "status": "active",
         "token_last4": TOKEN[-4:],
-        "last_synced_at": "2026-10-16T12:00:00+09:00",
+        "last_synced_at": None,  # 연결 직후다. 과제는 첫 동기화가 받는다
         "last_error": None,
     }
     assert client.delete(CONNECTION, headers=headers()).status_code == 204

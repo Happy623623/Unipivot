@@ -11,11 +11,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any
 
-from app.calendar.google import EVENT_MINUTES, GoogleCalendarClient, GoogleEvent
+from app.calendar.google import (
+    EVENT_MINUTES,
+    GoogleCalendarClient,
+    GoogleCalendarError,
+    GoogleEvent,
+)
 from app.llm import LlmReply, ModelTurn, ToolCall, ToolSpec, Turn, Usage, UserTurn
+from app.lms.client import LearningXClient, LearningXError
 from app.posters.prompt import SUBMIT
 from app.uploads.storage import StorageError, SupabaseStorage
 from app.youth.regions import region_table
@@ -122,6 +128,8 @@ class RecordedCalendar(GoogleCalendarClient):
         self.events: dict[str, GoogleEvent] = {}
         self.titles: dict[str, str] = {}
         self.inserts = 0
+        self.conflicts = 0  # 같은 번호로 또 넣은 횟수(409)
+        self.moves = 0
         self.deletes: list[str] = []
 
     async def refresh(self, refresh_token: str) -> tuple[str, int]:
@@ -131,6 +139,22 @@ class RecordedCalendar(GoogleCalendarClient):
         self, access_token: str, *, event_id: str, title: str, ends_at: datetime
     ) -> GoogleEvent:
         self.inserts += 1
+        if event_id in self.events:
+            # 실제 Google은 409를 주고 **일정을 고치지 않는다**. 클라이언트가 이어서 시각을 맞춘다
+            self.conflicts += 1
+            raise GoogleCalendarError("같은 번호가 이미 있어요", status=409)
+        event = GoogleEvent(event_id, ends_at - timedelta(minutes=EVENT_MINUTES), ends_at)
+        self.events[event_id] = event
+        self.titles[event_id] = title
+        return event
+
+    async def move(
+        self, access_token: str, *, event_id: str, title: str, ends_at: datetime
+    ) -> GoogleEvent:
+        """마감이 바뀐 일정의 시각을 고친다(F-51). 없는 일정이면 실제 Google처럼 404다."""
+        if event_id not in self.events:
+            raise GoogleCalendarError("없는 일정이에요", status=404)
+        self.moves += 1
         event = GoogleEvent(event_id, ends_at - timedelta(minutes=EVENT_MINUTES), ends_at)
         self.events[event_id] = event
         self.titles[event_id] = title
@@ -271,3 +295,230 @@ def poster_submit(today: date, **over: Any) -> ModelTurn:
         "low_confidence_fields": [],
     }
     return tool_reply(SUBMIT, **{**recorded, **over})
+
+
+# ── 녹화한 LearningX (F-50·F-51·F-52) ───────────────────────────────────────
+# 2026-10-16에 학교 LMS에서 받은 응답의 **모양**이다(값은 바꿨다, tests/lms_samples.py와 같은 녹화).
+# S16–S18은 "전/후 두 벌"이 필요해서, 한 벌을 두고 시나리오가 중간에 고친다(과제 추가·마감 변경·제출).
+
+# 시나리오 전용 번호대다. 주차 항목·공지는 **과목 공통 표**라(ERD 3-2) 실제 과목 번호를 쓰면,
+# 그 과목을 듣는 실제 사용자의 행과 섞이고 "처음 본 자료"가 0건이 되어 시나리오가 깨진다
+LMS_USER_ID = 9_900_001
+DB_COURSE_ID = 9_900_101
+ML_COURSE_ID = 9_900_102
+
+
+def lms_course(canvas_id: int, name: str) -> dict[str, Any]:
+    """녹화한 과목 한 건. 과목명은 `202620HY23525_데이터베이스` 꼴이다."""
+    return {
+        "id": canvas_id,
+        "name": name,
+        "course_code": name,
+        "start_at": "2026-08-24T15:00:00Z",
+        "end_at": "2026-12-31T14:59:59Z",
+        "enrollment_term_id": 94,
+        "term": {"id": 94, "name": "2026년 2학기", "end_at": None},
+        "time_zone": "Asia/Seoul",
+        "workflow_state": "available",
+        "enrollments": [
+            {
+                "type": "student",
+                "role": "StudentEnrollment",
+                "user_id": LMS_USER_ID,
+                "enrollment_state": "active",
+            }
+        ],
+    }
+
+
+def lms_assignment(
+    canvas_id: int,
+    course_id: int,
+    name: str,
+    *,
+    due_at: str | None,
+    lock_at: str | None = None,
+    state: str = "unsubmitted",
+    submitted_at: str | None = None,
+) -> dict[str, Any]:
+    """녹화한 과제 한 건. 마감은 `due_at ?? lock_at`이고 시각은 모두 UTC(`...Z`)로 온다."""
+    return {
+        "id": canvas_id,
+        "course_id": course_id,
+        "name": name,
+        "due_at": due_at,
+        "lock_at": lock_at,
+        "unlock_at": None,
+        "points_possible": 0.0,
+        "submission_types": ["online_upload"],
+        "has_submitted_submissions": True,  # 과목 전체 기준이라 내 제출과 무관하다
+        "is_quiz_assignment": False,
+        "workflow_state": "published",
+        "published": True,
+        "html_url": f"https://lms.test/courses/{course_id}/assignments/{canvas_id}",
+        "submission": {
+            "id": 106_000_000 + canvas_id,
+            "assignment_id": canvas_id,
+            "user_id": LMS_USER_ID,
+            "workflow_state": state,
+            "submitted_at": submitted_at,
+            "attempt": 1 if submitted_at else None,
+            "score": None,
+            "grade": None,
+            "graded_at": None,
+            "late": False,
+            "missing": False,
+            "excused": None,
+        },
+    }
+
+
+def lms_moment(base: datetime, days: float) -> str:
+    """시나리오 시계에서 며칠 뒤 **그날 23:59:59 KST**를 LMS가 주는 꼴(UTC `...Z`)로."""
+    day = (base.astimezone(_KST) + timedelta(days=days)).date()
+    at = datetime.combine(day, time(23, 59, 59), tzinfo=_KST)
+    return at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def lms_module(module_id: int, name: str, items: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "id": module_id,
+        "name": name,
+        "position": 17,  # 연속이 아니다(1주차가 17인 과목이 있었다)
+        "items_count": len(items),
+        "state": "started",
+        "items": list(items),
+    }
+
+
+def lms_item(item_id: int, title: str, kind: str = "ExternalTool") -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "title": title,
+        "type": kind,
+        "position": 1,
+        "indent": 0,
+        "html_url": f"https://lms.test/courses/{DB_COURSE_ID}/modules/items/{item_id}",
+        "url": f"https://lms.test/api/v1/courses/{DB_COURSE_ID}/module_items/{item_id}",
+    }
+
+
+class RecordedLearningX(LearningXClient):
+    """메모리에 담은 LearningX. 바깥을 부르지 않고, 시나리오가 응답을 고쳐 "다음 주"를 만든다.
+
+    S16은 과제를 더하고(`add_assignment`), S17은 마감을 바꾸고(`change_due`), S18은 제출로
+    바꾼다(`submit`). 전/후 녹화 두 벌을 두는 대신 한 벌을 고치는 쪽이 무엇이 달라졌는지 분명하다.
+
+    마감은 **주입한 시계에서 며칠 뒤**로 만든다(`lms_moment`). 그래서 시계를 어느 날로 두고 돌려도
+    같은 결과가 나온다(PRD 8장: 같은 입력에 같은 결과).
+    """
+
+    def __init__(self, now: datetime) -> None:
+        super().__init__(api_base=f"{RECORDED}://learningx")
+        self.now = now
+        self.rows = [
+            lms_course(DB_COURSE_ID, "202620HY23525_데이터베이스"),
+            lms_course(ML_COURSE_ID, "202620HY23534_기계학습"),
+        ]
+        # 연결할 때 이미 있던 과제들. 하나는 마감이 lock_at에만 있고, 둘은 이미 냈다
+        self.assignment_rows: dict[int, list[dict[str, Any]]] = {
+            DB_COURSE_ID: [
+                lms_assignment(
+                    9_901_242,
+                    DB_COURSE_ID,
+                    "실습 2주차 결과 제출",
+                    due_at=lms_moment(now, 8),
+                ),
+                lms_assignment(
+                    9_901_588,
+                    DB_COURSE_ID,
+                    "실습 3주차 결과 제출",
+                    due_at=None,
+                    lock_at=lms_moment(now, 6),
+                    state="submitted",
+                    submitted_at=lms_moment(now, -1),
+                ),
+            ],
+            ML_COURSE_ID: [
+                lms_assignment(
+                    9_902_146,
+                    ML_COURSE_ID,
+                    "3주차 퀴즈",
+                    due_at=lms_moment(now, -1),
+                    state="graded",
+                    submitted_at=lms_moment(now, -2),
+                )
+            ],
+        }
+        self.module_rows: dict[int, list[dict[str, Any]]] = {
+            DB_COURSE_ID: [lms_module(9_903_837, "3주차", [lms_item(9_904_302, "3주차 강의")])],
+            ML_COURSE_ID: [lms_module(9_903_894, "Week 3 : Trees", [])],
+        }
+        self.announcement_rows: dict[int, list[dict[str, Any]]] = {}
+        self.calls: list[str] = []  # 부른 경로(시나리오가 "LMS를 다시 받았는지" 확인한다)
+
+    # ── 시나리오가 쓰는 손잡이 ───────────────────────────────────────────────
+
+    def add_assignment(self, course_id: int, canvas_id: int, name: str, *, in_days: float) -> None:
+        """다음 동기화에서 새로 보일 과제. 마감은 시계에서 `in_days`일 뒤 23:59:59 KST다."""
+        self.assignment_rows[course_id].append(
+            lms_assignment(canvas_id, course_id, name, due_at=lms_moment(self.now, in_days))
+        )
+
+    def change_due(self, canvas_id: int, *, in_days: float) -> None:
+        self._find(canvas_id)["due_at"] = lms_moment(self.now, in_days)
+
+    def submit(self, canvas_id: int, *, in_days: float = 0) -> None:
+        found = self._find(canvas_id)
+        submitted_at = lms_moment(self.now, in_days)
+        found["submission"] = {
+            **found["submission"],
+            "workflow_state": "submitted",
+            "submitted_at": submitted_at,
+            "attempt": 1,
+            "submission_type": "online_upload",
+        }
+
+    def _find(self, canvas_id: int) -> dict[str, Any]:
+        for rows in self.assignment_rows.values():
+            for row in rows:
+                if row["id"] == canvas_id:
+                    return row
+        raise KeyError(f"녹화에 없는 과제예요: {canvas_id}")
+
+    # ── 클라이언트 흉내 ─────────────────────────────────────────────────────
+
+    async def me(self, token: str) -> dict[str, Any]:
+        self.calls.append("me")
+        return {"id": LMS_USER_ID, "name": "테스트 학생", "short_name": "테스트 학생"}
+
+    async def courses(self, token: str) -> list[dict[str, Any]]:
+        self.calls.append("courses")
+        return [dict(row) for row in self.rows]
+
+    async def assignments(self, token: str, course_id: int) -> list[dict[str, Any]]:
+        self.calls.append(f"assignments:{course_id}")
+        return [dict(row) for row in self._rows(self.assignment_rows, course_id)]
+
+    async def modules(self, token: str, course_id: int) -> list[dict[str, Any]]:
+        self.calls.append(f"modules:{course_id}")
+        return [dict(row) for row in self._rows(self.module_rows, course_id)]
+
+    def _rows(self, table: dict[int, list[dict[str, Any]]], course_id: int) -> list[dict[str, Any]]:
+        """녹화에 없는 과목은 실제 LMS처럼 404다(빈 목록이 아니다 — 그러면 "과목 실패"를 못 본다)."""
+        if course_id not in table:
+            raise LearningXError("없는 과목이에요", status=404)
+        return table[course_id]
+
+    async def module_items(
+        self, token: str, course_id: int, module_id: int
+    ) -> list[dict[str, Any]]:
+        self.calls.append(f"module_items:{course_id}/{module_id}")
+        for module in self.module_rows.get(course_id, []):
+            if module["id"] == module_id:
+                return [dict(item) for item in module["items"]]
+        return []
+
+    async def announcements(self, token: str, course_id: int) -> list[dict[str, Any]]:
+        self.calls.append(f"announcements:{course_id}")
+        return [dict(row) for row in self.announcement_rows.get(course_id, [])]
