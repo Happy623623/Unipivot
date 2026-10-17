@@ -19,6 +19,7 @@ from app.repositories.calendar import (
     AssignmentDeadline,
     GoogleTokens,
     OpportunityDeadline,
+    SyllabusDeadline,
     get_calendar_repo,
 )
 from app.schemas.calendar import CalendarEventView
@@ -28,6 +29,7 @@ EVENTS = "/api/v1/calendar/events"
 API_BASE = "https://calendar.test/v3"
 TOKEN_URL = "https://oauth.test/token"
 INSERT = f"{API_BASE}/calendars/primary/events"
+SYLLABUS_ITEM_ID = "00000000-0000-4000-8000-0000000000e5"
 ASSIGNMENT_ID = "55555555-5555-4555-8555-555555555555"
 OPPORTUNITY_ID = "00000000-0000-4000-8000-0000000000e1"
 EVENT_ID = "00000000-0000-4000-8000-0000000000e2"
@@ -47,6 +49,9 @@ class FakeCalendarRepository:
         )
         self.assignment: AssignmentDeadline | None = AssignmentDeadline(
             ASSIGNMENT_ID, "실습 2주차 결과 제출", "데이터베이스", DEADLINE
+        )
+        self.syllabus: SyllabusDeadline | None = SyllabusDeadline(
+            SYLLABUS_ITEM_ID, "중간고사", "데이터베이스", "midterm", DEADLINE
         )
         self.events: dict[str, CalendarEventView] = {}
         self.saved: list[tuple[str, int]] = []
@@ -75,6 +80,11 @@ class FakeCalendarRepository:
             return None
         return self.assignment
 
+    async def syllabus_deadline(self, user_id: str, item_id: str) -> SyllabusDeadline | None:
+        if user_id != USER_ID or item_id != SYLLABUS_ITEM_ID:
+            return None
+        return self.syllabus
+
     async def event_for(
         self,
         user_id: str,
@@ -82,8 +92,10 @@ class FakeCalendarRepository:
         *,
         opportunity_id: str | None = None,
         lms_assignment_id: str | None = None,
+        syllabus_item_id: str | None = None,
     ) -> CalendarEventView | None:
-        return self.events.get(f"{opportunity_id or lms_assignment_id}:{provider}")
+        target = opportunity_id or lms_assignment_id or syllabus_item_id
+        return self.events.get(f"{target}:{provider}")
 
     async def one(self, user_id: str, event_id: str) -> CalendarEventView | None:
         if user_id != USER_ID:
@@ -92,7 +104,11 @@ class FakeCalendarRepository:
 
     async def reserve(self, user_id: str, **values: Any) -> CalendarEventView:
         """실제 저장소처럼 `on conflict ... where external_event_id is null`을 흉내 낸다."""
-        target = values.get("opportunity_id") or values.get("lms_assignment_id")
+        target = (
+            values.get("opportunity_id")
+            or values.get("lms_assignment_id")
+            or values.get("syllabus_item_id")
+        )
         key = f"{target}:{values['provider']}"
         found = self.events.get(key)
         if found is not None:  # 그새 다른 요청이 잡았거나, 넣다 만 자리가 남아 있다
@@ -575,6 +591,89 @@ def test_exactly_one_target_is_required(client: TestClient, auth: dict[str, str]
     assert client.post(EVENTS, json=both, headers=auth).status_code == 422
     assert client.post(EVENTS, json={}, headers=auth).status_code == 422
     assert client.post(EVENTS, json={"provider": "google"}, headers=auth).status_code == 422
-    # 강의계획서 일정은 F-14와 함께 연다(아직 모르는 칸이다)
-    syllabus = {"syllabus_item_id": "77777777-7777-4777-8777-777777777777"}
-    assert client.post(EVENTS, json=syllabus, headers=auth).status_code == 422
+    # 대상 셋 중 둘을 함께 보내도 422다(계획서 일정도 대상이 되었다)
+    mixed = {"opportunity_id": OPPORTUNITY_ID, "syllabus_item_id": SYLLABUS_ITEM_ID}
+    assert client.post(EVENTS, json=mixed, headers=auth).status_code == 422
+    three = {**both, "syllabus_item_id": SYLLABUS_ITEM_ID}
+    assert client.post(EVENTS, json=three, headers=auth).status_code == 422
+
+
+# ── 계획서 일정 (F-14) ──────────────────────────────────────────────────────
+
+
+def test_a_syllabus_item_goes_in_starting_at_its_own_time(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    """시험·발표는 **마감이 아니라 시작 시각**이다. 그 시각에 시작해 1시간 뒤에 끝낸다."""
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post(INSERT).mock(return_value=httpx.Response(200, json={"id": GCAL_ID}))
+        response = client.post(EVENTS, json={"syllabus_item_id": SYLLABUS_ITEM_ID}, headers=auth)
+    assert response.status_code == 201
+    body = response.json()
+    assert body["title"] == "[시험] 데이터베이스 · 중간고사"
+    assert body["starts_at"].startswith(DEADLINE.astimezone(KST).isoformat()[:16])
+    sent = json.loads(route.calls[0].request.content)
+    starts = DEADLINE.astimezone(KST)
+    assert sent["start"]["dateTime"].startswith(starts.isoformat()[:16])
+    assert sent["end"]["dateTime"].startswith((starts + timedelta(hours=1)).isoformat()[:16])
+    assert calendar.added[0]["syllabus_item_id"] == SYLLABUS_ITEM_ID
+
+
+def test_adding_the_same_syllabus_item_twice_keeps_one_event(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    with respx.mock(assert_all_called=True) as router:
+        router.post(INSERT).mock(return_value=httpx.Response(200, json={"id": GCAL_ID}))
+        first = client.post(EVENTS, json={"syllabus_item_id": SYLLABUS_ITEM_ID}, headers=auth)
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post(INSERT).mock(return_value=httpx.Response(200, json={"id": "other"}))
+        again = client.post(EVENTS, json={"syllabus_item_id": SYLLABUS_ITEM_ID}, headers=auth)
+    assert (first.status_code, again.status_code) == (201, 200)
+    assert not route.called
+    assert len(calendar.added) == 1
+
+
+def test_a_syllabus_item_without_a_date_is_refused(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    calendar.syllabus = SyllabusDeadline(SYLLABUS_ITEM_ID, "보강", "데이터베이스", "etc", None)
+    response = client.post(EVENTS, json={"syllabus_item_id": SYLLABUS_ITEM_ID}, headers=auth)
+    assert response.status_code == 422
+    assert "syllabus_item_id" in response.json()["error"]["details"]["fields"]
+
+
+def test_a_syllabus_item_that_already_happened_is_refused(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    calendar.syllabus = SyllabusDeadline(
+        SYLLABUS_ITEM_ID, "쪽지시험", "데이터베이스", "etc", NOW - timedelta(days=2)
+    )
+    response = client.post(EVENTS, json={"syllabus_item_id": SYLLABUS_ITEM_ID}, headers=auth)
+    assert (response.status_code, response.json()["error"]["code"]) == (409, "DEADLINE_PASSED")
+
+
+def test_an_unconfirmed_or_other_students_syllabus_item_is_not_found(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    """확인하지 않은 일정과 남의 계획서는 저장소가 돌려주지 않는다(404)."""
+    calendar.syllabus = None
+    response = client.post(EVENTS, json={"syllabus_item_id": SYLLABUS_ITEM_ID}, headers=auth)
+    assert (response.status_code, response.json()["error"]["code"]) == (404, "NOT_FOUND")
+    other = "00000000-0000-4000-8000-0000000000ee"
+    assert client.post(EVENTS, json={"syllabus_item_id": other}, headers=auth).status_code == 404
+
+
+def test_a_presentation_and_an_assignment_get_their_own_labels(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    for kind, label in (("presentation", "[발표]"), ("assignment", "[과제]"), ("etc", "[일정]")):
+        calendar.events.clear()
+        calendar.syllabus = SyllabusDeadline(
+            SYLLABUS_ITEM_ID, "팀 프로젝트", "데이터베이스", kind, DEADLINE
+        )
+        with respx.mock(assert_all_called=True) as router:
+            router.post(INSERT).mock(return_value=httpx.Response(200, json={"id": GCAL_ID}))
+            response = client.post(
+                EVENTS, json={"syllabus_item_id": SYLLABUS_ITEM_ID}, headers=auth
+            )
+        assert response.json()["title"] == f"{label} 데이터베이스 · 팀 프로젝트"

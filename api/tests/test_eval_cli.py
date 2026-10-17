@@ -17,25 +17,39 @@ from app.eval.fakes import (
     RecordedLearningX,
     RecordedLlm,
     RecordedStorage,
+    course_week,
     lms_moment,
     nationwide,
     poster_bytes,
     poster_submit,
+    semester_code,
+    semester_start,
     sido_codes,
     youth_policy,
 )
 from app.eval.models import Check, CheckFailed, Report, ScenarioResult, percentile, plain
 from app.eval.runner import _check_drained, run_scenarios
 from app.eval.scenarios import SCENARIOS, pick
+from app.eval.syllabus import (
+    FINAL_LINE,
+    FINAL_WEEK,
+    MIDTERM_LINE,
+    MIDTERM_WEEK,
+    PRESENTATION_LINE,
+    PRESENTATION_WEEK,
+    SYLLABUS_TEXT,
+    syllabus_pdf,
+)
 from app.eval.world import DEFAULT_NOW, eval_settings
 from app.llm import Blob, UserTurn
 from app.posters.prompt import SUBMIT
+from app.syllabi.extract import SEMESTER_DAYS
+from app.uploads import inspect_syllabus, pdf_text
 from app.uploads.storage import StorageError
 
 pytestmark = pytest.mark.anyio
 
-# PRD 8장 표의 P0 시나리오 중 지금까지 만든 것. S09·S10은 실제 HWP·PDF 파일이, S15는 계획서
-# 추출(F-14)이 먼저다
+# PRD 8장 표의 P0 시나리오 중 지금까지 만든 것. S09·S10은 실제 HWP·PDF 파일이 먼저다
 EXPECTED_CODES = (
     "S01",
     "S02",
@@ -49,6 +63,7 @@ EXPECTED_CODES = (
     "S12",
     "S13",
     "S14",
+    "S15",
     "S16",
     "S17",
     "S18",
@@ -129,7 +144,7 @@ async def test_an_unknown_scenario_is_named(capsys: pytest.CaptureFixture[str]) 
 async def test_an_empty_scenario_list_is_not_everything(
     raw: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """--scenarios를 비워 적으면 전부 돌지 않는다(DB에 11개를 만들고 지운다)."""
+    """--scenarios를 비워 적으면 전부 돌지 않는다(전부 돌면 DB에 열여섯 개를 만들고 지운다)."""
     assert await main(["--scenarios", raw]) == 1
     assert "번호를 적어" in capsys.readouterr().out
 
@@ -329,3 +344,60 @@ async def test_the_recorded_lms_answers_like_the_client() -> None:
     assert await lms.module_items("token", DB_COURSE_ID, modules[0]["id"]) == modules[0]["items"]
     assert await lms.announcements("token", DB_COURSE_ID) == []  # 공지는 F-53이 채운다
     assert lms.calls[:3] == ["me", "courses", f"assignments:{ML_COURSE_ID}"]
+
+
+def test_the_recorded_syllabus_pdf_still_reads() -> None:
+    """S15가 쓰는 계획서 PDF는 담아 둔 이진 파일이다. 글자가 그대로 뽑히는지 여기서 본다.
+
+    글꼴·압축이 들어간 파일이라 코드로 다시 만들 수 없어 zlib+base64로 담았다(app/eval/syllabus.py).
+    pypdf가 올라가 글자가 달라지면 근거 문장 검사가 통째로 막히므로, 그때 이 테스트가 먼저 걸린다.
+    """
+    data = syllabus_pdf()
+    inspected = inspect_syllabus(data)  # 올릴 수 있는 파일인지(쪽수·글자)
+    assert inspected.page_count == 1
+    squeezed = "".join(pdf_text(data).split())
+    for line in (MIDTERM_LINE, PRESENTATION_LINE, FINAL_LINE):
+        assert "".join(line.split()) in squeezed
+    assert "".join(SYLLABUS_TEXT.split()) in squeezed
+
+
+# S15가 쓰는 녹화 과목·계획서 날짜는 **주입 시계**에서 센다. 어느 날에 돌려도 같은 결과가 나오려면
+# 그 셈이 모든 날에서 맞아야 해서, 학기 경계·방학·윤년을 골라 한 번에 본다
+_CLOCKS = [
+    "2026-01-01",  # 겨울 방학(지난 2학기는 일정 놓을 자리가 없다 → 다음 1학기)
+    "2026-02-28",
+    "2026-03-01",  # 1학기 첫날
+    "2026-04-19",
+    "2026-06-19",  # 1학기 중간고사 자리가 아직 남은 마지막 날 근처
+    "2026-06-25",
+    "2026-08-20",  # 여름 방학 → 다음 2학기
+    "2026-09-01",  # 2학기 첫날
+    "2026-10-12",  # DEFAULT_NOW
+    "2026-12-31",
+    "2027-01-15",
+    "2028-02-29",  # 윤년
+    "2031-09-30",
+]
+
+
+@pytest.mark.parametrize("day", _CLOCKS)
+def test_the_recorded_semester_is_counted_from_the_clock(day: str) -> None:
+    now = datetime.fromisoformat(f"{day}T09:00:00+09:00")
+    today = now.astimezone(KST).date()
+    start = semester_start(now)
+
+    # 정규학기(3월·9월)만 센다 — 계절학기 과목에는 중간·기말이 없다
+    assert (start.month, start.day) in ((3, 1), (9, 1))
+    assert semester_code(now) == f"{start.year}{10 if start.month == 3 else 20}"
+
+    for week in (MIDTERM_WEEK, PRESENTATION_WEEK, FINAL_WEEK):
+        when = course_week(now, week)
+        assert when == start + timedelta(weeks=week - 1)  # 주차는 학기 시작에서 센다
+        assert when > today  # 아직 오지 않은 일정이어야 캘린더에 들어간다
+        assert start <= when <= start + timedelta(days=SEMESTER_DAYS)  # 학기 범위 안이다
+
+    # 녹화한 과목 행도 그 학기다(학기를 다른 칸에서 읽는 코드가 생겨도 틀리지 않게)
+    course = RecordedLearningX(now).rows[0]
+    assert course["name"].startswith(semester_code(now))
+    assert course["term"]["name"] == f"{start.year}년 {1 if start.month == 3 else 2}학기"
+    assert course["start_at"].startswith((start - timedelta(days=7)).isoformat()[:8])

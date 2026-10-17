@@ -23,6 +23,7 @@ from app.calendar.google import (
 from app.llm import LlmReply, ModelTurn, ToolCall, ToolSpec, Turn, Usage, UserTurn
 from app.lms.client import LearningXClient, LearningXError
 from app.posters.prompt import SUBMIT
+from app.syllabi.extract import SEMESTER_DAYS
 from app.uploads.storage import StorageError, SupabaseStorage
 from app.youth.regions import region_table
 
@@ -308,16 +309,65 @@ DB_COURSE_ID = 9_900_101
 ML_COURSE_ID = 9_900_102
 
 
-def lms_course(canvas_id: int, name: str) -> dict[str, Any]:
-    """녹화한 과목 한 건. 과목명은 `202620HY23525_데이터베이스` 꼴이다."""
+# 녹화한 계획서의 주차(app/eval/syllabus.py)를 날짜로 바꿀 때 쓰는 자리. 가장 늦은 일정이
+# 기말고사 15주차이므로, 학기 시작에서 그만큼 지난 시계는 **다음 학기**를 보는 것으로 한다
+_LAST_WEEK_DAYS = 14 * 7  # 15주차 = 시작 + 98일
+_TERM_ROOM = _LAST_WEEK_DAYS - 50  # 8주차(시작 + 49일) 중간고사가 아직 오지 않은 자리
+
+
+def semester_start(now: datetime) -> date:
+    """녹화한 과목이 속한 학기의 시작일.
+
+    계획서 일정을 읽는 기준이 **과목명에서 센 학기 시작일**이라(F-14), 과목명을 2026-2로 고정하면
+    다른 날로 돌릴 때 학기 범위를 벗어난다. 시계에서 세어 어느 날에 돌려도 맞게 한다.
+
+    정규학기(3월·9월)만 센다 — 계절학기 과목에는 중간·기말이 없고, 제품도 과목이 없을 때 3월·9월로
+    끊는다(app/syllabi/extract.py의 semester_range). 학기가 이미 많이 지나 **중간고사를 놓을 자리가
+    없으면** 다음 학기로 본다(계획서는 학기가 시작하기 전에 올리는 것이 보통이다).
+    """
+    today = now.astimezone(_KST).date()
+    starts = sorted(
+        date(year, month, 1)
+        for year in (today.year - 1, today.year, today.year + 1)
+        for month in (3, 9)
+    )
+    current = max(start for start in starts if start <= today)
+    if (today - current).days <= _TERM_ROOM:
+        return current
+    return min(start for start in starts if start > today)
+
+
+def semester_code(now: datetime) -> str:
+    """그 학기의 과목명 앞자리(`202620`). 3월 학기는 10, 9월 학기는 20이다(ERD·포털과 같은 값)."""
+    start = semester_start(now)
+    return f"{start.year}{10 if start.month == 3 else 20}"
+
+
+def course_week(now: datetime, week: int) -> date:
+    """녹화한 계획서의 `N주차`가 가리키는 날(학기 시작 + (N-1)주). 모델이 세는 것과 같은 셈이다."""
+    return semester_start(now) + timedelta(weeks=week - 1)
+
+
+def lms_course(canvas_id: int, name: str, *, start: date) -> dict[str, Any]:
+    """녹화한 과목 한 건. 과목명은 `202620HY23525_데이터베이스` 꼴이다.
+
+    개강일·학기 이름도 과목명의 학기에서 센다. 고정해 두면 과목명은 2027-1인데 학기 이름은
+    "2026년 2학기"인 세계가 되어, 학기를 다른 칸에서 읽는 코드가 생기면 조용히 틀린다.
+    """
+    opens = datetime.combine(start - timedelta(days=7), time(0, 0), tzinfo=_KST)
+    closes = datetime.combine(start + timedelta(days=SEMESTER_DAYS), time(23, 59, 59), tzinfo=_KST)
     return {
         "id": canvas_id,
         "name": name,
         "course_code": name,
-        "start_at": "2026-08-24T15:00:00Z",
-        "end_at": "2026-12-31T14:59:59Z",
+        "start_at": opens.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end_at": closes.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "enrollment_term_id": 94,
-        "term": {"id": 94, "name": "2026년 2학기", "end_at": None},
+        "term": {
+            "id": 94,
+            "name": f"{start.year}년 {1 if start.month == 3 else 2}학기",
+            "end_at": None,
+        },
         "time_zone": "Asia/Seoul",
         "workflow_state": "available",
         "enrollments": [
@@ -417,8 +467,16 @@ class RecordedLearningX(LearningXClient):
         super().__init__(api_base=f"{RECORDED}://learningx")
         self.now = now
         self.rows = [
-            lms_course(DB_COURSE_ID, "202620HY23525_데이터베이스"),
-            lms_course(ML_COURSE_ID, "202620HY23534_기계학습"),
+            lms_course(
+                DB_COURSE_ID,
+                f"{semester_code(now)}HY23525_데이터베이스",
+                start=semester_start(now),
+            ),
+            lms_course(
+                ML_COURSE_ID,
+                f"{semester_code(now)}HY23534_기계학습",
+                start=semester_start(now),
+            ),
         ]
         # 연결할 때 이미 있던 과제들. 하나는 마감이 lock_at에만 있고, 둘은 이미 냈다
         self.assignment_rows: dict[int, list[dict[str, Any]]] = {

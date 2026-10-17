@@ -211,6 +211,9 @@ def _time(value: Any) -> time | None:
         return None
 
 
+SEMESTER_DAYS = 150  # 학기 시작일에서 이만큼까지를 그 학기로 본다(보강·기말 기간까지)
+
+
 def semester_range(semester_start: date | None, uploaded_on: date) -> tuple[date, date]:
     """연도 없는 날짜를 읽을 기준 범위.
 
@@ -218,7 +221,7 @@ def semester_range(semester_start: date | None, uploaded_on: date) -> tuple[date
     한국 대학은 3월·9월에 시작하므로 그 전후로 끊는다.
     """
     if semester_start is not None:
-        return semester_start, semester_start + timedelta(days=150)
+        return semester_start, semester_start + timedelta(days=SEMESTER_DAYS)
     year = uploaded_on.year
     if uploaded_on.month <= 2:  # 1~2월은 지난 2학기의 끝자락이다
         return date(year - 1, 9, 1), _last_of_february(year)
