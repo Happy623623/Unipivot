@@ -15,27 +15,62 @@ from psycopg import AsyncConnection, sql
 
 from app.db import get_conn
 from app.errors import ApiError
+from app.lms.parse import course_name
 from app.repositories.opportunities import PREP_DONE
 from app.schemas.planner import PlannerLink, PlannerMarker, PlannerResponse, PlannerTask
 
-# 공고에서 온 할 일은 계획 → 공고로 이어 제목·카테고리를 읽는다. 나머지 출처는 아직 연결 대상이 없다
+# 공고에서 온 할 일은 계획 → 공고로 이어 제목·카테고리를 읽는다. 계획서 일정·LMS 과제는 그 과목
+# 이름을 이어 읽는다(명세 7장의 `link.type`). 공지(F-53)는 그 기능과 함께 잇는다
 _TASK = (
     "select t.id::text as id, t.title, t.due_date, coalesce(t.is_done, false) as is_done,"
     " t.source::text as source, o.id::text as opportunity_id, o.title as opportunity_title,"
-    " o.category::text as category"
+    " o.category::text as category,"
+    " t.syllabus_item_id::text as syllabus_item_id, coalesce(sc.name, sy.course_name) as syllabus_course,"
+    " t.lms_assignment_id::text as lms_assignment_id, lc.name as assignment_course"
     " from planner_tasks t"
     " left join prep_plans p on p.id = t.prep_plan_id and p.user_id = t.user_id"
     " left join opportunities o on o.id = p.opportunity_id"
+    " left join syllabus_items si on si.id = t.syllabus_item_id"
+    " left join syllabi sy on sy.id = si.syllabus_id and sy.user_id = t.user_id"
+    " left join lms_courses sc on sc.id = sy.lms_course_id and sc.user_id = t.user_id"
+    " left join lms_assignments la on la.id = t.lms_assignment_id and la.user_id = t.user_id"
+    " left join lms_courses lc on lc.id = la.lms_course_id and lc.user_id = t.user_id"
 )
 
 
+def _link(row: dict[str, Any]) -> PlannerLink:
+    """그 할 일이 가리키는 것(명세 7장). 이어진 것이 없으면 type은 null이다."""
+    if row["opportunity_id"]:
+        return PlannerLink(
+            type="opportunity",
+            id=row["opportunity_id"],
+            title=row["opportunity_title"],
+            category=row["category"],
+        )
+    if row["syllabus_item_id"]:
+        return PlannerLink(
+            type="syllabus_item",
+            id=row["syllabus_item_id"],
+            title=_short(row["syllabus_course"]),
+            category=None,
+        )
+    if row["lms_assignment_id"]:
+        return PlannerLink(
+            type="lms_assignment",
+            id=row["lms_assignment_id"],
+            title=_short(row["assignment_course"]),
+            category=None,
+        )
+    return PlannerLink(type=None, id=None, title=None, category=None)
+
+
+def _short(course: str | None) -> str | None:
+    """과목 화면 이름(`202620HY23525_데이터베이스` → `데이터베이스`)."""
+    return course_name(course).short_name if course else None
+
+
 def _task(row: dict[str, Any]) -> PlannerTask:
-    link = PlannerLink(
-        type="opportunity" if row["opportunity_id"] else None,
-        id=row["opportunity_id"],
-        title=row["opportunity_title"],
-        category=row["category"],
-    )
+    link = _link(row)
     return PlannerTask(
         id=row["id"],
         title=row["title"],

@@ -418,3 +418,111 @@ async def test_the_time_comes_back_in_kst(calendar: Any) -> None:
     )  # fmt: skip
     assert event.starts_at.utcoffset() == KST.utcoffset(None)
     assert event.starts_at == now
+
+
+# ── 계획서 일정 (F-14) ──────────────────────────────────────────────────────
+
+
+async def _syllabus_item(
+    conn: Any,
+    user: str,
+    *,
+    starts_at: Any,
+    confirmed: bool = True,
+    with_course: bool = True,
+    kind: str = "midterm",
+) -> str:
+    """계획서 하나와 일정 하나. 과목을 붙이면 제목에 과목 이름이 따라온다."""
+    course = None
+    if with_course:
+        course = await (
+            await conn.execute(
+                "insert into lms_courses (user_id, canvas_course_id, name) values (%s, %s, %s)"
+                " returning id",
+                (user, 9_910_001, "202620HY23525_데이터베이스"),
+            )
+        ).fetchone()
+    syllabus = await (
+        await conn.execute(
+            "insert into syllabi (user_id, lms_course_id, semester) values (%s, %s, '2026-2')"
+            " returning id",
+            (user, course["id"] if course else None),
+        )
+    ).fetchone()
+    row = await (
+        await conn.execute(
+            "insert into syllabus_items (syllabus_id, item_type, title, starts_at, is_confirmed)"
+            " values (%s, %s, '중간고사', %s, %s) returning id",
+            (syllabus["id"], kind, starts_at, confirmed),
+        )
+    ).fetchone()
+    return str(row["id"])
+
+
+async def test_a_confirmed_syllabus_item_comes_with_the_course_name(calendar: Any) -> None:
+    repo, user, _, _, _, now = calendar
+    starts = now + timedelta(days=6)
+    item_id = await _syllabus_item(repo.conn, user, starts_at=starts)
+
+    found = await repo.syllabus_deadline(user, item_id)
+    assert found is not None
+    assert (found.title, found.course, found.item_type) == ("중간고사", "데이터베이스", "midterm")
+    assert found.starts_at == starts
+
+
+async def test_an_unconfirmed_item_cannot_go_in_the_calendar(calendar: Any) -> None:
+    """확인 전 추출 결과는 날짜가 틀릴 수 있다. 확인한 뒤에만 넣는다."""
+    repo, user, _, _, _, now = calendar
+    item_id = await _syllabus_item(
+        repo.conn, user, starts_at=now + timedelta(days=6), confirmed=False
+    )
+    assert await repo.syllabus_deadline(user, item_id) is None
+
+
+async def test_another_students_syllabus_item_is_not_mine(calendar: Any) -> None:
+    repo, user, other, _, _, now = calendar
+    item_id = await _syllabus_item(repo.conn, user, starts_at=now + timedelta(days=6))
+    assert await repo.syllabus_deadline(other, item_id) is None
+
+
+async def test_a_syllabus_without_a_course_has_no_course_name(calendar: Any) -> None:
+    repo, user, _, _, _, now = calendar
+    item_id = await _syllabus_item(
+        repo.conn, user, starts_at=now + timedelta(days=6), with_course=False
+    )
+    found = await repo.syllabus_deadline(user, item_id)
+    assert found is not None and found.course is None
+
+
+async def test_a_syllabus_event_is_one_per_item(calendar: Any) -> None:
+    """같은 일정을 두 번 넣어도 캘린더 기록은 하나다(부분 유니크 인덱스)."""
+    repo, user, _, _, _, now = calendar
+    starts = (now + timedelta(days=6)).astimezone(KST)
+    item_id = await _syllabus_item(repo.conn, user, starts_at=starts)
+
+    event = await repo.reserve(
+        user,
+        provider="google",
+        title="[시험] 데이터베이스 · 중간고사",
+        starts_at=starts,
+        syllabus_item_id=item_id,
+    )
+    await repo.attach(user, event.id, "gcal-syllabus-1")
+    again = await repo.reserve(
+        user,
+        provider="google",
+        title="[시험] 데이터베이스 · 중간고사",
+        starts_at=starts,
+        syllabus_item_id=item_id,
+    )
+    assert again.id == event.id
+    assert again.external_event_id == "gcal-syllabus-1"  # 이미 넣은 일정은 그대로 둔다
+    found = await repo.event_for(user, "google", syllabus_item_id=item_id)
+    assert found is not None and found.id == event.id
+
+
+async def test_a_syllabus_item_is_a_target_on_its_own(calendar: Any) -> None:
+    """공고·과제와 함께 주면 코드 잘못이다(SQL까지 가지 않는다)."""
+    repo, user, _, prepared, _, _ = calendar
+    with pytest.raises(ValueError):
+        await repo.event_for(user, "google", opportunity_id=prepared, syllabus_item_id=prepared)
