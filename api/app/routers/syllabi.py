@@ -8,15 +8,24 @@
 """
 
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Response
 
 from app.auth import CurrentUserDep
+from app.calendar.service import CalendarServiceDep
 from app.clock import NowDep
 from app.eligibility import to_kst_date
 from app.errors import ApiError
+from app.repositories.calendar import CalendarRepoDep
 from app.repositories.syllabi import SyllabusRepoDep
-from app.schemas.syllabi import SyllabusExtractRequest, SyllabusStarted
+from app.schemas.syllabi import (
+    SyllabusConfirmRequest,
+    SyllabusConfirmResult,
+    SyllabusExtractRequest,
+    SyllabusStarted,
+)
+from app.syllabi import confirm as confirm_steps
 from app.syllabi.service import SyllabusJob, SyllabusServiceDep
 
 logger = logging.getLogger(__name__)
@@ -59,3 +68,43 @@ async def extract_syllabus(
     run_id = await service.begin(job)
     response.status_code = 202
     return SyllabusStarted(run_id=run_id, status="running")
+
+
+@router.post("/{syllabus_id}/confirm", response_model=SyllabusConfirmResult)
+async def confirm_syllabus(
+    syllabus_id: UUID,
+    body: SyllabusConfirmRequest,
+    user: CurrentUserDep,
+    repo: SyllabusRepoDep,
+    calendar: CalendarRepoDep,
+    service: CalendarServiceDep,
+    now: NowDep,
+) -> SyllabusConfirmResult:
+    """고친 일정을 저장하고, 고른 것만 플래너(과 원하면 캘린더)에 넣는다.
+
+    캘린더를 부탁했는데 연결이 없으면 **아무것도 바꾸지 않고** `409 CALENDAR_NOT_CONNECTED`다 —
+    학생이 연결한 뒤 다시 누르면 된다.
+    """
+    head = await repo.one(user.id, str(syllabus_id))
+    if head is None:
+        raise ApiError(404, "NOT_FOUND", "계획서를 찾을 수 없어요.")
+    plans, _ = confirm_steps.planned(await repo.items(user.id, head.id), body.items)
+    token = None
+    if body.register_calendar:
+        # 연결·토큰을 먼저 **한 번** 꺼낸다(없으면 409). 확정만 해 두고 캘린더가 비는 상태를
+        # 만들지 않는다. 꺼낸 토큰을 그대로 넘겨 일정마다 다시 꺼내지 않는다
+        token = await service.access_token(user.id, now)
+    confirmed, tasks = await confirm_steps.confirm(repo, user_id=user.id, head=head, plans=plans)
+    events = (0, 0)
+    if token is not None:
+        events = await confirm_steps.register(
+            calendar,
+            service,
+            user_id=user.id,
+            head=head,
+            plans=plans,
+            provider=body.calendar_provider,
+            now=now,
+            token=token,
+        )
+    return confirm_steps.result(confirmed, tasks, events)

@@ -5,6 +5,7 @@ import { courseDetails, courses, lmsUpdates, materials, opportunities } from "@/
 import { mockDepartments, mockNow } from "@/mocks/account";
 import { rejudgeStoredOpportunity } from "@/mocks/rejudge";
 import { setStoredMark } from "@/mocks/store";
+import { withStoredSyllabus } from "@/mocks/syllabusStore";
 import {
   listStoredNotifications,
   readAllStoredNotifications,
@@ -221,7 +222,7 @@ export function getCourses(): Promise<Course[]> {
 export function getCourse(id: string): Promise<CourseDetail> {
   const course = courseDetails[id];
   if (!course) return Promise.reject(new Error("과목을 찾을 수 없어요."));
-  return respond(course);
+  return respond(withStoredSyllabus(course)); // 목 모드에서 올린 계획서를 끼워 준다(F-14)
 }
 
 // 목 모드는 받아 둔 목데이터가 곧 최신이다. 실제 모드와 같은 두 모양을 번갈아 준다 —

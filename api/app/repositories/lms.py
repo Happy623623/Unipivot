@@ -530,9 +530,11 @@ class LmsRepository:
         (명세 9장) — 그래서 과목을 연 다음 과목 목록의 "새 자료" 수가 0이 된다.
         """
         head = await self._row(
+            # 계획서 번호를 함께 준다. 확인 전 일정이 남은 과목에서 **다시 올리지 않고** 확인 화면을
+            # 열 수 있어야 한다(명세 9장). 과목당 계획서는 하나다
             "select c.id, c.canvas_course_id, c.name, c.last_viewed_at,"
-            " exists (select 1 from syllabi s where s.lms_course_id = c.id"
-            "   and s.user_id = c.user_id) as has_syllabus"
+            " (select s.id::text from syllabi s where s.lms_course_id = c.id"
+            "   and s.user_id = c.user_id) as syllabus_id"
             " from lms_courses c"
             " where c.id = %(course)s and c.user_id = %(uid)s and coalesce(c.is_active, true)",
             {"course": course_id, "uid": user_id},
@@ -545,7 +547,8 @@ class LmsRepository:
             course=CourseHeader(
                 id=str(head["id"]),
                 short_name=parsed.short_name,
-                has_syllabus=head["has_syllabus"],
+                has_syllabus=head["syllabus_id"] is not None,
+                syllabus_id=head["syllabus_id"],
                 portal_syllabus_url=parsed.syllabus_url,
                 html_url=f"{lms_base.rstrip('/')}/courses/{head['canvas_course_id']}",
             ),

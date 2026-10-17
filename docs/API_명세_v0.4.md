@@ -60,6 +60,10 @@
 >
 > v0.4 보강(10/17, 계획서 추출): `kind = syllabus` 업로드(글자 있는 PDF 10쪽), `POST /syllabi/extract`의 과목 연결·학기 기준·근거 검사·`is_confirmed` false, 에러 `SYLLABUS_READ_FAILED`
 >
+> v0.4 보강(10/17, 계획서 확정): `POST /syllabi/{id}/confirm` 규칙(고른 것만 플래너·캘린더, 뺀 것은 끝내지 않은 할 일만 지움, 연결이 없으면 아무것도 바꾸지 않고 409, 시간대 없는 시각은 KST), 응답에 `calendar_events_moved`, 캘린더 대상에 `syllabus_item_id`(확인한 일정만, 시작 시각 기준 1시간)
+>
+> v0.4 보강(10/17, 계획서 화면): 과목 상세에 `course.syllabus_id`(확인 전 일정을 다시 열 때 쓴다), 깨진 PDF 안내는 올린 종류에 맞춘다
+>
 > v0.4 보강(10/17, 연 소득·취업 상태): 프로필에 `annual_income`(본인 연 소득, 만 원, 0~30000)·`job_status` 추가, `profile_completion.total` 19, 소득 선택 동의 항목 4개
 >
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
@@ -595,7 +599,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 - 같은 사용자가 같은 파일(sha256)을 같은 kind로 다시 올리면 새로 저장하지 않고 `200`과 기존 `file_id`를 준다. 다섯 필드는 두 경우 모두 있다
 - 에러: `FILE_TOO_LARGE`(413), `PAGE_LIMIT_EXCEEDED`(413), `UNSUPPORTED_FILE_TYPE`(400), `DAILY_UPLOAD_LIMIT`(429, `details.reset_at`은 한도가 풀리는 KST 내일 0시), `STORAGE_API_ERROR`(502)
-- 허용 형식: poster는 jpg·png·webp와 **2쪽 이하 PDF**, syllabus는 **글자가 있는 10쪽 이하 PDF**, lecture_material은 pdf다. 쪽수를 넘기면 `413 PAGE_LIMIT_EXCEEDED`. 크기는 20MB까지다
+- 허용 형식: poster는 jpg·png·webp와 **2쪽 이하 PDF**, syllabus는 **글자가 있는 10쪽 이하 PDF**, lecture_material은 pdf다. 쪽수를 넘기면 `413 PAGE_LIMIT_EXCEEDED`. 크기는 20MB까지다. 안이 깨진 PDF는 `400 UNSUPPORTED_FILE_TYPE`이고, 무엇을 하면 되는지는 종류마다 다르다(포스터는 사진으로 다시 찍기, 계획서는 포털에서 PDF로 다시 저장하기)
 - 계획서(syllabus)는 **PDF에서 글자를 뽑을 수 있어야** 받는다. 사진을 PDF로 감싼 파일은 `400 UNSUPPORTED_FILE_TYPE`이고, 포털 계획서를 브라우저에서 PDF로 저장해 올리라고 안내한다
 - 형식은 파일 이름·Content-Type이 아니라 **앞부분 바이트**로 가린다. 이름만 `.jpg`로 바꾼 파일은 `400 UNSUPPORTED_FILE_TYPE`이다
 - HEIC(아이폰 기본 사진 형식)는 **아직 받지 않는다**. `400 UNSUPPORTED_FILE_TYPE`과 함께 JPG로 바꿔 올리라고 안내한다(W6 2차 이후에 연다)
@@ -768,20 +772,23 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 ### `POST /calendar/events`
 
 - 연결이 없거나 만료됐으면 `409 CALENDAR_NOT_CONNECTED`(`details.reason`)를 돌려준다
-- 대상은 공고 마감일(`opportunity_id`)과 LMS 과제 마감(`lms_assignment_id`) 둘이다. **정확히 하나만** 보낸다(둘 다 보내거나 둘 다 비우면 `422`). `syllabus_item_id`는 그 기능(F-14)과 함께 열고, 지금 보내면 `422`다. `provider`는 `google`만 받는다(`ics`는 F-34)
+- 대상은 공고 마감일(`opportunity_id`)·LMS 과제 마감(`lms_assignment_id`)·계획서 일정(`syllabus_item_id`) 셋이다. **정확히 하나만** 보낸다(둘 이상 보내거나 모두 비우면 `422`). `provider`는 `google`만 받는다(`ics`는 F-34)
 - 과제는 **내 과제**이고 LMS에서 사라지지 않았고 수강 중인 과목의 것이어야 한다(아니면 `404 NOT_FOUND`). 마감이 없으면 `422`(`details.fields.lms_assignment_id`), 마감이 지났으면 `409 DEADLINE_PASSED`다. 제출했는지는 보지 않는다(학생이 직접 누른 것이다). 제목은 `[과제] 과목 이름 · 과제 제목`이다
+- 계획서 일정은 **확인을 마친 일정**(`is_confirmed` true)만 넣을 수 있다. 확인 전 일정·남의 계획서는 `404 NOT_FOUND`, 날짜가 없으면 `422`(`details.fields.syllabus_item_id`), 이미 지난 일정은 `409 DEADLINE_PASSED`다. 계획서 일정은 마감이 아니라 **시작 시각**이라, 그 시각에 시작해 1시간 뒤에 끝난다(10:30 시험이면 10:30~11:30). 제목은 `[시험] 과목 이름 · 일정 제목`이고 종류에 따라 앞머리가 `[시험]`(midterm·final)·`[발표]`(presentation)·`[과제]`(assignment)·`[일정]`(etc)이다
 - **준비를 마친** 공고만 넣을 수 있다(공고 상세의 `prep.prepared`와 같은 기준). 아니면 `422`이고 `details.fields.opportunity_id`에 이유를 담는다. 마감일이 없는 상시 공고도 `422`, 마감이 지난 공고는 `409 DEADLINE_PASSED`다
 - 일정은 **마감 시각으로 끝나는 1시간짜리**다(18:00 마감이면 17:00~18:00, `all_day: false`, 시간대 `Asia/Seoul`). 제목은 `[마감] 공고 제목`이다
 - 일정 번호는 서버가 `calendar_events.id`에서 만들어 Google에 보낸다. 그래서 응답을 받지 못하고 다시 눌러도 캘린더에 일정이 하나다(Google이 같은 번호를 409로 거절하면 이미 넣은 것으로 본다). Google에 넣기 전의 기록은 `external_event_id`가 null이고, 공고 상세의 `prep.calendar_events`에는 번호가 붙은 것만 들어간다
 
 ```json
-// Request: 대상 하나만 (syllabus_item_id는 아직 422)
+// Request: 대상 하나만
 { "provider": "google", "opportunity_id": "uuid" }
 { "provider": "google", "lms_assignment_id": "uuid" }
+{ "provider": "google", "syllabus_item_id": "uuid" }
 
 // Response 201 (이미 등록돼 있으면 200 + 기존 이벤트)
 { "id": "uuid", "provider": "google", "external_event_id": "abc123", "title": "[마감] 2026-2 한양브레인 장학금", "starts_at": "2026-10-15T22:59:00+09:00", "all_day": false }
 { "id": "uuid", "provider": "google", "external_event_id": "def456", "title": "[과제] 데이터베이스 · 실습 2주차 결과 제출", "starts_at": "2026-10-20T22:59:00+09:00", "all_day": false }
+{ "id": "uuid", "provider": "google", "external_event_id": "ghi789", "title": "[시험] 데이터베이스 · 중간고사", "starts_at": "2026-10-21T10:30:00+09:00", "all_day": false }
 ```
 
 에러: `CALENDAR_NOT_CONNECTED`(409, `details.reason`은 `not_connected` 또는 `expired`. 권한이 없어졌거나(401) 갱신하지 못했을 때다. 프론트는 캘린더 연결(4장)로 보낸다), `GOOGLE_API_ERROR`(502, 403·5xx·연결 오류)
@@ -847,6 +854,15 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 // Response 200
 { "confirmed": 1, "planner_tasks_created": 1, "calendar_events_created": 1 }
 ```
+
+- `{id}`는 `POST /syllabi/extract`가 돌려준 `syllabus_id`다. 남의 계획서는 `404 NOT_FOUND`다
+- `items`에는 **확인 화면에 보여 준 일정을 모두** 보낸다(`selected`로 고른 것과 뺀 것을 가린다). 비어 있으면 `422`이고, 한 번에 50개까지다(추출은 30개까지 저장한다)
+- 그 계획서에 없는 `id`가 하나라도 섞이면 `422 VALIDATION_FAILED`이고 **아무것도 바꾸지 않는다**(화면을 새로 고치게 한다)
+- `title`은 학생이 고친 제목을 그대로 저장한다. `starts_at`은 비워 보내면 저장해 둔 값을 그대로 둔다. 고른 일정에 날짜가 없으면 `422`다(날짜를 적거나 선택을 풀어야 한다)
+- 고른 일정은 `is_confirmed` true가 되고 플래너 할 일이 된다(`source = syllabus`, `due_date`는 그 일정 날짜, `link.type = syllabus_item`). 두 번 눌러도 할 일은 하나다 — 같은 일정의 할 일은 제목·날짜만 맞춘다
+- 선택을 뺀 일정은 `is_confirmed` false가 되고 **끝내지 않은** 할 일을 지운다. 이미 끝낸 할 일은 남긴다(학생이 체크한 것을 되돌리지 않는다). 캘린더에서는 빼지 않는다 — 학생 캘린더에서 지우는 일은 `DELETE /calendar/events/{id}`로만 한다
+- `register_calendar`가 true면 고른 일정을 Google 캘린더에도 넣는다. 연결이 없으면 **아무것도 바꾸지 않고** `409 CALENDAR_NOT_CONNECTED`다(연결한 뒤 다시 누르면 된다). 이미 넣은 일정과 지난 일정은 건너뛴다. 일정 하나가 Google에서 실패해도 확정은 그대로 두고 그 일정만 건너뛴다(응답의 `calendar_events_created`가 그만큼 적다). 시각·제목·일정 번호 규칙은 7장 `POST /calendar/events`와 같다
+- `confirmed`는 고른 일정 수, `planner_tasks_created`는 **새로 만든** 할 일 수, `calendar_events_created`는 새로 넣은 캘린더 일정 수다
 
 ### `POST /materials` (P1, 축소판)
 
@@ -1039,7 +1055,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 
 ```json
 {
-  "course": { "id": "uuid", "short_name": "선형대수", "has_syllabus": true, "portal_syllabus_url": "https://portal.hanyang.ac.kr/...", "html_url": "https://learning.hanyang.ac.kr/courses/..." },
+  "course": { "id": "uuid", "short_name": "선형대수", "has_syllabus": true, "syllabus_id": "uuid", "portal_syllabus_url": "https://portal.hanyang.ac.kr/...", "html_url": "https://learning.hanyang.ac.kr/courses/..." },
   "assignments": [ { "id": "uuid", "title": "Homework 4", "due_at": "2026-10-13T23:59:00+09:00", "submission_state": "unsubmitted", "html_url": "https://learning.hanyang.ac.kr/..." } ],
   "module_items": [ { "id": "uuid", "module_name": "8주차", "title": "08 - Eigenvalues", "item_type": "ExternalTool", "html_url": "https://learning.hanyang.ac.kr/...", "is_new": true, "uploaded_file_id": null } ],
   "announcements": [ { "id": "uuid", "title": "강의실 변경 안내", "summary": "다음 주 수업은 다른 강의실에서 한다", "category": "schedule_change", "posted_at": "2026-10-04T14:00:00+09:00", "opportunity_id": null } ],
@@ -1055,6 +1071,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - 순서는 서버가 정한다(DB 정렬 규칙에 맡기지 않는다): 과제는 마감이 가까운 순(마감 없는 것은 뒤), 주차 항목은 **새 항목 먼저** 다음 주차·제목 순, 공지는 올린 순(최신 먼저), 계획서 일정은 날짜 순, 내 자료는 올린 순(최신 먼저). 값이 같으면 id로 가른다
 - `module_items[].item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`다(녹화에 `File`은 없었다). `module_name`·`html_url`·`item_type`은 null일 수 있다
 - `materials[].status`는 요약 상태다. 파일만 올리고 아직 요약하지 않았으면 `pending`이다
+- `course.syllabus_id`는 그 과목 계획서의 번호다(없으면 null, `has_syllabus`와 같은 뜻이다). 뽑아 두고 **확인하지 않은 일정**(`is_confirmed` false)이 남았을 때, 계획서를 다시 올리지 않고 이 번호로 `POST /syllabi/{id}/confirm`을 부르라고 준다
 
 ### `GET /lms/assignments`
 

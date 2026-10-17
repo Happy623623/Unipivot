@@ -1055,6 +1055,7 @@ def test_it_opens_a_course(client: TestClient, lms: FakeLms, settings: Settings)
         "id",
         "short_name",
         "has_syllabus",
+        "syllabus_id",  # 확인 전 일정을 다시 열 때 쓴다(F-14)
         "portal_syllabus_url",
         "html_url",
     }

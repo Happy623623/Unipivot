@@ -19,6 +19,24 @@ export function getKstDateKey(value: string | Date): string {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+// KST 시각 "HH:MM"(날짜 입력 칸과 짝). 시각을 비워 보낸 일정은 서버가 09:00으로 두었다
+export function getKstTimeKey(value: string | Date): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: KST_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(parseDate(value));
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("hour")}:${part("minute")}`;
+}
+
+// 날짜·시각 입력값을 서버에 보낼 시각으로. **오프셋을 함께 보낸다** —
+// 안 붙이면 서버가 KST로 읽어 주지만(명세 8장), 보내는 쪽이 분명히 하는 게 맞다
+export function toKstIso(date: string, time: string): string {
+  return `${date}T${(time || "09:00").slice(0, 5)}:00+09:00`;
+}
+
 export function formatKstLongDate(value: string | Date): string {
   return new Intl.DateTimeFormat("ko-KR", {
     timeZone: KST_TIME_ZONE,

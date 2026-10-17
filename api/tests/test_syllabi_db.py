@@ -5,17 +5,22 @@
 Supabase Storage도 가짜다. 계획서 PDF는 reportlab으로 만든다(tests/samples.pdf).
 """
 
+import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 import httpx
 import pytest
+import respx
 
 from app.background import InlineRunner
+from app.clock import current_time
 from app.config import Settings, get_settings
+from app.crypto import encrypt
 from app.db import create_pools
 from app.eligibility import KST
 from app.llm.deps import get_llm
@@ -139,9 +144,11 @@ async def committed() -> AsyncIterator[Fixture]:
 
 @asynccontextmanager
 async def api(
-    settings: Settings, llm: Any, storage: FakeStorage
+    settings: Settings, llm: Any, storage: FakeStorage, *, now: datetime | None = None
 ) -> AsyncIterator[Callable[[str], httpx.AsyncClient]]:
     app = create_app(settings)
+    if now is not None:  # 시계를 고정한다(지난 일정은 캘린더에 넣지 않으므로 날짜가 결과를 바꾼다)
+        app.dependency_overrides[current_time] = lambda: now
     pool, log_pool = create_pools(DATABASE_URL)
     await pool.open()
     await log_pool.open()
@@ -532,3 +539,482 @@ async def test_a_broken_pdf_in_the_storage_fails_with_a_clear_reason(
         run = await extract(world, settings, llm, storage=store)
     assert run["status"] == "failed" and run["error"]["code"] == "SYLLABUS_READ_FAILED"
     assert llm.requests == []
+
+
+# ── 확정 (F-14 2부, `POST /syllabi/{id}/confirm`) ───────────────────────────
+
+NOW = datetime(2026, 10, 17, 1, 0, tzinfo=UTC)  # 10/17 10:00 KST. 10/20 시험이 아직 남아 있다
+MODEL_COURSE_NAME = "데이터베이스시스템"  # 모델이 계획서에서 읽은 과목 이름(LMS 과목명과 다르다)
+MIDTERM_DATE = "2026-10-20"
+
+
+@asynccontextmanager
+async def confirmed(
+    settings: Settings,
+    world: Fixture,
+    *,
+    items: list[dict[str, Any]] = ITEMS,
+    name: str = "내 계획서",
+) -> AsyncIterator[tuple[Callable[[str], httpx.AsyncClient], str, list[dict[str, Any]]]]:
+    """추출까지 끝낸 상태로 넘긴다: (클라이언트 공장, 계획서 id, 뽑힌 일정들)."""
+    # 모델은 과목 이름을 계획서 표지에서 읽는다 — LMS 과목명과 다를 수 있다. 제목·칩은 **LMS 이름**이
+    # 이겨야 한다(어느 길로 넣어도 같은 제목이 되게)
+    llm = ScriptedLlm(call(EXTRACT_TOOL, items=items, course_name=MODEL_COURSE_NAME))
+    store = FakeStorage()
+    file_id = world.files[name]
+    store.objects[world.paths[file_id]] = PDF
+    course = world.courses["202620HY23525_데이터베이스"]
+    async with api(settings, llm, store, now=NOW) as client:
+        http = client(world.user)
+        started = await http.post(
+            "/api/v1/syllabi/extract", json={"file_id": file_id, "lms_course_id": course}
+        )
+        assert started.status_code == 202, started.text
+        run = (await http.get(f"/api/v1/runs/{started.json()['run_id']}")).json()
+        assert run["status"] == "succeeded", run
+        yield client, run["result"]["syllabus_id"], run["result"]["items"]
+
+
+def _counts(confirmed: int, tasks: int, events: int, moved: int = 0) -> dict[str, int]:
+    return {
+        "confirmed": confirmed,
+        "planner_tasks_created": tasks,
+        "calendar_events_created": events,
+        "calendar_events_moved": moved,
+    }
+
+
+def _chosen(items: list[dict[str, Any]], *titles: str) -> list[dict[str, Any]]:
+    """뽑힌 일정 중 제목이 맞는 것만 고른다(나머지는 선택을 뺀 채로 보낸다)."""
+    return [
+        {"id": one["id"], "title": one["title"], "selected": one["title"] in titles}
+        for one in items
+    ]
+
+
+async def test_confirming_saves_the_items_and_makes_planner_tasks(settings: Settings) -> None:
+    async with committed() as world:
+        async with confirmed(settings, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            response = await http.post(
+                f"/api/v1/syllabi/{syllabus_id}/confirm", json={"items": _chosen(items, "중간고사")}
+            )
+            assert response.status_code == 200, response.text
+            assert response.json() == _counts(1, 1, 0)
+            planner = await http.get(
+                "/api/v1/planner/tasks", params={"from": "2026-10-01", "to": "2026-12-31"}
+            )
+            assert planner.status_code == 200, planner.text
+            tasks = [one for one in planner.json()["items"] if one["source"] == "syllabus"]
+
+    assert len(tasks) == 1  # 고르지 않은 발표는 할 일이 되지 않는다
+    task = tasks[0]
+    assert (task["title"], task["due_date"], task["is_done"]) == ("중간고사", MIDTERM_DATE, False)
+    # 명세 7장: 계획서에서 온 할 일은 `link.type = syllabus_item`이고 칩에 과목 이름이 보인다
+    assert task["link"]["type"] == "syllabus_item"
+    assert task["link"]["title"] == "데이터베이스"  # LMS 과목명이 이긴다(모델이 읽은 이름이 아니다)
+    assert task["link"]["id"] == next(one["id"] for one in items if one["title"] == "중간고사")
+
+
+async def test_confirming_twice_keeps_one_task(settings: Settings) -> None:
+    async with committed() as world:
+        async with confirmed(settings, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            path = f"/api/v1/syllabi/{syllabus_id}/confirm"
+            sent = {"items": _chosen(items, "중간고사")}
+            first = await http.post(path, json=sent)
+            again = await http.post(path, json=sent)
+            planner = await http.get(
+                "/api/v1/planner/tasks", params={"from": "2026-10-01", "to": "2026-12-31"}
+            )
+            tasks = [one for one in planner.json()["items"] if one["source"] == "syllabus"]
+
+    assert first.json()["planner_tasks_created"] == 1
+    assert again.json()["planner_tasks_created"] == 0  # 이미 있는 할 일은 맞추기만 한다
+    assert len(tasks) == 1
+
+
+async def test_a_fixed_title_and_time_move_the_task(settings: Settings) -> None:
+    """확인 화면에서 날짜를 고치면 일정과 할 일이 함께 움직인다."""
+    async with committed() as world:
+        async with confirmed(settings, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            midterm = next(one for one in items if one["title"] == "중간고사")
+            path = f"/api/v1/syllabi/{syllabus_id}/confirm"
+            await http.post(path, json={"items": _chosen(items, "중간고사")})
+            moved = await http.post(
+                path,
+                json={
+                    "items": [
+                        {
+                            "id": midterm["id"],
+                            "title": "중간고사(온라인)",
+                            "starts_at": "2026-10-22T13:00:00+09:00",
+                            "selected": True,
+                        }
+                    ]
+                },
+            )
+            assert moved.status_code == 200, moved.text
+            planner = await http.get(
+                "/api/v1/planner/tasks", params={"from": "2026-10-01", "to": "2026-12-31"}
+            )
+            tasks = [one for one in planner.json()["items"] if one["source"] == "syllabus"]
+
+    assert moved.json()["planner_tasks_created"] == 0
+    assert (tasks[0]["title"], tasks[0]["due_date"]) == ("중간고사(온라인)", "2026-10-22")
+
+
+async def test_unselecting_removes_the_task_but_keeps_a_finished_one(settings: Settings) -> None:
+    async with committed() as world:
+        async with confirmed(settings, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            path = f"/api/v1/syllabi/{syllabus_id}/confirm"
+            await http.post(path, json={"items": _chosen(items, "중간고사", "팀 프로젝트 발표")})
+            planner = await http.get(
+                "/api/v1/planner/tasks", params={"from": "2026-10-01", "to": "2026-12-31"}
+            )
+            tasks = {
+                one["title"]: one["id"]
+                for one in planner.json()["items"]
+                if one["source"] == "syllabus"
+            }
+            assert set(tasks) == {"중간고사", "팀 프로젝트 발표"}
+            # 발표 할 일은 끝냈다. 선택을 풀어도 체크한 것을 되돌리지 않는다
+            done = await http.patch(
+                f"/api/v1/planner/tasks/{tasks['팀 프로젝트 발표']}", json={"is_done": True}
+            )
+            assert done.status_code == 200, done.text
+            dropped = await http.post(path, json={"items": _chosen(items)})
+            after = await http.get(
+                "/api/v1/planner/tasks", params={"from": "2026-10-01", "to": "2026-12-31"}
+            )
+            left = [one for one in after.json()["items"] if one["source"] == "syllabus"]
+
+    assert dropped.json() == _counts(0, 0, 0)
+    assert [(one["title"], one["is_done"]) for one in left] == [("팀 프로젝트 발표", True)]
+
+
+EARLY_ITEM = [
+    {
+        "item_type": "presentation",
+        "title": "팀 프로젝트 발표",
+        "date": "2026-12-08",
+        "time": "08:00",  # 1교시 발표. UTC로는 **전날** 23:00이다
+        "evidence_text": "15주차 12/08 팀 프로젝트 발표",
+    }
+]
+
+
+async def test_an_early_morning_item_keeps_its_kst_day(settings: Settings) -> None:
+    """1교시(08:00) 일정은 UTC로 전날이다. 저장해 둔 시각으로 만드는 할 일 날짜도 **KST 날짜**다."""
+    async with committed() as world:
+        async with confirmed(settings, world, items=EARLY_ITEM) as (client, syllabus_id, items):
+            http = client(world.user)
+            # 추출이 KST 08:00으로 저장했는지 먼저 본다(여기가 어긋나면 아래 날짜도 뜻이 없다)
+            assert items[0]["starts_at"] == "2026-12-08T08:00:00+09:00"
+            # 시각을 고치지 않고 그대로 확정한다 → 날짜는 DB에 UTC로 든 값에서 센다
+            response = await http.post(
+                f"/api/v1/syllabi/{syllabus_id}/confirm",
+                json={
+                    "items": [{"id": items[0]["id"], "title": "팀 프로젝트 발표", "selected": True}]
+                },
+            )
+            assert response.status_code == 200, response.text
+            planner = await http.get(
+                "/api/v1/planner/tasks", params={"from": "2026-12-01", "to": "2026-12-31"}
+            )
+            tasks = [one for one in planner.json()["items"] if one["source"] == "syllabus"]
+
+    assert [one["due_date"] for one in tasks] == ["2026-12-08"]  # 12/07이 아니다
+
+
+async def test_another_students_syllabus_cannot_be_confirmed(settings: Settings) -> None:
+    async with committed() as world:
+        async with confirmed(settings, world) as (client, syllabus_id, items):
+            other = client(world.other)
+            response = await other.post(
+                f"/api/v1/syllabi/{syllabus_id}/confirm", json={"items": _chosen(items, "중간고사")}
+            )
+    assert (response.status_code, response.json()["error"]["code"]) == (404, "NOT_FOUND")
+
+
+async def test_an_item_from_another_syllabus_is_refused(settings: Settings) -> None:
+    """남의 계획서 일정 id를 내 계획서에 섞어 보내도 아무것도 바뀌지 않는다."""
+    async with committed() as world:
+        async with confirmed(settings, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            unknown = {"id": str(uuid4()), "title": "중간고사", "selected": True}
+            response = await http.post(
+                f"/api/v1/syllabi/{syllabus_id}/confirm", json={"items": [unknown]}
+            )
+            planner = await http.get(
+                "/api/v1/planner/tasks", params={"from": "2026-10-01", "to": "2026-12-31"}
+            )
+            tasks = [one for one in planner.json()["items"] if one["source"] == "syllabus"]
+
+    assert (response.status_code, response.json()["error"]["code"]) == (422, "VALIDATION_FAILED")
+    assert tasks == []
+
+
+GOOGLE_BASE = "https://calendar.test/v3"
+GOOGLE_INSERT = f"{GOOGLE_BASE}/calendars/primary/events"
+
+
+def _with_google(settings: Settings) -> Settings:
+    return settings.model_copy(
+        update={
+            "google_calendar_api_base": GOOGLE_BASE,
+            "google_token_url": "https://oauth.test/token",
+            "google_oauth_client_id": "client-1",
+            "google_oauth_client_secret": "secret-1",
+        }
+    )
+
+
+async def _connect_google(user: str, key: str) -> None:
+    """Google 캘린더 연결을 넣는다. 토큰은 암호화해 저장한다(평문으로 두지 않는다)."""
+    setup = await connect()
+    try:
+        await setup.execute(
+            "insert into oauth_tokens (user_id, provider, access_token, refresh_token, expires_at,"
+            " scope) values (%s, 'google', %s, %s, now() + interval '30 minutes', 'calendar')"
+            " on conflict (user_id, provider) do update set access_token = excluded.access_token",
+            (user, encrypt("access-1", key), encrypt("refresh-1", key)),
+        )
+        await setup.commit()
+    finally:
+        await setup.close()
+
+
+async def test_confirming_with_the_calendar_writes_one_event(settings: Settings) -> None:
+    """고른 일정이 플래너와 Google 캘린더에 각각 하나씩 들어간다(F-14 → F-32 기록)."""
+    tuned = _with_google(settings)
+    async with committed() as world:
+        await _connect_google(world.user, tuned.token_encryption_key)
+        async with confirmed(tuned, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            with respx.mock(assert_all_called=True) as router:
+                route = router.post(GOOGLE_INSERT).mock(
+                    return_value=httpx.Response(200, json={"id": "gcal-midterm"})
+                )
+                response = await http.post(
+                    f"/api/v1/syllabi/{syllabus_id}/confirm",
+                    json={"items": _chosen(items, "중간고사"), "register_calendar": True},
+                )
+            assert response.status_code == 200, response.text
+            sent = json.loads(route.calls[0].request.content)
+            rows = await _events(world.user)
+
+    assert response.json() == _counts(1, 1, 1)
+    assert sent["summary"] == "[시험] 데이터베이스 · 중간고사"
+    assert sent["start"]["dateTime"].startswith("2026-10-20T10:30")
+    assert sent["end"]["dateTime"].startswith("2026-10-20T11:30")
+    assert len(rows) == 1
+    assert rows[0]["title"] == "[시험] 데이터베이스 · 중간고사"
+    # 일정 번호는 **우리 행 id**에서 만들어 보낸 것이다(다시 눌러도 캘린더에 하나만 들어간다)
+    assert rows[0]["external_event_id"] == sent["id"]
+    assert rows[0]["syllabus_item_id"] is not None
+
+
+async def test_confirming_twice_with_the_calendar_keeps_one_event(settings: Settings) -> None:
+    tuned = _with_google(settings)
+    async with committed() as world:
+        await _connect_google(world.user, tuned.token_encryption_key)
+        async with confirmed(tuned, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            sent = {"items": _chosen(items, "중간고사"), "register_calendar": True}
+            path = f"/api/v1/syllabi/{syllabus_id}/confirm"
+            with respx.mock(assert_all_called=True) as router:
+                first_route = router.post(GOOGLE_INSERT).mock(
+                    return_value=httpx.Response(200, json={"id": "gcal-midterm"})
+                )
+                first = await http.post(path, json=sent)
+                asked = json.loads(first_route.calls[0].request.content)["id"]
+            with respx.mock(assert_all_called=False) as router:
+                route = router.post(GOOGLE_INSERT).mock(
+                    return_value=httpx.Response(200, json={"id": "gcal-again"})
+                )
+                again = await http.post(path, json=sent)
+            rows = await _events(world.user)
+
+    assert first.json()["calendar_events_created"] == 1
+    assert again.json()["calendar_events_created"] == 0
+    assert not route.called  # 이미 넣은 일정은 Google을 다시 부르지 않는다
+    assert len(rows) == 1 and rows[0]["external_event_id"] == asked
+
+
+async def test_without_a_connection_nothing_is_confirmed(settings: Settings) -> None:
+    """캘린더를 부탁했는데 연결이 없으면 확정도 하지 않는다(연결한 뒤 다시 누르면 된다)."""
+    tuned = _with_google(settings)
+    async with committed() as world:
+        async with confirmed(tuned, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            response = await http.post(
+                f"/api/v1/syllabi/{syllabus_id}/confirm",
+                json={"items": _chosen(items, "중간고사"), "register_calendar": True},
+            )
+            planner = await http.get(
+                "/api/v1/planner/tasks", params={"from": "2026-10-01", "to": "2026-12-31"}
+            )
+            tasks = [one for one in planner.json()["items"] if one["source"] == "syllabus"]
+            rows = await _events(world.user)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CALENDAR_NOT_CONNECTED"
+    assert (tasks, rows) == ([], [])
+
+
+async def test_a_confirmed_item_can_also_go_in_through_the_calendar_api(
+    settings: Settings,
+) -> None:
+    """확인한 일정은 `POST /calendar/events`의 `syllabus_item_id`로도 넣을 수 있다(명세 7장)."""
+    tuned = _with_google(settings)
+    async with committed() as world:
+        await _connect_google(world.user, tuned.token_encryption_key)
+        async with confirmed(tuned, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            item_id = next(one["id"] for one in items if one["title"] == "중간고사")
+            before = await http.post("/api/v1/calendar/events", json={"syllabus_item_id": item_id})
+            await http.post(
+                f"/api/v1/syllabi/{syllabus_id}/confirm", json={"items": _chosen(items, "중간고사")}
+            )
+            with respx.mock(assert_all_called=True) as router:
+                route = router.post(GOOGLE_INSERT).mock(
+                    return_value=httpx.Response(200, json={"id": "gcal-direct"})
+                )
+                after = await http.post(
+                    "/api/v1/calendar/events", json={"syllabus_item_id": item_id}
+                )
+                asked = json.loads(route.calls[0].request.content)["id"]
+
+    # 확인 전에는 넣을 수 없다(추출한 날짜가 틀릴 수 있다)
+    assert (before.status_code, before.json()["error"]["code"]) == (404, "NOT_FOUND")
+    assert after.status_code == 201, after.text
+    body = after.json()
+    assert body["title"] == "[시험] 데이터베이스 · 중간고사"
+    assert body["starts_at"] == "2026-10-20T10:30:00+09:00"
+    assert body["external_event_id"] == asked
+
+
+async def _events(user: str) -> list[dict[str, Any]]:
+    """그 사용자의 캘린더 기록(다른 연결로 커밋된 것을 본다)."""
+    setup = await connect()
+    try:
+        rows = await (
+            await setup.execute(
+                "select title, external_event_id, starts_at,"
+                " syllabus_item_id::text as syllabus_item_id from calendar_events"
+                " where user_id = %s order by starts_at",
+                (user,),
+            )
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        await setup.close()
+
+
+async def test_a_permission_taken_away_mid_flight_ends_with_409(settings: Settings) -> None:
+    """만료 전 토큰이 Google에서 401로 거절되면(권한 거둠) 409로 끝난다.
+
+    그때 확정은 **이미 저장돼 있다** — 캘린더 자리를 Google 호출 전에 커밋하기 때문이다(그래야
+    다시 눌러도 일정이 둘로 늘지 않는다). 학생이 다시 연결해 누르면 그 자리로 이어 넣는다.
+    """
+    tuned = _with_google(settings)
+    async with committed() as world:
+        await _connect_google(world.user, tuned.token_encryption_key)
+        async with confirmed(tuned, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            sent = {"items": _chosen(items, "중간고사"), "register_calendar": True}
+            path = f"/api/v1/syllabi/{syllabus_id}/confirm"
+            with respx.mock(assert_all_called=True) as router:
+                router.post(GOOGLE_INSERT).mock(return_value=httpx.Response(401, json={}))
+                refused = await http.post(path, json=sent)
+            rows = await _events(world.user)
+            planner = await http.get(
+                "/api/v1/planner/tasks", params={"from": "2026-10-01", "to": "2026-12-31"}
+            )
+            tasks = [one for one in planner.json()["items"] if one["source"] == "syllabus"]
+            # 다시 연결한 셈으로 두고 한 번 더 누르면 그 자리로 들어간다
+            with respx.mock(assert_all_called=True) as router:
+                route = router.post(GOOGLE_INSERT).mock(
+                    return_value=httpx.Response(200, json={"id": "gcal-after"})
+                )
+                after = await http.post(path, json=sent)
+                asked = json.loads(route.calls[0].request.content)["id"]
+            again = await _events(world.user)
+
+    assert (refused.status_code, refused.json()["error"]["code"]) == (409, "CALENDAR_NOT_CONNECTED")
+    assert len(tasks) == 1  # 확정과 할 일은 남는다
+    assert len(rows) == 1 and rows[0]["external_event_id"] is None  # 자리만 잡힌 상태
+    assert after.json()["calendar_events_created"] == 1
+    assert len(again) == 1 and again[0]["external_event_id"] == asked  # 일정은 하나다
+
+
+async def test_a_fixed_time_moves_the_google_event_and_our_row(settings: Settings) -> None:
+    """시각·제목을 고쳐 다시 확정하면 **우리 기록과 Google 일정**이 함께 움직인다."""
+    tuned = _with_google(settings)
+    async with committed() as world:
+        await _connect_google(world.user, tuned.token_encryption_key)
+        async with confirmed(tuned, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            path = f"/api/v1/syllabi/{syllabus_id}/confirm"
+            midterm = next(one for one in items if one["title"] == "중간고사")
+            with respx.mock(assert_all_called=True) as router:
+                insert = router.post(GOOGLE_INSERT).mock(
+                    return_value=httpx.Response(200, json={"id": "gcal-midterm"})
+                )
+                await http.post(
+                    path, json={"items": _chosen(items, "중간고사"), "register_calendar": True}
+                )
+                event_id = json.loads(insert.calls[0].request.content)["id"]
+            with respx.mock(assert_all_called=True) as router:
+                patch = router.patch(f"{GOOGLE_INSERT}/{event_id}").mock(
+                    return_value=httpx.Response(200, json={"id": event_id})
+                )
+                moved = await http.post(
+                    path,
+                    json={
+                        "items": [
+                            {
+                                "id": midterm["id"],
+                                "title": "중간고사(온라인)",
+                                "starts_at": "2026-10-22T13:00:00+09:00",
+                                "selected": True,
+                            }
+                        ],
+                        "register_calendar": True,
+                    },
+                )
+                sent = json.loads(patch.calls[0].request.content)
+            rows = await _events(world.user)
+
+    assert moved.status_code == 200, moved.text
+    assert moved.json() == _counts(1, 0, 0, moved=1)
+    assert sent["summary"] == "[시험] 데이터베이스 · 중간고사(온라인)"  # 과목은 LMS 이름이다
+    assert sent["start"]["dateTime"].startswith("2026-10-22T13:00")
+    assert len(rows) == 1
+    assert rows[0]["title"] == "[시험] 데이터베이스 · 중간고사(온라인)"
+    assert rows[0]["starts_at"].astimezone(KST).isoformat() == "2026-10-22T13:00:00+09:00"
+    assert rows[0]["external_event_id"] == event_id  # 같은 일정을 고쳤다
+
+
+async def test_the_course_detail_carries_the_syllabus_id(settings: Settings) -> None:
+    """확인 전 일정이 남으면 과목 상세의 `syllabus_id`로 확인 화면을 다시 연다(명세 9장)."""
+    async with committed() as world:
+        async with confirmed(settings, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            course = world.courses["202620HY23525_데이터베이스"]
+            detail = (await http.get(f"/api/v1/lms/courses/{course}")).json()
+            # 그 번호로 바로 확정할 수 있다(다시 올리지 않는다)
+            confirm = await http.post(
+                f"/api/v1/syllabi/{detail['course']['syllabus_id']}/confirm",
+                json={"items": _chosen(items, "중간고사")},
+            )
+            other = client(world.other)
+            mine = (await other.get(f"/api/v1/lms/courses/{course}")).status_code
+
+    assert detail["course"]["has_syllabus"] is True
+    assert detail["course"]["syllabus_id"] == syllabus_id
+    assert confirm.status_code == 200, confirm.text
+    assert mine == 404  # 남의 과목은 상세도 못 본다

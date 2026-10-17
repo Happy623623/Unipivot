@@ -1641,6 +1641,8 @@ async def test_the_course_detail_fills_every_tab(world: dict[str, Any]) -> None:
     assert detail is not None
     assert detail.course.short_name == "데이터베이스"
     assert detail.course.has_syllabus is True
+    # 확인 전 일정을 다시 열 수 있게 계획서 번호도 준다(F-14)
+    assert detail.course.syllabus_id is not None
     assert detail.course.html_url == f"{LMS_BASE}/courses/{DATABASE['id']}"
     assert detail.course.portal_syllabus_url is not None
     assert [one.title for one in detail.assignments] == ["곧 과제", "나중 과제"]  # 마감 가까운 순
@@ -1794,6 +1796,7 @@ async def test_the_detail_does_not_borrow_another_students_rows(world: dict[str,
     assert detail.syllabus_items == []
     assert detail.materials == []
     assert detail.course.has_syllabus is False
+    assert detail.course.syllabus_id is None  # 남의 계획서 번호를 주지 않는다
     assert [one.title for one in detail.module_items] == ["01"]  # 항목은 공통이라 보인다
     assert detail.module_items[0].uploaded_file_id is None  # 남이 올린 파일은 안 붙는다
 
