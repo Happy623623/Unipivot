@@ -43,7 +43,12 @@ interface Loaded {
   incomeConsented: boolean;
 }
 
-const INCOME_KEYS = new Set<ProfileKey>(["income_bracket", "median_income_pct", "welfare_status"]);
+const INCOME_KEYS = new Set<ProfileKey>([
+  "income_bracket",
+  "median_income_pct",
+  "annual_income",
+  "welfare_status",
+]);
 
 // 나이 조건에서 생년월일이 이미 있으면 병역 복무 개월을 묻는다. 복무하지 않았으면 0을 넣어야 판정이 끝난다
 const MILITARY_HINT = "복무 기간만큼 나이 상한을 늘려 주는 공고예요. 복무하지 않았으면 0을 입력해 주세요.";

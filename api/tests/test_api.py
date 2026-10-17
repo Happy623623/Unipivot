@@ -71,7 +71,7 @@ def test_first_me_creates_profile(client: TestClient, auth: dict[str, str]) -> N
         False,
         False,
     )
-    assert body["profile_completion"] == {"filled": 0, "total": 17}
+    assert body["profile_completion"] == {"filled": 0, "total": 19}
 
 
 def test_profile_update_needs_consent(client: TestClient, auth: dict[str, str]) -> None:
@@ -192,6 +192,23 @@ def test_income_needs_optional_consent(
     profile = client.get("/api/v1/me/profile", headers=auth).json()
     assert (profile["income_bracket"], profile["welfare_status"]) == (None, None)  # 철회하면 지운다
     assert client.get("/api/v1/me", headers=auth).json()["income_info_consented"] is False
+
+
+def test_annual_income_stays_inside_the_column(
+    client: TestClient, auth: dict[str, str], repo: FakeProfileRepository
+) -> None:
+    """본인 연 소득 상한은 DB 칸(smallint)과 화면(30000만 원) 안이어야 한다.
+
+    상한이 칸보다 크면 검증은 통과하고 저장에서 넘쳐 500이 된다. 두 쪽이 어긋나면 여기서 걸린다.
+    """
+    consent(client, auth)
+    client.patch("/api/v1/me/consents", json={"agree_income_info": True}, headers=auth)
+    too_big = client.patch("/api/v1/me/profile", json={"annual_income": 30001}, headers=auth)
+    assert (too_big.status_code, too_big.json()["error"]["code"]) == (422, "VALIDATION_FAILED")
+    assert "annual_income" in too_big.json()["error"]["details"]["fields"]
+    ok = client.patch("/api/v1/me/profile", json={"annual_income": 30000}, headers=auth)
+    assert ok.status_code == 200
+    assert ok.json()["profile"]["annual_income"] == 30000  # smallint(32767) 안이라 저장된다
 
 
 def test_income_consent_order(client: TestClient, auth: dict[str, str]) -> None:

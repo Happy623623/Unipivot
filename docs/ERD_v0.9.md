@@ -147,7 +147,9 @@ erDiagram
         text region_sigungu
         smallint income_bracket "학자금 지원구간"
         smallint median_income_pct "기준 중위소득 %"
+        smallint annual_income "본인 연 소득 (만 원)"
         enum welfare_status "none, near_poverty, basic_livelihood"
+        text job_status "취업 상태"
         smallint admission_year "HY-in 인증 시 자동"
         boolean is_international "외국인 유학생 여부"
         timestamptz hyin_verified_at "재학생 인증 시각"
@@ -656,7 +658,7 @@ erDiagram
 
 ### 소득·수급 동의
 
-- `income_info_agreed_at`이 null이면 `income_bracket`·`median_income_pct`·`welfare_status`가 모두 null이어야 한다(DB 제약). 동의를 철회할 때는 동의 시각과 세 값을 한 번에 비운다.
+- `income_info_agreed_at`이 null이면 `income_bracket`·`median_income_pct`·`annual_income`·`welfare_status`가 모두 null이어야 한다(DB 제약). 동의를 철회할 때는 동의 시각과 네 값을 한 번에 비운다. `job_status`는 민감 항목이 아니라 이 제약에 들어가지 않는다.
 
 ### LMS 연동
 
@@ -760,8 +762,9 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | source_type | school_notice, youth_policy, contest, poster, lms_announcement |
 | opportunity_category | scholarship, school_program, youth_policy, contest, activity, research, exam, etc |
 | opportunity_status | active, hidden, merged, expired |
-| req_field → text + check (`requirements.field`, `eligibility_results.missing_fields`) | department, grade, enrollment_status, semesters_completed, credits_total, credits_last_semester, gpa_total, gpa_last_semester, age, region, income_bracket, median_income_pct, welfare_status, is_international, **degree_program**, other (`missing_fields`에는 other 없음) |
+| req_field → text + check (`requirements.field`, `eligibility_results.missing_fields`) | department, grade, enrollment_status, semesters_completed, credits_total, credits_last_semester, gpa_total, gpa_last_semester, age, region, income_bracket, median_income_pct, welfare_status, is_international, degree_program, **annual_income**, **job_status**, other (`missing_fields`에는 other 없음) |
 | welfare_status | none, near_poverty, basic_livelihood |
+| job_status | employed, self_employed, unemployed, freelancer, daily_worker, founder, short_term, farmer |
 | req_operator | eq, neq, in, not_in, gte, lte, between |
 | eligibility_status | eligible, ineligible, undetermined |
 | enrollment_status | enrolled, on_leave, deferred_graduation, graduated |

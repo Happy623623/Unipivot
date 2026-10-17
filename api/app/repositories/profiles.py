@@ -27,6 +27,7 @@ _INCOME_CONSENT_SET = (
     "income_info_agreed_at = case when %(agree)s then coalesce(income_info_agreed_at, now()) end,"
     " income_bracket = case when %(agree)s then income_bracket end,"
     " median_income_pct = case when %(agree)s then median_income_pct end,"
+    " annual_income = case when %(agree)s then annual_income end,"
     " welfare_status = case when %(agree)s then welfare_status end"
 )
 

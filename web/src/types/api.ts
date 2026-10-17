@@ -16,6 +16,16 @@ export type NotificationType =
 export type ReportReason = "wrong_info" | "duplicate" | "expired" | "inappropriate";
 // 지금 다니는(졸업했으면 마지막으로 다닌) 학위과정: 학부·석사·박사·석박사통합
 export type DegreeProgram = "bachelor" | "master" | "doctoral" | "integrated";
+// 취업 상태(온통청년 취업 요건과 같은 구분). '기타'는 뜻이 정해져 있지 않아 항목에 두지 않는다
+export type JobStatus =
+  | "employed"
+  | "self_employed"
+  | "unemployed"
+  | "freelancer"
+  | "daily_worker"
+  | "founder"
+  | "short_term"
+  | "farmer";
 
 // GET /me
 export interface Me {
@@ -48,7 +58,9 @@ export interface Profile {
   region_sigungu: string | null;
   income_bracket: number | null;         // 학자금 지원구간
   median_income_pct: number | null;      // 기준 중위소득 %
+  annual_income: number | null;          // 본인 연 소득, 만 원 단위
   welfare_status: "none" | "near_poverty" | "basic_livelihood" | null;
+  job_status: JobStatus | null;          // 취업 상태
   is_international: boolean | null;
 }
 

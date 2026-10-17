@@ -42,6 +42,18 @@ _TRIVIAL = frozenset(
 _INCOME_LABEL = re.compile(
     r"^소득\s*[:：]\s*"
 )  # "소득 : 기준 중위소득 60% 이하"처럼 칸 이름을 앞에 쓴 글
+# 연소득 금액이 본인 소득이 아니라 다른 기준을 가리키는 덧글. 이런 글이 붙으면 금액 비교를 하지 않는다
+_OTHER_BASIS = re.compile(r"가구|중위소득|합산|부모|세대|배우자")
+JOB_STATUS = {  # 온통청년 jobCd → 프로필 job_status (기타·제한없음은 뺀다)
+    "0013001": "employed",
+    "0013002": "self_employed",
+    "0013003": "unemployed",
+    "0013004": "freelancer",
+    "0013005": "daily_worker",
+    "0013006": "founder",
+    "0013007": "short_term",
+    "0013008": "farmer",
+}
 
 APPROVED = "0044002"  # 정책승인상태: 승인
 APPLY_PERIOD, APPLY_ALWAYS, APPLY_CLOSED = "0057001", "0057002", "0057003"  # 특정기간·상시·마감
@@ -359,11 +371,16 @@ def _special(policy: Mapping[str, Any]) -> list[Condition]:
 
 
 def _job(policy: Mapping[str, Any]) -> list[Condition]:
+    """취업 상태. '기타'가 섞이면 무엇을 받아 주는지 알 수 없어 원문 확인으로 둔다."""
     chosen = _choices(policy, "jobCd")
     if not chosen:
         return []
     names = "·".join(JOB.get(code, code) for code in chosen)
-    return [_other(f"취업 상태: {names}", f"온통청년 취업 요건: {names}")]
+    evidence = f"온통청년 취업 요건: {names}"
+    values = [JOB_STATUS[code] for code in chosen if code in JOB_STATUS]
+    if len(values) != len(chosen) or not values:  # 기타·모르는 코드가 섞였다
+        return [_other(f"취업 상태: {names}", evidence)]
+    return [Condition("job_status", "in", values, None, evidence)]
 
 
 def _marriage(policy: Mapping[str, Any]) -> list[Condition]:
@@ -386,6 +403,16 @@ def _income(policy: Mapping[str, Any]) -> list[Condition]:
         parts += [f"{high:,}만 원 이하"] if high > 0 else []
         text = "연소득 " + " ".join(parts) if parts else "연소득 조건이 있음"
         text += f" ({note})" if note else ""
+        # 금액이 있고 덧글이 본인 연소득 말고 다른 기준(가구·중위소득 등)을 가리키지 않으면 바로 판정한다
+        if parts and not (note and _OTHER_BASIS.search(note)):
+            evidence = f"온통청년 {text}"
+            if low > 1 and high > 0:
+                return [
+                    Condition("annual_income", "between", {"min": low, "max": high}, None, evidence)
+                ]
+            if high > 0:
+                return [Condition("annual_income", "lte", high, None, evidence)]
+            return [Condition("annual_income", "gte", low, None, evidence)]
     else:
         text = f"소득: {note}" if note else "소득 조건이 있음"
     return [_other(text, f"온통청년 {text}")]

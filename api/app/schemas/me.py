@@ -11,6 +11,17 @@ EnrollmentStatus = Literal["enrolled", "on_leave", "deferred_graduation", "gradu
 # 지금 다니는(졸업했으면 마지막으로 다닌) 학위과정: 학부·석사·박사·석박사통합
 DegreeProgram = Literal["bachelor", "master", "doctoral", "integrated"]
 WelfareStatus = Literal["none", "near_poverty", "basic_livelihood"]
+# 취업 상태(온통청년 jobCd와 같은 구분). '기타'는 뜻이 정해져 있지 않아 항목에 두지 않는다
+JobStatus = Literal[
+    "employed",
+    "self_employed",
+    "unemployed",
+    "freelancer",
+    "daily_worker",
+    "founder",
+    "short_term",
+    "farmer",
+]
 # 시도는 정식 이름만 받는다 (판정 엔진의 지역 비교 기준). 16곳 — 2026-07-01에 광주광역시와
 # 전라남도가 전남광주통합특별시로 합쳐졌다. 통합 전 이름으로 저장한 프로필은 마이그레이션이 옮긴다.
 RegionSido = Literal[
@@ -50,7 +61,11 @@ class ProfileFields(BaseModel):
     region_sigungu: str | None = Field(None, max_length=40)
     income_bracket: int | None = Field(None, ge=0, le=10)  # 학자금 지원구간, 0 = 기초·차상위
     median_income_pct: int | None = Field(None, ge=0, le=500)  # 기준 중위소득 % (가구)
+    # 본인 연 소득, 만 원 단위. 상한은 화면(web/src/lib/profileFields.ts의 30000)과 맞추고,
+    # DB 칸이 smallint(최대 32767)라 그 안에 든다 — 넘는 값이 통과하면 저장에서 넘쳐 500이 된다
+    annual_income: int | None = Field(None, ge=0, le=30000)
     welfare_status: WelfareStatus | None = None
+    job_status: JobStatus | None = None
     is_international: bool | None = None  # 외국인 유학생 여부
 
 
@@ -69,7 +84,12 @@ class ProfilePatch(ProfileFields):
 PROFILE_FIELDS: tuple[str, ...] = tuple(Profile.model_fields)
 COMPLETION_FIELDS: tuple[str, ...] = tuple(f for f in PROFILE_FIELDS if f != "gpa_scale")
 # 선택 동의(소득·수급 정보)가 있어야 저장되는 항목. DB 제약 profiles_income_consent_chk와 같다
-INCOME_FIELDS: tuple[str, ...] = ("income_bracket", "median_income_pct", "welfare_status")
+INCOME_FIELDS: tuple[str, ...] = (
+    "income_bracket",
+    "median_income_pct",
+    "annual_income",
+    "welfare_status",
+)
 
 
 def gpa_errors(profile: Profile) -> dict[str, str]:
