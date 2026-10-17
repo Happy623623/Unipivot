@@ -17,7 +17,15 @@
 - 제출한 과제의 `submission.submitted_at`이 제출 시각이다. 점수는 null일 수 있다(0점 과제)
 - 시각은 모두 `...Z`(UTC)로 온다
 
-주차 항목·공지 샘플은 F-52·F-53에서 더한다(그 기능이 쓸 때 함께 넣는다).
+주차 모듈 샘플에서 확인한 것(F-52, 모듈 84개·항목 87건 녹화):
+
+- 한 모듈에 **제목이 같은 항목이 둘씩** 있다(15쌍) → 같은 항목인지는 `canvas_item_id`로만 가린다
+- 항목 `type`은 `ExternalTool` 75 · `Assignment` 7 · `Quiz` 4 · `Page` 1이고 `File`은 0건이다
+- 모듈 `position`은 연속이 아니다(1주차가 position 17인 과목이 있다) → 저장하지 않는다
+- 항목이 없는 모듈이 흔하다(84개 중 47개가 `items: []`)
+- 학생이 여는 주소는 `html_url`이다. `url`은 API 주소라 열어도 JSON이다
+
+공지 샘플은 F-53에서 더한다(그 기능이 쓸 때 함께 넣는다).
 """
 
 from typing import Any
@@ -257,3 +265,93 @@ DRAFT_ASSIGNMENT: dict[str, Any] = {
 DB_ASSIGNMENTS: list[dict[str, Any]] = [HOMEWORK, LAB_REPORT, DRAFT_ASSIGNMENT]
 # 기계학습 과목(216515)의 과제 목록 응답
 ML_ASSIGNMENTS: list[dict[str, Any]] = [QUIZ]
+
+
+# ── 주차 모듈·항목 (F-52) ───────────────────────────────────────────────────
+def _item(
+    item_id: int,
+    title: str,
+    kind: str = "ExternalTool",
+    *,
+    course: int = 214023,
+    module: int = 2871837,
+    content: int | None = None,
+) -> dict[str, Any]:
+    """녹화한 항목 모양 그대로. `url`은 API 주소라 학생이 열 수 없다(`html_url`을 쓴다)."""
+    return {
+        "id": item_id,
+        "title": title,
+        "position": 2,
+        "indent": 0,
+        "type": kind,
+        "module_id": module,
+        "html_url": f"https://lms.test/courses/{course}/modules/items/{item_id}",
+        "url": f"https://lms.test/api/v1/courses/{course}/external_tools/sessionless_launch?id=138",
+        "page_url": None,
+        "external_url": f"https://lms.test/learningx/lti/lecture_attendance/items/view/{item_id}",
+        "content_id": content,
+        "new_tab": None,
+        "published": None,
+    }
+
+
+def _module(
+    module_id: int, name: str, items: list[dict[str, Any]], *, position: int = 17
+) -> dict[str, Any]:
+    return {
+        "id": module_id,
+        "name": name,
+        "position": position,  # 연속이 아니다(1주차가 17인 과목이 있었다)
+        "unlock_at": None,
+        "require_sequential_progress": False,
+        "published": None,
+        "items_count": len(items),
+        "items_url": f"https://lms.test/api/v1/courses/214023/modules/{module_id}/items",
+        "state": "started",
+        "completed_at": None,
+        "items": items,
+    }
+
+
+# 데이터베이스 과목: 3주차에 제목이 같은 항목 둘(녹화 15쌍과 같은 모양), 4주차는 빈 모듈
+DB_MODULES: list[dict[str, Any]] = [
+    _module(
+        2871837,
+        "3주차",
+        [
+            _item(8569302, "3주차 강의", content=138),
+            _item(8569303, "3주차 강의"),  # 제목이 같다 — ID로만 가린다
+            _item(8569304, "3주차 퀴즈", "Quiz", content=85791),
+        ],
+    ),
+    _module(2871840, "4주차 (개천절 대체휴일)", [], position=21),
+]
+
+# 기계학습 과목: 모듈 하나에 과제 항목 하나
+ML_MODULES: list[dict[str, Any]] = [
+    _module(
+        2756894,
+        "Week 3 : Trees",
+        [
+            _item(
+                8631787,
+                "3주차 과제 안내",
+                "Assignment",
+                course=216515,
+                module=2756894,
+                content=2799146,
+            )
+        ],
+        position=1,
+    )
+]
+
+# `include[]=items`로 항목이 오지 않은 모듈(녹화에는 없었지만 Canvas 문서에 있는 경우)
+MODULE_WITHOUT_ITEMS: dict[str, Any] = {
+    "id": 2871999,
+    "name": "5주차",
+    "position": 25,
+    "items_count": 1,
+    "items_url": "https://lms.test/api/v1/courses/214023/modules/2871999/items",
+    "state": "locked",
+}

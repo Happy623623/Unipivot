@@ -43,6 +43,7 @@ LMS_LABELS = {
     "check_lms_token": "토큰 확인",
     "fetch_lms_courses": "수강 과목 받기",
     "fetch_lms_assignments": "과제·제출 받기",
+    "fetch_lms_modules": "주차 자료 받기",
     SAVE_TOOL: "바뀐 것 저장",
 }
 FAILED_MESSAGE = "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요."
@@ -191,6 +192,8 @@ class RunRepository:
                     due_changed=int(output["due_changed"]),
                     submitted=int(output["submitted"]),
                 ),
+                # F-52 전 실행에는 이 칸이 없다(그때는 주차 항목을 받지 않았다)
+                new_module_items=int(output.get("new_module_items", 0)),
             )
         except (KeyError, TypeError, ValueError):
             logger.warning("동기화 결과 모양이 달라 읽지 못했어요: run %s", run_id)

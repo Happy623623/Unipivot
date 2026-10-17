@@ -12,14 +12,20 @@ from psycopg.types.json import Jsonb
 
 from app.eligibility import KST
 from app.lms.assignments import CanvasAssignment, assignments
+from app.lms.modules import CanvasModuleItem, module_items
 from app.repositories.lms import AssignmentChanges, LmsRepository, SavedAssignment
-from app.repositories.notifications import AssignmentNotice, NotificationRepository
+from app.repositories.notifications import (
+    AssignmentNotice,
+    MaterialNotice,
+    NotificationRepository,
+)
 from app.repositories.runs import RunRepository
 from app.schemas.lms import SAVE_TOOL
 from tests.db_world import DATABASE_URL, connect, make_user
 from tests.lms_samples import (
     DATABASE,
     DB_ASSIGNMENTS,
+    DB_MODULES,
     MACHINE_LEARNING,
     MINE,
     SEMINAR,
@@ -1098,3 +1104,457 @@ async def test_the_steps_have_korean_labels(world: dict[str, Any]) -> None:
     run_id = await _run_with(world, "fetch_lms_assignments", {"courses": 2})
     steps = await RunRepository(world["conn"]).steps(run_id)
     assert [(one.tool, one.label) for one in steps] == [("fetch_lms_assignments", "과제·제출 받기")]
+
+
+# ── 주차 항목 (F-52) ────────────────────────────────────────────────────────
+
+
+async def test_it_saves_module_items_as_a_shared_table(world: dict[str, Any]) -> None:
+    """주차 항목은 과목 공통이다(ERD 3-2). 같은 과목을 듣는 두 사람이 같은 행을 본다."""
+    repo, me, other, now = world["repo"], world["me"], world["other"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_courses(other, [DATABASE], now=now)
+    items = module_items(DB_MODULES)
+
+    first = await repo.save_module_items(me, DATABASE["id"], items, now=now)
+    assert [one.title for one in first.created] == ["3주차 강의", "3주차 강의", "3주차 퀴즈"]
+    assert first.first_load is True  # 이 과목 항목을 처음 받았다
+    assert first.notifiable == []  # 첫 수집은 알리지 않는다
+
+    rows = await (
+        await world["conn"].execute(
+            "select count(*) as n from lms_module_items where canvas_course_id = %s",
+            (DATABASE["id"],),
+        )
+    ).fetchone()
+    assert rows["n"] == 3  # 사람마다 따로 쌓이지 않는다
+    # 연결하면서 받은 항목은 "새 자료"가 아니다(과목 행의 last_viewed_at이 그때로 찍힌다)
+    assert (await repo.courses(me, now=now))[0].new_materials == 0
+
+    later = now + timedelta(days=1)
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [*items, CanvasModuleItem(8569999, "4주차", "04", "Page", None)],
+        now=later,
+    )
+    assert (await repo.courses(me, now=later))[0].new_materials == 1
+    assert (await repo.courses(other, now=later))[0].new_materials == 1  # 같이 듣는 사람도 센다
+
+
+async def test_the_second_sync_only_reports_the_new_item(world: dict[str, Any]) -> None:
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    items = module_items(DB_MODULES)
+    await repo.save_module_items(me, DATABASE["id"], items, now=now)
+
+    extra = [*items, CanvasModuleItem(8569999, "4주차", "04 - 정규화", "Page", None)]
+    later = await repo.save_module_items(me, DATABASE["id"], extra, now=now + timedelta(days=1))
+    assert [one.title for one in later.created] == ["04 - 정규화"]
+    assert later.first_load is False
+    assert later.notifiable == later.created  # 이제는 알린다
+
+
+async def test_items_with_the_same_title_are_stored_twice(world: dict[str, Any]) -> None:
+    """녹화 15쌍처럼 제목이 같은 항목이 둘이면 둘 다 남아야 한다(ID로만 가린다)."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_module_items(me, DATABASE["id"], module_items(DB_MODULES), now=now)
+    rows = await (
+        await world["conn"].execute(
+            "select canvas_item_id from lms_module_items where title = '3주차 강의'"
+            " order by canvas_item_id",
+            (),
+        )
+    ).fetchall()
+    assert [row["canvas_item_id"] for row in rows] == [8569302, 8569303]
+
+
+async def test_an_item_keeps_the_time_it_was_first_seen(world: dict[str, Any]) -> None:
+    """새 자료 수가 이 시각을 본다(`GET /lms/courses`). 다시 받을 때 밀면 계속 "새 자료"가 된다."""
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    one = CanvasModuleItem(8569302, "3주차", "3주차 강의", "ExternalTool", "https://lms.test/a")
+    await repo.save_module_items(me, DATABASE["id"], [one], now=now)
+
+    later = now + timedelta(days=2)
+    renamed = CanvasModuleItem(8569302, "3주차 (보강)", "3주차 강의(수정)", "Page", None)
+    again = await repo.save_module_items(me, DATABASE["id"], [renamed], now=later)
+    assert again.created == []  # 같은 항목이다
+    row = await (
+        await conn.execute(
+            "select first_seen_at, module_name, title, item_type, html_url from lms_module_items"
+            " where canvas_item_id = 8569302",
+            (),
+        )
+    ).fetchone()
+    assert row["first_seen_at"] == now
+    assert (row["module_name"], row["title"]) == ("3주차 (보강)", "3주차 강의(수정)")
+    assert (row["item_type"], row["html_url"]) == ("Page", None)  # 바뀐 값으로 갱신된다
+
+
+async def test_a_new_item_notifies_everyone_taking_the_course(world: dict[str, Any]) -> None:
+    """항목은 과목 공통이라 그 과목 수강생 모두가 알림을 받는다(ERD 3-2)."""
+    repo, me, other, now, conn = (
+        world["repo"],
+        world["me"],
+        world["other"],
+        world["now"],
+        world["conn"],
+    )
+    notes = NotificationRepository(conn)
+    for user in (me, other):
+        await repo.save_connection(user, token="enc", last4="a9f2", canvas_user_id=1, now=now)
+        await repo.save_courses(user, [DATABASE], now=now)
+    await repo.save_module_items(me, DATABASE["id"], module_items(DB_MODULES), now=now)
+    fresh = await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [
+            *module_items(DB_MODULES),
+            CanvasModuleItem(8569999, "4주차", "04 - 정규화", "Page", None),
+        ],
+        now=now,
+    )
+    notice = MaterialNotice(
+        fresh.created[0].id, "데이터베이스 4주차 자료가 올라왔어요", "04 - 정규화"
+    )
+
+    assert await notes.add_material_notices(DATABASE["id"], [notice], now=now) == 2
+    rows = await (
+        await conn.execute(
+            "select user_id, type, title, body, dedupe_key, lms_module_item_id from notifications"
+            " order by user_id",
+            (),
+        )
+    ).fetchall()
+    assert {str(row["user_id"]) for row in rows} == {me, other}
+    assert rows[0]["type"] == "new_material"
+    assert rows[0]["dedupe_key"] == f"new_material:mod:{fresh.created[0].id}"  # ERD 5장 표
+    # 같은 항목은 한 번만(다음 동기화에서 또 보내지 않는다)
+    assert await notes.add_material_notices(DATABASE["id"], [notice], now=now) == 0
+
+
+async def test_a_muted_student_gets_no_material_notice(world: dict[str, Any]) -> None:
+    repo, me, other, now, conn = (
+        world["repo"],
+        world["me"],
+        world["other"],
+        world["now"],
+        world["conn"],
+    )
+    notes = NotificationRepository(conn)
+    for user in (me, other):
+        await repo.save_connection(user, token="enc", last4="a9f2", canvas_user_id=1, now=now)
+        await repo.save_courses(user, [DATABASE], now=now)
+    saved = await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(8569302, "3주차", "강의", "Page", None)], now=now
+    )
+    await conn.execute(
+        "insert into user_settings (user_id, muted_notification_types)"
+        " values (%s, array['new_material'])",
+        (other,),
+    )
+    notice = MaterialNotice(saved.created[0].id, "제목", "본문")
+
+    assert await notes.add_material_notices(DATABASE["id"], [notice], now=now) == 1
+    row = await (await conn.execute("select user_id from notifications", ())).fetchone()
+    assert str(row["user_id"]) == me
+
+
+async def test_a_student_who_disconnected_gets_no_material_notice(world: dict[str, Any]) -> None:
+    """연결을 끊으면 동기화가 멈춘다(명세 9장). 같이 듣는 사람이 동기화해도 알림이 가면 안 된다."""
+    repo, me, other, now, conn = (
+        world["repo"],
+        world["me"],
+        world["other"],
+        world["now"],
+        world["conn"],
+    )
+    notes = NotificationRepository(conn)
+    for user in (me, other):
+        await repo.save_connection(user, token="enc", last4="a9f2", canvas_user_id=1, now=now)
+        await repo.save_courses(user, [DATABASE], now=now)
+    saved = await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(8569302, "3주차", "강의", "Page", None)], now=now
+    )
+    assert await repo.delete_connection(other) is True  # other가 연결을 끊었다
+
+    notice = MaterialNotice(saved.created[0].id, "제목", "본문")
+    assert await notes.add_material_notices(DATABASE["id"], [notice], now=now) == 1
+    row = await (await conn.execute("select user_id from notifications", ())).fetchone()
+    assert str(row["user_id"]) == me
+
+
+async def test_the_first_item_of_an_empty_course_is_notified(world: dict[str, Any]) -> None:
+    """항목이 0건인 과목이 흔하다(녹화 6과목 중 2과목). 그 과목에 나중에 올라온 첫 자료는 알려야 한다."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+
+    empty = await repo.save_module_items(me, DATABASE["id"], [], now=now)
+    assert (empty.created, empty.first_load) == ([], True)
+
+    later = now + timedelta(days=7)
+    first = await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "1주차", "01 - 소개", "Page", None)], now=later
+    )
+    assert [one.title for one in first.created] == ["01 - 소개"]
+    assert first.first_load is False  # 첫 수집은 이미 지났다
+    assert first.notifiable == first.created  # 그래서 알린다
+    assert (await repo.courses(me, now=later))[0].new_materials == 1
+
+
+async def test_the_back_catalogue_is_not_counted_as_new(world: dict[str, Any]) -> None:
+    """연결은 과목까지만 받고(F-50), 주차 항목은 그 뒤 동기화에서 온다. 그때 있던 항목은 새 자료가 아니다."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    later = now + timedelta(minutes=30)  # 대시보드를 열어 동기화한 때
+
+    await repo.save_module_items(me, DATABASE["id"], module_items(DB_MODULES), now=later)
+    assert (await repo.courses(me, now=later))[0].new_materials == 0
+
+    newer = later + timedelta(days=1)
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [*module_items(DB_MODULES), CanvasModuleItem(8569999, "4주차", "04", "Page", None)],
+        now=newer,
+    )
+    assert (await repo.courses(me, now=newer))[0].new_materials == 1
+
+
+async def test_a_dropped_course_gets_no_material_notice(world: dict[str, Any]) -> None:
+    """수강을 뺀 과목의 새 자료는 알리지 않는다."""
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    notes = NotificationRepository(conn)
+    await repo.save_connection(me, token="enc", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_courses(me, [DATABASE], now=now)
+    saved = await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(8569302, "3주차", "강의", "Page", None)], now=now
+    )
+    await conn.execute("update lms_courses set is_active = false where user_id = %s", (me,))
+    notice = MaterialNotice(saved.created[0].id, "제목", "본문")
+    assert await notes.add_material_notices(DATABASE["id"], [notice], now=now) == 0
+
+
+# ── 새 자료·과제 피드 (F-52, GET /lms/updates) ──────────────────────────────
+
+
+async def test_the_feed_shows_new_items_and_new_assignments(world: dict[str, Any]) -> None:
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [CanvasModuleItem(8569302, "3주차", "3주차 강의", "ExternalTool", "https://lms.test/i")],
+        now=now,
+    )
+    await repo.save_assignments(me, course, [_one(11, due=now + timedelta(days=9))], now=now)
+
+    items, cursor = await repo.updates(
+        me, since=now - timedelta(days=1), now=now, kinds=["module_item", "assignment"]
+    )
+    assert cursor is None
+    assert {one.type for one in items} == {"assignment", "module_item"}
+    assert len(items) == 2
+    item = next(one for one in items if one.type == "module_item")
+    assert (item.module_name, item.title) == ("3주차", "3주차 강의")
+    assert item.item_type == "ExternalTool"
+    assert item.course.short_name == "데이터베이스"
+    assert item.uploaded_file_id is None
+    assert item.first_seen_at == now.astimezone(KST)
+
+
+async def test_the_feed_filters_by_kind_and_course(world: dict[str, Any]) -> None:
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE, MACHINE_LEARNING], now=now)
+    db = await _course_id(world)
+    await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "3주차", "DB 강의", "Page", None)], now=now
+    )
+    await repo.save_module_items(
+        me, MACHINE_LEARNING["id"], [CanvasModuleItem(2, "3주차", "ML 강의", "Page", None)], now=now
+    )
+    await repo.save_assignments(me, db, [_one(11, due=now + timedelta(days=9))], now=now)
+    since = now - timedelta(days=1)
+
+    only_items, _ = await repo.updates(me, since=since, now=now, kinds=["module_item"])
+    assert {one.title for one in only_items} == {"DB 강의", "ML 강의"}
+    only_db, _ = await repo.updates(
+        me, since=since, now=now, kinds=["module_item", "assignment"], course_id=db
+    )
+    assert {one.title for one in only_db} == {"DB 강의", "실습 2주차 결과 제출"}
+    nothing, _ = await repo.updates(me, since=since, now=now, kinds=["announcement"])
+    assert nothing == []  # 공지는 F-53이 채운다
+
+
+async def test_the_feed_leaves_out_old_things(world: dict[str, Any]) -> None:
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "1주차", "지난 강의", "Page", None)], now=now
+    )
+    await repo.save_assignments(me, course, [_one(11, due=now + timedelta(days=30))], now=now)
+    await conn.execute(
+        "update lms_module_items set first_seen_at = %s", (now - timedelta(days=30),)
+    )
+    await conn.execute("update lms_assignments set first_seen_at = %s", (now - timedelta(days=30),))
+
+    items, _ = await repo.updates(
+        me, since=now - timedelta(days=7), now=now, kinds=["module_item", "assignment"]
+    )
+    assert items == []
+
+
+async def test_an_assignment_due_soon_comes_back_even_if_it_is_old(
+    world: dict[str, Any],
+) -> None:
+    """마감 D-3 이내 미제출 과제는 since보다 오래된 것도 넣는다(명세 9장)."""
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await repo.save_assignments(
+        me,
+        course,
+        [
+            _one(11, title="곧 마감", due=now + timedelta(days=2)),
+            _one(12, title="먼 마감", due=now + timedelta(days=9)),
+            _one(13, title="낸 과제", due=now + timedelta(days=1), state="submitted"),
+        ],
+        now=now,
+    )
+    await conn.execute("update lms_assignments set first_seen_at = %s", (now - timedelta(days=30),))
+
+    items, _ = await repo.updates(me, since=now - timedelta(days=7), now=now, kinds=["assignment"])
+    assert [one.title for one in items] == ["곧 마감"]
+
+
+async def test_the_feed_reads_on_with_a_cursor(world: dict[str, Any]) -> None:
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [CanvasModuleItem(number, "3주차", f"강의 {number}", "Page", None) for number in (1, 2, 3)],
+        now=now,
+    )
+    # 처음 본 시각을 달리해 순서를 못 박는다
+    for number, minutes in ((1, 0), (2, 5), (3, 10)):
+        await conn.execute(
+            "update lms_module_items set first_seen_at = %s where canvas_item_id = %s",
+            (now + timedelta(minutes=minutes), number),
+        )
+    since = now - timedelta(days=1)
+
+    first, cursor = await repo.updates(me, since=since, now=now, kinds=["module_item"], limit=2)
+    assert [one.title for one in first] == ["강의 3", "강의 2"]  # 최신 먼저
+    assert cursor is not None
+    rest, last = await repo.updates(
+        me, since=since, now=now, kinds=["module_item"], limit=2, cursor=cursor
+    )
+    assert [one.title for one in rest] == ["강의 1"]
+    assert last is None
+
+
+async def test_the_feed_pages_through_rows_seen_at_the_same_moment(
+    world: dict[str, Any],
+) -> None:
+    """한 동기화에서 들어온 행은 `first_seen_at`이 모두 같다. 그때도 빠지거나 겹치지 않아야 한다."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [
+            CanvasModuleItem(number, "3주차", f"강의 {number}", "Page", None)
+            for number in range(1, 6)
+        ],
+        now=now,
+    )
+    await repo.save_assignments(
+        me,
+        course,
+        [
+            _one(20 + number, title=f"과제 {number}", due=now + timedelta(days=9))
+            for number in range(3)
+        ],
+        now=now,
+    )
+    since = now - timedelta(days=1)
+
+    seen: list[str] = []
+    cursor = None
+    for _ in range(10):  # 넉넉히 돌려 본다(8행이면 네 쪽이다)
+        page, cursor = await repo.updates(
+            me, since=since, now=now, kinds=["module_item", "assignment"], limit=2, cursor=cursor
+        )
+        seen += [one.id for one in page]
+        if cursor is None:
+            break
+    assert len(seen) == 8
+    assert len(set(seen)) == 8  # 겹치지 않는다
+
+
+async def test_the_feed_shows_the_file_i_uploaded_for_an_item(world: dict[str, Any]) -> None:
+    """항목 알림에서 올린 PDF가 있으면 화면이 "요약 보기"를 띄운다(명세 9장)."""
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    saved = await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "3주차", "강의", "Page", None)], now=now
+    )
+    row = await (
+        await conn.execute(
+            "insert into files (user_id, kind, origin, storage_path, sha256,"
+            " lms_module_item_id) values (%s, 'lecture_material', 'upload', 'p/1', 'abc', %s)"
+            " returning id",
+            (me, saved.created[0].id),
+        )
+    ).fetchone()
+
+    items, _ = await repo.updates(me, since=now - timedelta(days=1), now=now, kinds=["module_item"])
+    assert items[0].uploaded_file_id == str(row["id"])
+
+
+async def test_the_feed_is_not_someone_elses(world: dict[str, Any]) -> None:
+    """항목은 과목 공통이지만, 그 과목을 듣지 않는 사람에게는 보이지 않는다."""
+    repo, me, other, now, conn = (
+        world["repo"],
+        world["me"],
+        world["other"],
+        world["now"],
+        world["conn"],
+    )
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "3주차", "강의", "Page", None)], now=now
+    )
+    since = now - timedelta(days=1)
+    mine, _ = await repo.updates(me, since=since, now=now, kinds=["module_item"])
+    assert len(mine) == 1
+    theirs, _ = await repo.updates(other, since=since, now=now, kinds=["module_item"])
+    assert theirs == []
+
+    # 남이 올린 파일은 내 피드에 붙지 않는다
+    await repo.save_courses(other, [DATABASE], now=now)
+    saved_id = mine[0].id
+    await conn.execute(
+        "insert into files (user_id, kind, origin, storage_path, sha256, lms_module_item_id)"
+        " values (%s, 'lecture_material', 'upload', 'p/2', 'def', %s)",
+        (other, saved_id),
+    )
+    again, _ = await repo.updates(me, since=since, now=now, kinds=["module_item"])
+    assert again[0].uploaded_file_id is None
+
+
+async def test_a_dropped_course_leaves_the_feed(world: dict[str, Any]) -> None:
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "3주차", "강의", "Page", None)], now=now
+    )
+    await conn.execute("update lms_courses set is_active = false where user_id = %s", (me,))
+    items, _ = await repo.updates(me, since=now - timedelta(days=1), now=now, kinds=["module_item"])
+    assert items == []
