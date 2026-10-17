@@ -296,7 +296,8 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 { "push_enabled": true, "muted_notification_types": ["new_material"], "calendar_auto_lms": true }
 ```
 
-- `PATCH`는 보낸 필드만 바꾸고, 행이 없으면 기본값으로 만든다
+- `PATCH`는 보낸 필드만 바꾸고, 행이 없으면 기본값으로 만든다. 아무 필드도 보내지 않거나 모르는 필드·모르는 알림 종류를 보내면 `422 VALIDATION_FAILED`다
+- 설정을 바꾼 적이 없으면 `GET`은 DB 기본값을 준다(푸시 켬 · 끈 종류 없음 · LMS 과제 자동 캘린더 등록 켬)
 - `calendar_auto_lms`를 끄면 이후 새 과제만 캘린더에 넣지 않는다. 이미 등록한 일정은 지우지 않는다
 
 ### `GET /meta/departments`

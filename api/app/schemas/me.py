@@ -1,9 +1,11 @@
 """GET /me, /me/profile, /me/consents, /auth/google/tokens 모델 (API 명세 v0.4 4장, web types/api.ts와 같은 이름)."""
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas.notifications import NotificationType
 
 EnrollmentStatus = Literal["enrolled", "on_leave", "deferred_graduation", "graduated"]
 # 지금 다니는(졸업했으면 마지막으로 다닌) 학위과정: 학부·석사·박사·석박사통합
@@ -144,3 +146,28 @@ class GoogleTokensRequest(BaseModel):
 class GoogleTokensResponse(BaseModel):
     calendar_connected: bool
     scope: str
+
+
+# ── 설정 (P1, 명세 4장 `GET`·`PATCH /me/settings`) ───────────────────────────
+# 알림 종류는 한 곳에서만 적는다(schemas/notifications.py). DB의 check 제약과 같은 일곱 가지다
+
+
+class Settings(BaseModel):
+    """알림·캘린더 설정. 행이 없으면 DB 기본값(푸시 켬·끈 종류 없음·LMS 자동 등록 켬)이다."""
+
+    push_enabled: bool
+    muted_notification_types: list[NotificationType]
+    calendar_auto_lms: bool
+
+
+class SettingsUpdate(BaseModel):
+    """보낸 항목만 바꾼다. 아무 항목도 없으면 422다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    push_enabled: bool | None = None
+    muted_notification_types: list[NotificationType] | None = None
+    calendar_auto_lms: bool | None = None
+
+    def changes(self) -> dict[str, Any]:
+        return {name: value for name, value in self.model_dump().items() if value is not None}
