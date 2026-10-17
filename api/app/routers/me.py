@@ -18,6 +18,8 @@ from app.schemas.me import (
     ProfilePatch,
     ProfileUpdateResponse,
     Rejudged,
+    Settings,
+    SettingsUpdate,
     gpa_errors,
 )
 
@@ -105,6 +107,36 @@ async def update_profile(
         ineligible=counts.ineligible,
     )
     return ProfileUpdateResponse(profile=merged, rejudged=rejudged)
+
+
+@router.get("/settings", response_model=Settings)
+async def read_settings(user: CurrentUserDep, repo: ProfileRepoDep) -> Settings:
+    """알림·캘린더 설정(명세 4장). 설정을 바꾼 적이 없으면 기본값이다."""
+    return await repo.get_settings(user.id)
+
+
+@router.patch("/settings", response_model=Settings)
+async def update_settings(
+    body: SettingsUpdate, user: CurrentUserDep, repo: ProfileRepoDep
+) -> Settings:
+    """보낸 항목만 바꾼다(명세 4장). 아무 항목도 없으면 422다.
+
+    `calendar_auto_lms`를 끄면 **이후** 새 과제만 캘린더에 넣지 않는다(이미 넣은 일정은 그대로다).
+    끈 알림 종류는 그 뒤로 만들지 않는다(F-45).
+    """
+    changes = body.changes()
+    if not changes:
+        raise ApiError(
+            422,
+            "VALIDATION_FAILED",
+            "바꿀 항목을 보내 주세요.",
+            {
+                "fields": {
+                    "settings": "push_enabled·muted_notification_types·calendar_auto_lms 중 하나는 보내야 해요."
+                }
+            },
+        )
+    return await repo.update_settings(user.id, changes)
 
 
 @router.post("/consents", response_model=ConsentResult)

@@ -255,3 +255,68 @@ def test_google_tokens(
     assert stored != "1//refresh"  # 암호화해서 저장한다
     assert decrypt(stored, settings.token_encryption_key) == "1//refresh"
     assert client.get("/api/v1/me", headers=auth).json()["calendar_connected"] is True
+
+
+# ── 설정 (명세 4장) ─────────────────────────────────────────────────────────
+
+
+def test_settings_start_at_the_default(client: TestClient, auth: dict[str, str]) -> None:
+    """설정을 바꾼 적이 없으면 DB 기본값이다(푸시 켬·끈 종류 없음·LMS 자동 등록 켬)."""
+    body = client.get("/api/v1/me/settings", headers=auth).json()
+    assert body == {
+        "push_enabled": True,
+        "muted_notification_types": [],
+        "calendar_auto_lms": True,
+    }
+
+
+def test_settings_change_only_what_was_sent(
+    client: TestClient, auth: dict[str, str], repo: FakeProfileRepository
+) -> None:
+    first = client.patch("/api/v1/me/settings", json={"calendar_auto_lms": False}, headers=auth)
+    assert first.status_code == 200
+    assert first.json() == {
+        "push_enabled": True,  # 보내지 않은 항목은 그대로다
+        "muted_notification_types": [],
+        "calendar_auto_lms": False,
+    }
+
+    second = client.patch(
+        "/api/v1/me/settings",
+        json={"muted_notification_types": ["new_material", "new_assignment"]},
+        headers=auth,
+    )
+    assert second.json()["muted_notification_types"] == ["new_material", "new_assignment"]
+    assert second.json()["calendar_auto_lms"] is False  # 앞서 끈 것이 남아 있다
+    assert repo.settings[USER_ID].calendar_auto_lms is False
+
+
+def test_settings_refuse_an_empty_change(client: TestClient, auth: dict[str, str]) -> None:
+    response = client.patch("/api/v1/me/settings", json={}, headers=auth)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_settings_refuse_an_unknown_notification_kind(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    """DB의 check 제약과 같은 목록이다. 모르는 종류는 저장 전에 막는다."""
+    response = client.patch(
+        "/api/v1/me/settings", json={"muted_notification_types": ["new_friend"]}, headers=auth
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_settings_refuse_an_unknown_field(client: TestClient, auth: dict[str, str]) -> None:
+    """아는 항목과 섞어 보내야 "모르는 칸은 버린다"와 구분된다(아는 항목만 있으면 200이 된다)."""
+    response = client.patch(
+        "/api/v1/me/settings", json={"push_enabled": False, "dark_mode": True}, headers=auth
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_settings_need_a_login(client: TestClient) -> None:
+    assert client.get("/api/v1/me/settings").status_code == 401
+    assert client.patch("/api/v1/me/settings", json={"push_enabled": False}).status_code == 401
