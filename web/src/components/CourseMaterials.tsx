@@ -2,6 +2,8 @@ import { useState } from "react";
 import Badge from "@/components/Badge";
 import type { CourseDetail } from "@/types/api";
 
+const NO_WEEK = "주차 미정";
+
 interface CourseMaterialsProps {
   course: CourseDetail;
   onOpenSummary: (fileId: string) => void;
@@ -15,7 +17,8 @@ export default function CourseMaterials({
   const grouped = course.module_items.reduce<
     Record<string, CourseDetail["module_items"]>
   >((groups, item) => {
-    groups[item.module_name] = [...(groups[item.module_name] ?? []), item];
+    const week = item.module_name ?? NO_WEEK; // 주차 이름이 없는 항목도 있다
+    groups[week] = [...(groups[week] ?? []), item];
     return groups;
   }, {});
   const fallbackFileId = course.materials[0]?.file_id;
@@ -36,7 +39,9 @@ export default function CourseMaterials({
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="flex items-center gap-2">
-                        <p className="text-[14px] font-semibold">{item.title}</p>
+                        <p className="text-[14px] font-semibold">
+                          {item.title}
+                        </p>
                         {item.is_new && <Badge>새 자료</Badge>}
                       </div>
                       <p className="mt-1 text-[11px] text-[#667085]">
@@ -44,14 +49,16 @@ export default function CourseMaterials({
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-3">
-                      <a
-                        href={item.html_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[12px] font-semibold text-[#4f6ef7]"
-                      >
-                        LMS에서 열기
-                      </a>
+                      {item.html_url && (
+                        <a
+                          href={item.html_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[12px] font-semibold text-[#4f6ef7]"
+                        >
+                          LMS에서 열기
+                        </a>
+                      )}
                       {fileId ? (
                         <button
                           type="button"

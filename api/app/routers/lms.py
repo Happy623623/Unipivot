@@ -7,10 +7,11 @@ from datetime import datetime, timedelta
 from typing import Annotated, get_args
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.auth import CurrentUserDep
 from app.clock import NowDep
+from app.config import Settings, get_settings
 from app.errors import ApiError
 from app.lms.service import NOT_CONNECTED, LmsServiceDep
 from app.lms.sync import LmsSyncServiceDep
@@ -22,6 +23,7 @@ from app.schemas.lms import (
     ConnectionView,
     ConnectRequest,
     ConnectResult,
+    CourseDetail,
     CourseList,
     LmsUpdateList,
     SyncResponse,
@@ -82,6 +84,27 @@ async def sync(
     if isinstance(result, SyncSkipped):
         response.status_code = 200
     return result
+
+
+@router.get("/courses/{course_id}", response_model=CourseDetail)
+async def course_detail(
+    course_id: UUID,
+    user: CurrentUserDep,
+    repo: LmsRepoDep,
+    now: NowDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> CourseDetail:
+    """과목 상세: 과제·주차 자료·공지·계획서 일정·내 자료(F-14·F-51·F-52).
+
+    부르면 그 과목을 "지금 봤다"고 적는다(`last_viewed_at`). 그래서 다음부터 새 자료 수가 줄고,
+    이 응답의 `is_new`는 **바꾸기 전** 기준이다. 수강을 뺀 과목과 남의 과목은 404다.
+    """
+    found = await repo.course_detail(
+        user.id, str(course_id), now=now, lms_base=settings.lms_api_base
+    )
+    if found is None:
+        raise ApiError(404, "NOT_FOUND", "과목을 찾을 수 없어요.")
+    return found
 
 
 @router.get("/assignments", response_model=AssignmentList)

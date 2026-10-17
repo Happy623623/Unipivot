@@ -1558,3 +1558,242 @@ async def test_a_dropped_course_leaves_the_feed(world: dict[str, Any]) -> None:
     await conn.execute("update lms_courses set is_active = false where user_id = %s", (me,))
     items, _ = await repo.updates(me, since=now - timedelta(days=1), now=now, kinds=["module_item"])
     assert items == []
+
+
+# ── 과목 상세 (F-14·F-51·F-52, GET /lms/courses/{id}) ──────────────────────
+
+LMS_BASE = "https://lms.test"
+
+
+async def test_the_course_detail_fills_every_tab(world: dict[str, Any]) -> None:
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await repo.save_assignments(
+        me,
+        course,
+        [
+            _one(11, title="나중 과제", due=now + timedelta(days=9)),
+            _one(12, title="곧 과제", due=now + timedelta(days=1)),
+        ],
+        now=now,
+    )
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [CanvasModuleItem(1, "3주차", "3주차 강의", "ExternalTool", "https://lms.test/i/1")],
+        now=now,
+    )
+    await conn.execute(
+        "insert into lms_announcements (canvas_course_id, canvas_topic_id, title, summary,"
+        " category, posted_at) values (%s, 9001, '강의실 변경', '301호에서 해요',"
+        " 'schedule_change', %s)",
+        (DATABASE["id"], now),
+    )
+    await conn.execute(
+        "insert into lms_announcements (canvas_course_id, canvas_topic_id, title, posted_at,"
+        " is_section_specific) values (%s, 9002, '2분반만 보세요', %s, true)",
+        (DATABASE["id"], now),
+    )
+    syllabus = await (
+        await conn.execute(
+            "insert into syllabi (user_id, lms_course_id, course_name) values (%s, %s, '데이터베이스')"
+            " returning id",
+            (me, course),
+        )
+    ).fetchone()
+    await conn.execute(
+        "insert into syllabus_items (syllabus_id, item_type, title, starts_at, is_confirmed)"
+        " values (%s, 'midterm', '중간고사', %s, true)",
+        (syllabus["id"], now + timedelta(days=20)),
+    )
+    await conn.execute(
+        "insert into files (user_id, lms_course_id, kind, origin, storage_path, sha256,"
+        " original_name) values (%s, %s, 'lecture_material', 'upload', 'p/1', 'abc', '3주차.pdf')",
+        (me, course),
+    )
+
+    detail = await repo.course_detail(me, course, now=now, lms_base=LMS_BASE)
+    assert detail is not None
+    assert detail.course.short_name == "데이터베이스"
+    assert detail.course.has_syllabus is True
+    assert detail.course.html_url == f"{LMS_BASE}/courses/{DATABASE['id']}"
+    assert detail.course.portal_syllabus_url is not None
+    assert [one.title for one in detail.assignments] == ["곧 과제", "나중 과제"]  # 마감 가까운 순
+    assert [one.title for one in detail.module_items] == ["3주차 강의"]
+    item = detail.module_items[0]
+    assert (item.item_type, item.html_url) == ("ExternalTool", "https://lms.test/i/1")
+    assert item.is_new is False  # 첫 수집이라 본 시각이 올라갔다(F-52)
+    assert item.uploaded_file_id is None
+    assert [one.title for one in detail.announcements] == ["강의실 변경"]  # 분반 한정은 빠진다
+    assert detail.announcements[0].category == "schedule_change"
+    assert [one.title for one in detail.syllabus_items] == ["중간고사"]
+    assert detail.syllabus_items[0].is_confirmed is True
+    assert [one.original_name for one in detail.materials] == ["3주차.pdf"]
+    assert detail.materials[0].status == "pending"  # 요약 전이면 pending이다
+
+
+async def test_opening_a_course_marks_it_seen(world: dict[str, Any]) -> None:
+    """`is_new`는 열기 전 기준이고, 열고 나면 새 자료 수가 0이 된다(명세 9장)."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "1주차", "01", "Page", None)], now=now
+    )
+    later = now + timedelta(days=3)
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [
+            CanvasModuleItem(1, "1주차", "01", "Page", None),
+            CanvasModuleItem(2, "2주차", "02", "Page", None),
+        ],
+        now=later,
+    )
+    assert (await repo.courses(me, now=later))[0].new_materials == 1
+
+    detail = await repo.course_detail(me, course, now=later, lms_base=LMS_BASE)
+    assert detail is not None
+    assert {one.title: one.is_new for one in detail.module_items} == {"01": False, "02": True}
+
+    assert (await repo.courses(me, now=later))[0].new_materials == 0  # 봤으니 0이다
+    again = await repo.course_detail(me, course, now=later, lms_base=LMS_BASE)
+    assert again is not None
+    assert [one.is_new for one in again.module_items] == [False, False]
+
+
+async def test_opening_a_course_does_not_turn_the_clock_back(world: dict[str, Any]) -> None:
+    """그새 첫 수집이 밀어 둔 본 시각을 지우면, 지난 자료가 다시 "새 자료"가 된다(F-52)."""
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    ahead = now + timedelta(minutes=10)
+    await conn.execute("update lms_courses set last_viewed_at = %s where id = %s", (ahead, course))
+    await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "1주차", "01", "Page", None)], now=now
+    )
+
+    assert await repo.course_detail(me, course, now=now, lms_base=LMS_BASE) is not None
+    row = await (
+        await conn.execute("select last_viewed_at from lms_courses where id = %s", (course,))
+    ).fetchone()
+    assert row["last_viewed_at"] == ahead  # 뒤로 돌아가지 않았다
+
+
+async def test_the_new_mark_is_read_before_the_course_is_marked_seen(
+    world: dict[str, Any],
+) -> None:
+    """먼저 본 시각을 올리면 그 응답의 `is_new`가 전부 false가 된다(명세 9장)."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await repo.save_module_items(me, DATABASE["id"], [], now=now)  # 첫 수집은 비어 있었다
+    later = now + timedelta(days=1)
+    await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "1주차", "01 - 소개", "Page", None)], now=later
+    )
+
+    detail = await repo.course_detail(me, course, now=later, lms_base=LMS_BASE)
+    assert detail is not None
+    assert [one.is_new for one in detail.module_items] == [True]  # 이번에 열기 전 기준
+
+
+async def test_the_detail_of_a_course_that_is_not_mine(world: dict[str, Any]) -> None:
+    repo, me, other, now = world["repo"], world["me"], world["other"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    assert await repo.course_detail(other, course, now=now, lms_base=LMS_BASE) is None
+    unknown = "11111111-1111-4111-8111-111111111111"
+    assert await repo.course_detail(me, unknown, now=now, lms_base=LMS_BASE) is None
+
+
+async def test_the_detail_of_a_dropped_course_is_gone(world: dict[str, Any]) -> None:
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await conn.execute("update lms_courses set is_active = false where id = %s", (course,))
+    assert await repo.course_detail(me, course, now=now, lms_base=LMS_BASE) is None
+
+
+async def test_the_detail_does_not_borrow_another_students_rows(world: dict[str, Any]) -> None:
+    """주차 항목만 과목 공통이다. 과제·계획서·올린 자료는 내 것만 나와야 한다."""
+    repo, me, other, now, conn = (
+        world["repo"],
+        world["me"],
+        world["other"],
+        world["now"],
+        world["conn"],
+    )
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_courses(other, [DATABASE], now=now)
+    mine = await _course_id(world)
+    theirs = str(
+        (
+            await (
+                await conn.execute(
+                    "select id from lms_courses where user_id = %s and canvas_course_id = %s",
+                    (other, DATABASE["id"]),
+                )
+            ).fetchone()
+        )["id"]
+    )
+    # 남의 행을 **내 과목 id**에 붙인다. 남의 과목 id에 붙이면 과목 조건만으로 걸러져서
+    # user_id 조건이 일하는지 보이지 않는다(검토에서 걸렸다)
+    await repo.save_assignments(other, mine, [_one(11, title="남의 과제")], now=now)
+    saved = await repo.save_module_items(
+        me, DATABASE["id"], [CanvasModuleItem(1, "1주차", "01", "Page", None)], now=now
+    )
+    syllabus = await (
+        await conn.execute(
+            "insert into syllabi (user_id, lms_course_id, course_name) values (%s, %s, '남의 계획서')"
+            " returning id",
+            (other, mine),
+        )
+    ).fetchone()
+    await conn.execute(
+        "insert into syllabus_items (syllabus_id, item_type, title) values (%s, 'final', '남의 기말')",
+        (syllabus["id"],),
+    )
+    await conn.execute(
+        "insert into files (user_id, lms_course_id, kind, origin, storage_path, sha256,"
+        " original_name, lms_module_item_id)"
+        " values (%s, %s, 'lecture_material', 'upload', 'p/9', 'xyz', '남의 자료.pdf', %s)",
+        (other, mine, saved.created[0].id),
+    )
+
+    await repo.save_assignments(other, theirs, [_one(12, title="남의 다른 과제")], now=now)
+
+    detail = await repo.course_detail(me, mine, now=now, lms_base=LMS_BASE)
+    assert detail is not None
+    assert detail.assignments == []
+    assert detail.syllabus_items == []
+    assert detail.materials == []
+    assert detail.course.has_syllabus is False
+    assert [one.title for one in detail.module_items] == ["01"]  # 항목은 공통이라 보인다
+    assert detail.module_items[0].uploaded_file_id is None  # 남이 올린 파일은 안 붙는다
+
+
+async def test_the_detail_shows_my_summary_status(world: dict[str, Any]) -> None:
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    file_id = (
+        await (
+            await conn.execute(
+                "insert into files (user_id, lms_course_id, kind, origin, storage_path, sha256,"
+                " original_name) values (%s, %s, 'lecture_material', 'upload', 'p/2', 'def',"
+                " '요약된.pdf') returning id",
+                (me, course),
+            )
+        ).fetchone()
+    )["id"]
+    await conn.execute(
+        "insert into materials (file_id, status, overall_summary) values (%s, 'succeeded', '요약')",
+        (file_id,),
+    )
+    detail = await repo.course_detail(me, course, now=now, lms_base=LMS_BASE)
+    assert detail is not None
+    assert [(one.original_name, one.status) for one in detail.materials] == [
+        ("요약된.pdf", "succeeded")
+    ]
