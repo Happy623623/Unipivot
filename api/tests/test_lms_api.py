@@ -331,8 +331,12 @@ def test_it_refuses_a_body_with_another_field(client: TestClient) -> None:
         ("get", CONNECTION),
         ("delete", CONNECTION),
         ("get", COURSES_PATH),
+        ("get", f"{COURSES_PATH}/11111111-1111-4111-8111-111111111111"),
+        ("post", "/api/v1/lms/sync"),
+        ("get", "/api/v1/lms/assignments"),
+        ("get", "/api/v1/lms/updates"),
     ],
 )
 def test_every_lms_path_needs_a_login(client: TestClient, method: str, path: str) -> None:
-    body = {"json": {"access_token": TOKEN}} if method == "post" else {}
+    body = {"json": {"access_token": TOKEN}} if path == CONNECTION and method == "post" else {}
     assert getattr(client, method)(path, **body).status_code == 401

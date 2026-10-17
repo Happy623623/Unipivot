@@ -34,7 +34,14 @@ from app.schemas.lms import (
     AssignmentItem,
     AssignmentUpdate,
     ConnectionView,
+    CourseAnnouncement,
+    CourseAssignment,
+    CourseDetail,
+    CourseHeader,
     CourseItem,
+    CourseMaterial,
+    CourseModuleItem,
+    CourseSyllabusItem,
     ModuleItemUpdate,
     NextDue,
 )
@@ -136,7 +143,17 @@ class AssignmentChanges:
 
 
 _FAR = datetime.max.replace(tzinfo=UTC)  # 마감 없는 과제를 뒤로 보낼 때 쓰는 비교값
+_EPOCH = datetime.fromtimestamp(
+    0, UTC
+)  # 과목을 한 번도 안 열었을 때의 기준(`to_timestamp(0)`과 같다)
 UPDATE_LIMIT = 50  # `GET /lms/updates` 한 쪽
+
+
+def _desc(value: datetime | None) -> float:
+    """최신 먼저 정렬용. 시각이 없으면 맨 뒤로 보낸다."""
+    return -value.timestamp() if value else float("inf")
+
+
 DEADLINE_SOON = timedelta(days=3)  # 피드에 넣는 "마감 임박"(명세 9장: D-3 이내 미제출)
 
 _ASSIGNMENTS = (
@@ -501,6 +518,169 @@ class LmsRepository:
         return items, Cursor(
             scope=update_scope(kinds, course_id, since), value=last["at"], id=str(last["id"])
         )
+
+    async def course_detail(
+        self, user_id: str, course_id: str, *, now: datetime, lms_base: str
+    ) -> CourseDetail | None:
+        """과목 하나의 모든 탭(명세 9장). 내 과목이 아니거나 수강을 뺐으면 None이다.
+
+        **읽고 나서 `last_viewed_at`을 지금으로 올린다.** `is_new`는 올리기 전 값으로 계산한다
+        (명세 9장) — 그래서 과목을 연 다음 과목 목록의 "새 자료" 수가 0이 된다.
+        """
+        head = await self._row(
+            "select c.id, c.canvas_course_id, c.name, c.last_viewed_at,"
+            " exists (select 1 from syllabi s where s.lms_course_id = c.id"
+            "   and s.user_id = c.user_id) as has_syllabus"
+            " from lms_courses c"
+            " where c.id = %(course)s and c.user_id = %(uid)s and coalesce(c.is_active, true)",
+            {"course": course_id, "uid": user_id},
+        )
+        if head is None:
+            return None
+        seen = head["last_viewed_at"]
+        parsed = course_name(head["name"])
+        detail = CourseDetail(
+            course=CourseHeader(
+                id=str(head["id"]),
+                short_name=parsed.short_name,
+                has_syllabus=head["has_syllabus"],
+                portal_syllabus_url=parsed.syllabus_url,
+                html_url=f"{lms_base.rstrip('/')}/courses/{head['canvas_course_id']}",
+            ),
+            assignments=await self._course_assignments(user_id, course_id),
+            module_items=await self._course_items(user_id, head["canvas_course_id"], seen=seen),
+            announcements=await self._course_announcements(head["canvas_course_id"]),
+            syllabus_items=await self._course_syllabus(user_id, course_id),
+            materials=await self._course_materials(user_id, course_id),
+        )
+        # 본 시각은 읽기가 끝난 뒤에 올린다(위의 is_new가 올리기 전 값을 쓰게).
+        # 뒤로 돌리지 않는다 — 그새 첫 수집이 밀어 둔 값을 지우면 지난 자료가 다시 "새 자료"가 된다
+        await self.conn.execute(
+            "update lms_courses"
+            " set last_viewed_at = greatest(coalesce(last_viewed_at, %(now)s), %(now)s)"
+            " where id = %(course)s and user_id = %(uid)s",
+            {"now": now, "course": course_id, "uid": user_id},
+        )
+        return detail
+
+    async def _course_assignments(self, user_id: str, course_id: str) -> list[CourseAssignment]:
+        rows = await self._rows(
+            "select a.id, a.title, a.due_at, a.submission_state::text as submission_state,"
+            " a.html_url from lms_assignments a"
+            " where a.user_id = %(uid)s and a.lms_course_id = %(course)s and a.removed_at is null",
+            {"uid": user_id, "course": course_id},
+        )
+        items = [
+            CourseAssignment(
+                id=str(row["id"]),
+                title=row["title"],
+                due_at=row["due_at"].astimezone(KST) if row["due_at"] else None,
+                submission_state=row["submission_state"],
+                html_url=row["html_url"],
+            )
+            for row in rows
+        ]
+        # 마감이 가까운 순, 마감 없는 것은 뒤로(과제 목록과 같은 규칙, DB 정렬에 맡기지 않는다)
+        return sorted(
+            items, key=lambda one: (one.due_at is None, one.due_at or _FAR, one.title, one.id)
+        )
+
+    async def _course_items(
+        self, user_id: str, canvas_course_id: int, *, seen: datetime | None
+    ) -> list[CourseModuleItem]:
+        """주차 항목. 과목 공통 표라 과목 번호로 읽고, 올린 파일은 내 것만 잇는다."""
+        rows = await self._rows(
+            "select i.id, i.module_name, i.title, i.item_type, i.html_url, i.first_seen_at,"
+            " (select f.id from files f where f.lms_module_item_id = i.id and f.user_id = %(uid)s"
+            "   order by f.created_at, f.id limit 1) as uploaded_file_id"
+            " from lms_module_items i where i.canvas_course_id = %(canvas)s",
+            {"uid": user_id, "canvas": canvas_course_id},
+        )
+        items = [
+            CourseModuleItem(
+                id=str(row["id"]),
+                module_name=row["module_name"],
+                title=row["title"],
+                item_type=row["item_type"],
+                html_url=row["html_url"],
+                # 과목 목록의 새 자료 수와 같은 기준이다(본 적 없으면 다 새 것, `_COURSES`)
+                is_new=row["first_seen_at"] > (seen or _EPOCH),
+                uploaded_file_id=str(row["uploaded_file_id"]) if row["uploaded_file_id"] else None,
+            )
+            for row in rows
+        ]
+        # 새로 들어온 것이 위로. 같은 때 들어왔으면 주차·제목 순이다
+        # 제목이 같은 항목이 한 모듈에 둘씩 있어서(녹화 15쌍) id까지 봐야 순서가 고정된다
+        return sorted(
+            items,
+            key=lambda one: (not one.is_new, one.module_name or "", one.title, one.id),
+        )
+
+    async def _course_announcements(self, canvas_course_id: int) -> list[CourseAnnouncement]:
+        """과목 공지(F-53이 채운다). **분반 한정 공지는 내려주지 않는다**(명세 9장)."""
+        rows = await self._rows(
+            "select id, title, summary, category::text as category, posted_at, opportunity_id"
+            " from lms_announcements"
+            " where canvas_course_id = %s and not is_section_specific",
+            (canvas_course_id,),
+        )
+        items = [
+            CourseAnnouncement(
+                id=str(row["id"]),
+                title=row["title"],
+                summary=row["summary"],
+                category=row["category"],
+                posted_at=row["posted_at"].astimezone(KST) if row["posted_at"] else None,
+                opportunity_id=str(row["opportunity_id"]) if row["opportunity_id"] else None,
+            )
+            for row in rows
+        ]
+        return sorted(items, key=lambda one: (one.posted_at is None, _desc(one.posted_at), one.id))
+
+    async def _course_syllabus(self, user_id: str, course_id: str) -> list[CourseSyllabusItem]:
+        rows = await self._rows(
+            "select i.id, i.item_type::text as item_type, i.title, i.starts_at,"
+            " coalesce(i.is_confirmed, false) as is_confirmed"
+            " from syllabus_items i join syllabi s on s.id = i.syllabus_id"
+            " where s.user_id = %(uid)s and s.lms_course_id = %(course)s",
+            {"uid": user_id, "course": course_id},
+        )
+        items = [
+            CourseSyllabusItem(
+                id=str(row["id"]),
+                item_type=row["item_type"],
+                title=row["title"],
+                starts_at=row["starts_at"].astimezone(KST) if row["starts_at"] else None,
+                is_confirmed=row["is_confirmed"],
+            )
+            for row in rows
+        ]
+        return sorted(
+            items,
+            key=lambda one: (one.starts_at is None, one.starts_at or _FAR, one.title, one.id),
+        )
+
+    async def _course_materials(self, user_id: str, course_id: str) -> list[CourseMaterial]:
+        """내가 이 과목에 올린 강의자료. 요약(materials)이 아직 없으면 pending으로 본다."""
+        rows = await self._rows(
+            "select f.id, f.original_name, f.created_at,"
+            " coalesce(m.status::text, 'pending') as status"
+            " from files f left join materials m on m.file_id = f.id"
+            " where f.user_id = %(uid)s and f.lms_course_id = %(course)s"
+            "   and f.kind = 'lecture_material'",
+            {"uid": user_id, "course": course_id},
+        )
+        rows.sort(
+            key=lambda row: (row["created_at"] is None, _desc(row["created_at"]), str(row["id"]))
+        )
+        return [
+            CourseMaterial(
+                file_id=str(row["id"]),
+                original_name=row["original_name"],
+                status=row["status"],
+            )
+            for row in rows
+        ]
 
     async def save_module_items(
         self, user_id: str, canvas_course_id: int, items: list[CanvasModuleItem], *, now: datetime

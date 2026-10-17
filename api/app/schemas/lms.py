@@ -172,3 +172,70 @@ class SyncJobResult(BaseModel):
     new_assignments: int
     due_changed: int
     submitted: int
+
+
+# ── 과목 상세 (F-14·F-51·F-52, 명세 9장) ────────────────────────────────────
+SyllabusItemType = Literal["midterm", "final", "presentation", "assignment", "etc"]
+# `materials.status`(job_status). 요약이 아직 없으면 파일만 있고 상태는 pending이다
+MaterialStatus = Literal["pending", "running", "succeeded", "failed"]
+AnnouncementCategory = Literal["schedule_change", "material", "opportunity", "general"]
+
+
+class CourseHeader(BaseModel):
+    id: str
+    short_name: str
+    has_syllabus: bool
+    portal_syllabus_url: str | None  # 과목명 꼴이 다르면 null
+    html_url: str  # "LMS에서 열기". 과목 주소는 저장하지 않고 LMS 주소 + 과목 번호로 만든다
+
+
+class CourseAssignment(BaseModel):
+    """과목 상세의 과제. 목록(`GET /lms/assignments`)과 달리 과목 칸이 없다(이미 그 과목이다)."""
+
+    id: str
+    title: str
+    due_at: datetime | None
+    submission_state: SubmissionState
+    html_url: str | None
+
+
+class CourseModuleItem(BaseModel):
+    id: str
+    module_name: str | None
+    title: str
+    item_type: str | None
+    html_url: str | None
+    is_new: bool  # 이번에 열기 전 기준이다(열면 last_viewed_at이 지금으로 바뀐다)
+    uploaded_file_id: str | None
+
+
+class CourseAnnouncement(BaseModel):
+    id: str
+    title: str
+    summary: str | None  # 분류 전이면 null (F-53)
+    category: AnnouncementCategory | None
+    posted_at: datetime | None
+    opportunity_id: str | None
+
+
+class CourseSyllabusItem(BaseModel):
+    id: str
+    item_type: SyllabusItemType
+    title: str
+    starts_at: datetime | None
+    is_confirmed: bool
+
+
+class CourseMaterial(BaseModel):
+    file_id: str
+    original_name: str | None
+    status: MaterialStatus
+
+
+class CourseDetail(BaseModel):
+    course: CourseHeader
+    assignments: list[CourseAssignment]
+    module_items: list[CourseModuleItem]
+    announcements: list[CourseAnnouncement]
+    syllabus_items: list[CourseSyllabusItem]
+    materials: list[CourseMaterial]

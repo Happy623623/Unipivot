@@ -43,6 +43,13 @@ from app.repositories.runs import get_run_repo
 from app.schemas.lms import (
     AssignmentCourse,
     AssignmentItem,
+    CourseAnnouncement,
+    CourseAssignment,
+    CourseDetail,
+    CourseHeader,
+    CourseMaterial,
+    CourseModuleItem,
+    CourseSyllabusItem,
     LmsSyncResult,
     ModuleItemUpdate,
     SyncCounts,
@@ -65,6 +72,7 @@ BASE = "https://lms.test"
 TOKEN = "18742~pAtB1g3TestTokenValue0000000000"
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=UTC)  # 2026-10-16 12:00 KST
 INTERNAL_KEY = "test-internal-key"
+COURSE_UUID = "33333333-3333-4333-8333-333333333333"
 FEED_ITEM = "22222222-2222-4222-8222-222222222222"  # 커서는 uuid만 받는다(decode_cursor)
 JOB = "/api/v1/internal/jobs/lms-sync"
 DB_COURSE = CourseRow(id="course-db", canvas_course_id=214023, short_name="데이터베이스")
@@ -87,6 +95,7 @@ class FakeLms:
     feed_calls: list[tuple[datetime, tuple[str, ...], str | None, Any]] = field(
         default_factory=list
     )
+    opened: list[tuple[str, datetime, str]] = field(default_factory=list)
     module_changes: dict[int, ModuleChanges] = field(default_factory=dict)
     rows: dict[str, Connection] = field(default_factory=dict)
     users: list[str] = field(default_factory=list)
@@ -155,6 +164,63 @@ class FakeLms:
     async def connected_users(self, *, before: datetime, limit: int) -> list[str]:
         self.before = before
         return list(self.users)
+
+    async def course_detail(
+        self, user_id: str, course_id: str, *, now: datetime, lms_base: str
+    ) -> CourseDetail | None:
+        assert user_id == USER_ID
+        self.opened.append((course_id, now, lms_base))
+        if course_id != COURSE_UUID:
+            return None
+        return CourseDetail(
+            course=CourseHeader(
+                id=course_id,
+                short_name="데이터베이스",
+                has_syllabus=False,
+                portal_syllabus_url=None,
+                html_url=f"{lms_base}/courses/214023",
+            ),
+            assignments=[
+                CourseAssignment(
+                    id="a-1",
+                    title="실습 2주차 결과 제출",
+                    due_at=datetime(2026, 10, 20, 23, 59, 59, tzinfo=KST),
+                    submission_state="unsubmitted",
+                    html_url=f"{BASE}/courses/214023/assignments/2811242",
+                )
+            ],
+            module_items=[
+                CourseModuleItem(
+                    id=FEED_ITEM,
+                    module_name="3주차",
+                    title="3주차 강의",
+                    item_type="ExternalTool",
+                    html_url=f"{BASE}/courses/214023/modules/items/8569302",
+                    is_new=True,
+                    uploaded_file_id=None,
+                )
+            ],
+            announcements=[
+                CourseAnnouncement(
+                    id="n-1",
+                    title="강의실 변경",
+                    summary="301호에서 해요",
+                    category="schedule_change",
+                    posted_at=NOW.astimezone(KST),
+                    opportunity_id=None,
+                )
+            ],
+            syllabus_items=[
+                CourseSyllabusItem(
+                    id="s-1",
+                    item_type="midterm",
+                    title="중간고사",
+                    starts_at=NOW.astimezone(KST),
+                    is_confirmed=True,
+                )
+            ],
+            materials=[CourseMaterial(file_id="f-1", original_name="3주차.pdf", status="pending")],
+        )
 
     async def updates(
         self,
@@ -868,3 +934,77 @@ def test_the_feed_needs_a_login(settings: Settings, lms: FakeLms) -> None:
     app.dependency_overrides[get_lms_repo] = lambda: lms
     with TestClient(app) as anonymous:
         assert anonymous.get(UPDATES).status_code == 401
+
+
+# ── 과목 상세 (F-14·F-51·F-52) ──────────────────────────────────────────────
+
+
+def test_it_opens_a_course(client: TestClient, lms: FakeLms, settings: Settings) -> None:
+    response = client.get(f"/api/v1/lms/courses/{COURSE_UUID}")
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {
+        "course",
+        "assignments",
+        "module_items",
+        "announcements",
+        "syllabus_items",
+        "materials",
+    }
+    # 칸 이름이 명세 9장 예시와 같아야 한다(web 타입도 이걸 보고 쓴다)
+    assert set(body["course"]) == {
+        "id",
+        "short_name",
+        "has_syllabus",
+        "portal_syllabus_url",
+        "html_url",
+    }
+    assert body["course"]["short_name"] == "데이터베이스"
+    assert set(body["assignments"][0]) == {
+        "id",
+        "title",
+        "due_at",
+        "submission_state",
+        "html_url",
+    }
+    assert set(body["module_items"][0]) == {
+        "id",
+        "module_name",
+        "title",
+        "item_type",
+        "html_url",
+        "is_new",
+        "uploaded_file_id",
+    }
+    assert set(body["announcements"][0]) == {
+        "id",
+        "title",
+        "summary",
+        "category",
+        "posted_at",
+        "opportunity_id",
+    }
+    assert set(body["syllabus_items"][0]) == {
+        "id",
+        "item_type",
+        "title",
+        "starts_at",
+        "is_confirmed",
+    }
+    assert set(body["materials"][0]) == {"file_id", "original_name", "status"}
+    assert body["assignments"][0]["due_at"] == "2026-10-20T23:59:59+09:00"  # KST로 간다
+    course_id, when, base = lms.opened[0]
+    assert (course_id, when) == (COURSE_UUID, NOW)
+    assert base == settings.lms_api_base  # "LMS에서 열기" 링크를 만들 주소
+
+
+def test_a_course_that_is_not_mine_is_not_found(client: TestClient) -> None:
+    response = client.get("/api/v1/lms/courses/44444444-4444-4444-8444-444444444444")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_a_course_id_that_is_not_a_uuid_is_refused(client: TestClient) -> None:
+    response = client.get("/api/v1/lms/courses/214023")
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
