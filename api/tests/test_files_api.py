@@ -16,7 +16,7 @@ from app.clock import current_time
 from app.config import Settings, get_settings
 from app.main import create_app
 from app.repositories.files import StoredFile, get_file_repos
-from app.uploads import DAILY_UPLOAD_LIMIT, MAX_BYTES
+from app.uploads import DAILY_UPLOAD_LIMIT, MAX_BYTES, SYLLABUS_MAX_PAGES
 from app.uploads.storage import StorageError, get_storage
 from tests import samples
 from tests.conftest import USER_ID, make_token
@@ -241,12 +241,48 @@ def test_a_file_already_uploaded_comes_back_even_at_the_limit(
     assert again.json()["file_id"] == first["file_id"]
 
 
+def test_a_syllabus_pdf_goes_up(client: TestClient, files_repo: Any, storage: Any) -> None:
+    """강의계획서는 글자가 있는 PDF만 받는다(F-14)."""
+    response = upload(
+        client, samples.pdf(["2026학년도 2학기 강의계획서"]), name="계획서.pdf", kind="syllabus"
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert (body["kind"], body["page_count"]) == ("syllabus", 1)
+    path = next(iter(storage.objects))
+    assert path.endswith(".pdf") and "/syllabus/" in path  # 종류별 폴더에 들어간다
+    assert storage.objects[path][1] == "application/pdf"
+
+
+def test_a_scanned_syllabus_is_refused(client: TestClient) -> None:
+    """사진을 PDF로 감싼 파일은 글자가 없어서 모델에 보낼 것이 없다."""
+    response = upload(client, samples.pdf([None]), name="스캔.pdf", kind="syllabus")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+    assert "글자" in response.json()["error"]["message"]
+
+
+def test_a_photo_is_not_a_syllabus(client: TestClient) -> None:
+    response = upload(client, samples.JPEG, name="사진.jpg", kind="syllabus")
+    assert response.status_code == 400
+    assert "PDF만 올릴 수 있어요" in response.json()["error"]["message"]
+
+
+def test_a_long_pdf_is_refused_as_a_syllabus(client: TestClient) -> None:
+    """계획서는 몇 쪽이다. 수업 교재를 통째로 올리면 모델 입력이 터진다."""
+    long_pdf = samples.pdf([f"{no}쪽" for no in range(SYLLABUS_MAX_PAGES + 1)])
+    response = upload(client, long_pdf, name="교재.pdf", kind="syllabus")
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "PAGE_LIMIT_EXCEEDED"
+    assert f"{SYLLABUS_MAX_PAGES}쪽까지만" in response.json()["error"]["message"]
+
+
 def test_other_kinds_are_not_open_yet(client: TestClient) -> None:
-    response = upload(client, samples.pdf(["계획서"]), name="계획서.pdf", kind="syllabus")
+    response = upload(client, samples.pdf(["자료"]), name="자료.pdf", kind="lecture_material")
     assert response.status_code == 422
     error = response.json()["error"]
     assert error["code"] == "VALIDATION_FAILED"
-    assert "포스터" in error["details"]["fields"]["kind"]
+    assert "강의계획서" in error["details"]["fields"]["kind"]
 
 
 def test_the_db_connection_is_not_held_while_the_file_goes_to_the_storage(
