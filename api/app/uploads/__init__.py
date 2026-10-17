@@ -27,6 +27,8 @@ from app.errors import ApiError
 MAX_BYTES = 20 * 1024 * 1024
 MAX_MB = MAX_BYTES // (1024 * 1024)
 POSTER_MAX_PAGES = 2
+SYLLABUS_MAX_PAGES = 10  # 강의계획서는 보통 2~6쪽이다(녹화한 포털 계획서 기준)
+PDF_TEXT_MAX_CHARS = 60_000  # 뽑은 글자 상한. 계획서 10쪽이면 2만 자 안쪽이다
 DAILY_UPLOAD_LIMIT = 20  # 사용자당 KST 하루 (API 명세 14장, 10/15 확정)
 _CHUNK_BYTES = 1024 * 1024
 _NAME_MAX = 200
@@ -115,6 +117,60 @@ def inspect_poster(data: bytes) -> Inspected:
             f"PDF는 {POSTER_MAX_PAGES}쪽까지만 올릴 수 있어요. 포스터가 있는 쪽만 남겨서 올려 주세요.",
         )
     return Inspected(found, pages, hashlib.sha256(data).hexdigest())
+
+
+def inspect_syllabus(data: bytes) -> Inspected:
+    """강의계획서로 받을 수 있는 파일인지 본다. **텍스트가 있는 PDF만** 받는다(명세 6장).
+
+    포털 계획서를 브라우저에서 "PDF로 저장"해 올리는 길이라 스캔본은 거의 없다. 그래도 사진을
+    PDF로 감싼 파일이 올 수 있어서, 글자를 못 뽑으면 여기서 막는다 — 모델에 보내도 읽을 것이 없다.
+    """
+    found = sniff(data)
+    if found is not PDF:
+        raise ApiError(
+            400,
+            "UNSUPPORTED_FILE_TYPE",
+            "강의계획서는 PDF만 올릴 수 있어요. 포털 계획서를 "
+            f"PDF로 저장해서 올려 주세요({SYLLABUS_MAX_PAGES}쪽까지).",
+        )
+    pages = _pdf_pages(data)
+    if pages > SYLLABUS_MAX_PAGES:
+        raise ApiError(
+            413,
+            "PAGE_LIMIT_EXCEEDED",
+            f"PDF는 {SYLLABUS_MAX_PAGES}쪽까지만 올릴 수 있어요. 계획서 쪽만 남겨서 올려 주세요.",
+        )
+    if not pdf_text(data).strip():
+        raise ApiError(
+            400,
+            "UNSUPPORTED_FILE_TYPE",
+            "PDF에서 글자를 찾지 못했어요. 사진을 PDF로 만든 파일은 읽을 수 없어요."
+            " 포털 계획서를 브라우저에서 PDF로 저장해 올려 주세요.",
+        )
+    return Inspected(found, pages, hashlib.sha256(data).hexdigest())
+
+
+def pdf_text(data: bytes, *, max_chars: int = PDF_TEXT_MAX_CHARS) -> str:
+    """PDF에서 뽑은 글자(쪽마다 줄바꿈으로 잇는다). 읽지 못하면 빈 글자다.
+
+    상한을 두는 것은 모델 입력을 재는 쪽이 아니라, 깨진 PDF가 메모리를 다 먹지 않게 하려는 것이다.
+    """
+    try:
+        reader = PdfReader(io.BytesIO(data))
+    except (PdfReadError, ValueError, OSError):
+        return ""
+    found: list[str] = []
+    total = 0
+    for page in reader.pages:
+        try:
+            text = page.extract_text() or ""
+        except Exception:  # pypdf가 쪽 하나에서 터져도 나머지는 읽는다
+            continue
+        found.append(text)
+        total += len(text)
+        if total >= max_chars:
+            break
+    return "\n".join(found)[:max_chars]
 
 
 def _pdf_pages(data: bytes) -> int:

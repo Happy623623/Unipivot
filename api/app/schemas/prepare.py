@@ -9,6 +9,7 @@ from app.schemas.calendar import CalendarEventView
 from app.schemas.lms import LmsSyncResult
 from app.schemas.opportunities import DocumentItem, ProcessStep, RunStatus
 from app.schemas.posters import PosterExtractResult
+from app.schemas.syllabi import SyllabusExtractResult
 
 
 class PrepareRequest(BaseModel):
@@ -45,7 +46,8 @@ class RunError(BaseModel):
 
 
 RunResult = Annotated[
-    PrepareResult | PosterExtractResult | LmsSyncResult, Field(discriminator="kind")
+    PrepareResult | PosterExtractResult | LmsSyncResult | SyllabusExtractResult,
+    Field(discriminator="kind"),
 ]
 
 

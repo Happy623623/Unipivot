@@ -9,6 +9,7 @@ LearningX 과목명은 `202620HY23525_데이터베이스` 꼴이다(2026-10-16 �
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 BIGINT_MAX = 2**63 - 1  # Canvas 번호는 bigint 칸에 들어가야 한다
@@ -27,6 +28,9 @@ PORTAL_SYLLABUS_URL = (
 )
 # 학기 코드 → 표시. 1·2학기만 녹화로 확인했고 계절학기는 한양대 코드 규칙을 따랐다
 TERM_NAMES: dict[int, str] = {10: "1", 11: "여름", 20: "2", 21: "겨울"}
+# 학기 코드 → 시작 (월, 일). 계획서의 "8주차"·"10/20"을 읽는 기준이다(F-14).
+# 개강일은 해마다 며칠 다르지만, 주차·연도를 가리는 데는 이 정도로 충분하다
+TERM_START: dict[int, tuple[int, int]] = {10: (3, 1), 11: (6, 20), 20: (9, 1), 21: (12, 20)}
 _COURSE_NAME = re.compile(r"^(?P<year>\d{4})(?P<term>\d{2})HY(?P<no>\d{3,6})_(?P<short>.+)$")
 
 
@@ -47,6 +51,14 @@ class CourseName:
         return PORTAL_SYLLABUS_URL.format(
             year=self.portal_year, term=self.portal_term, course_no=self.portal_course_no
         )
+
+    @property
+    def semester_start(self) -> date | None:
+        """그 학기가 시작하는 날. 과목명에서 연도·학기를 못 뽑았으면 없다(F-14)."""
+        if self.portal_year is None or self.portal_term not in TERM_START:
+            return None
+        month, day = TERM_START[self.portal_term]
+        return date(self.portal_year, month, day)
 
     def term(self, fallback: str | None = None) -> str | None:
         """학기 표시(`2026-2`). 꼴이 다르면 LearningX가 준 학기 이름을 쓴다."""
