@@ -11,6 +11,7 @@ from app.schemas.lms import LmsSyncResult
 from app.schemas.opportunities import OpportunityDetail, ProcessStep
 from app.schemas.posters import PosterExtractResult
 from app.schemas.prepare import PrepareResult
+from app.schemas.syllabi import SyllabusExtractResult
 
 _ids = itertools.count(1)
 
@@ -59,6 +60,7 @@ class FakeRunRepository:
         self.results: dict[str, PrepareResult] = {}
         self.poster_results: dict[str, PosterExtractResult] = {}
         self.lms_results: dict[str, LmsSyncResult] = {}
+        self.syllabus_results: dict[str, SyllabusExtractResult] = {}
         self.result_calls: list[tuple[str, str]] = []
 
     async def run(self, run_id: str) -> RunRow | None:
@@ -78,6 +80,10 @@ class FakeRunRepository:
     async def lms_sync_result(self, user_id: str, run_id: str) -> LmsSyncResult | None:
         self.result_calls.append((user_id, run_id))
         return self.lms_results.get(run_id)
+
+    async def syllabus_result(self, user_id: str, run_id: str) -> SyllabusExtractResult | None:
+        self.result_calls.append((user_id, run_id))
+        return self.syllabus_results.get(run_id)
 
 
 def run_row(**values: Any) -> RunRow:

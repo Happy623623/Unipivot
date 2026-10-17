@@ -1,6 +1,7 @@
 """파일 업로드 (F-13, API 명세 6장).
 
-지금은 포스터만 받는다. 계획서(F-14)·강의자료(F-15)는 그 기능과 함께 연다.
+포스터(F-16)와 강의계획서(F-14)를 받는다. 강의자료(F-15)는 그 기능과 함께 연다.
+받는 것은 종류마다 다르다 — 포스터는 사진과 2쪽 이하 PDF, 계획서는 **글자가 있는 PDF**다.
 
 차례: 20MB까지 읽기 → 바이트로 형식·쪽수 보기 → 같은 파일인지 보기 → 하루 한도 보기 →
 저장소에 올리기 → 기록 남기기.
@@ -30,6 +31,7 @@ from app.uploads import (
     day_reset,
     day_start,
     inspect_poster,
+    inspect_syllabus,
     read_upload,
     storage_path,
 )
@@ -39,6 +41,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/files", tags=["업로드"])
 
 POSTER = "poster"
+SYLLABUS = "syllabus"
+# 종류마다 받는 파일이 다르다. 여기 없는 종류(lecture_material)는 그 기능과 함께 연다
+INSPECT = {POSTER: inspect_poster, SYLLABUS: inspect_syllabus}
 
 
 @router.post(
@@ -56,16 +61,17 @@ async def upload_file(
     file: Annotated[UploadFile, File()],
     kind: Annotated[str, Form()],
 ) -> FileUploadResult:
-    """포스터 파일을 저장소에 올리고 `file_id`를 준다. 같은 파일을 다시 올리면 200과 기존 id다."""
-    if kind != POSTER:
+    """파일을 저장소에 올리고 `file_id`를 준다. 같은 파일을 다시 올리면 200과 기존 id다."""
+    inspect = INSPECT.get(kind)
+    if inspect is None:
         raise ApiError(
             422,
             "VALIDATION_FAILED",
             "입력값을 확인해 주세요.",
-            {"fields": {"kind": "지금은 포스터만 올릴 수 있어요."}},
+            {"fields": {"kind": "지금은 포스터와 강의계획서만 올릴 수 있어요."}},
         )
     data = await read_upload(file)
-    found = inspect_poster(data)
+    found = inspect(data)
 
     async with repos() as repo:
         existing = await repo.existing(user.id, kind=kind, sha256=found.sha256)

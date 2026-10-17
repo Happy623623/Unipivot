@@ -29,6 +29,9 @@ from app.schemas.posters import (
     EXTRACT_TOOL as POSTER_TOOL,
 )
 from app.schemas.prepare import PrepareResult, PrepTask, RunError
+from app.schemas.syllabi import READ_TOOL as SYLLABUS_READ
+from app.schemas.syllabi import SAVE_TOOL as SYLLABUS_TOOL
+from app.schemas.syllabi import SyllabusExtractResult, SyllabusItemView
 
 # 준비하기 단계 이름(화면의 처리 과정). 정해진 순서로 도는 단계라 chosen_by는 pipeline이다.
 # 마감일 캘린더 등록은 준비하기 단계가 아니라 따로 부르는 API다(POST /calendar/events, F-32)
@@ -46,10 +49,17 @@ LMS_LABELS = {
     "fetch_lms_modules": "주차 자료 받기",
     SAVE_TOOL: "바뀐 것 저장",
 }
+# 계획서 추출(F-14)
+SYLLABUS_LABELS = {
+    SYLLABUS_READ: "계획서 글자 읽기",
+    SYLLABUS_TOOL: "시험·발표 일정 저장",
+}
 FAILED_MESSAGE = "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요."
 # 코드를 남기지 못한 실패에 보여 줄 문구. 작업마다 할 말이 다르다(무엇을 하면 되는지)
 FAILED_MESSAGES = {
     "lms_sync": "LMS 자료를 가져오지 못했어요. 잠시 후 다시 시도해 주세요.",
+    "syllabus_upload": "계획서를 읽다 멈췄어요. 다시 올려 주세요.",
+    "poster_upload": "포스터를 읽다 멈췄어요. 다시 올려 주세요.",
 }
 _CODED = re.compile(r"^([A-Z][A-Z_]+): (.+)$", re.S)  # agent_log.error_text의 "코드: 문구"
 logger = logging.getLogger(__name__)
@@ -82,6 +92,7 @@ def _label(tool_name: str) -> str:
         PREPARE_LABELS.get(tool_name)
         or POSTER_LABELS.get(tool_name)
         or LMS_LABELS.get(tool_name)
+        or SYLLABUS_LABELS.get(tool_name)
         or tool_name
     )
 
@@ -171,17 +182,21 @@ class RunRepository:
             calendar_error=None,
         )
 
-    async def lms_sync_result(self, user_id: str, run_id: str) -> LmsSyncResult | None:
-        """그 동기화가 바꾼 것(명세 8장). 저장 단계가 없으면(F-50 연결 실행 등) None이다."""
+    async def _tool_output(self, user_id: str, run_id: str, tool: str) -> Any:
+        """그 실행이 남긴 도구 출력(마지막 것). 내 실행만 본다."""
         row = await (
             await self.conn.execute(
                 "select t.output from tool_calls t join agent_runs r on r.id = t.run_id"
                 " where t.run_id = %s and r.user_id = %s and t.tool_name = %s"
                 " order by t.seq desc, t.id desc limit 1",
-                (run_id, user_id, SAVE_TOOL),
+                (run_id, user_id, tool),
             )
         ).fetchone()
-        output = row["output"] if row else None
+        return row["output"] if row else None
+
+    async def lms_sync_result(self, user_id: str, run_id: str) -> LmsSyncResult | None:
+        """그 동기화가 바꾼 것(명세 8장). 저장 단계가 없으면(F-50 연결 실행 등) None이다."""
+        output = await self._tool_output(user_id, run_id, SAVE_TOOL)
         if not isinstance(output, dict):
             return None
         try:
@@ -202,17 +217,24 @@ class RunRepository:
             logger.warning("동기화 결과 모양이 달라 읽지 못했어요: run %s", run_id)
             return None
 
+    async def syllabus_result(self, user_id: str, run_id: str) -> SyllabusExtractResult | None:
+        """그 실행이 뽑은 계획서 일정(명세 8장). 저장 단계가 없으면 None이다."""
+        output = await self._tool_output(user_id, run_id, SYLLABUS_TOOL)
+        if not isinstance(output, dict):
+            return None
+        try:
+            return SyllabusExtractResult(
+                syllabus_id=str(output["syllabus_id"]),
+                course_name=output.get("course_name"),
+                items=[SyllabusItemView.model_validate(one) for one in output.get("items", [])],
+            )
+        except (KeyError, TypeError, ValueError, ValidationError):
+            logger.warning("계획서 결과 모양이 달라 읽지 못했어요: run %s", run_id)
+            return None
+
     async def poster_result(self, user_id: str, run_id: str) -> PosterExtractResult | None:
         """그 실행이 만든 초안. 기록이 지워졌거나 모양이 달라졌으면 None이다."""
-        row = await (
-            await self.conn.execute(
-                "select t.output from tool_calls t join agent_runs r on r.id = t.run_id"
-                " where t.run_id = %s and r.user_id = %s and t.tool_name = %s"
-                " order by t.seq desc, t.id desc limit 1",
-                (run_id, user_id, POSTER_TOOL),
-            )
-        ).fetchone()
-        output = row["output"] if row else None
+        output = await self._tool_output(user_id, run_id, POSTER_TOOL)
         if not isinstance(output, dict) or "draft" not in output:
             return None
         try:
