@@ -22,6 +22,50 @@ export interface Course {
   next_due: { kind: "assignment" | "syllabus_item"; title: string; due_at: string } | null;
 }
 
+// POST /lms/sync (F-51) — 202면 run_id, 5분 안에 이미 받았으면 200 + skipped
+export interface SyncStarted {
+  run_id: string;
+  status: "running";
+}
+export interface SyncSkipped {
+  skipped: true;
+  last_synced_at: string | null;
+}
+export type SyncResponse = SyncStarted | SyncSkipped;
+
+// POST /internal/jobs/lms-sync (30분 배치, 서비스 키로만 부른다 — 프론트에서 쓰지 않는다)
+export interface LmsSyncJobResult {
+  users: number;
+  synced: number;
+  failed: number;
+  skipped: number;
+  new_assignments: number;
+  due_changed: number;
+  submitted: number;
+}
+
+// GET /runs/{id}의 result (kind: "lms_sync"). 주차 항목·공지는 F-52·F-53이라 아직 0이다
+export interface LmsSyncResult {
+  kind: "lms_sync";
+  courses: number;
+  assignments: { new: number; due_changed: number; submitted: number };
+  new_module_items: number;
+  new_announcements: number;
+}
+
+// GET /lms/assignments?state=open|submitted|all&lms_course_id= (주지 않으면 open)
+export type AssignmentState = "open" | "submitted" | "all";
+export interface Assignment {
+  id: string;
+  course: { id: string; short_name: string };
+  title: string;
+  due_at: string | null;        // 마감이 없는 과제도 있다(due_at·lock_at 둘 다 없음)
+  submission_state: SubmissionState;
+  html_url: string | null;
+  planner_task_id: string | null;
+  calendar_registered: boolean;
+}
+
 // GET /lms/courses/{id}
 export type SubmissionState = "unsubmitted" | "submitted" | "graded" | "pending_review";
 export type AnnouncementCategory = "schedule_change" | "material" | "opportunity" | "general";

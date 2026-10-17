@@ -1,0 +1,609 @@
+"""LMS 동기화(F-51): `POST /lms/sync`·`GET /lms/assignments`·30분 배치.
+
+LearningX 호출은 respx로 가로채고 저장소는 가짜로 바꿔 끼운다(DB·네트워크 없이 돈다).
+SQL은 test_lms_db.py가 실제 스키마로 본다.
+"""
+
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import httpx
+import pytest
+import respx
+from fastapi.testclient import TestClient
+
+from app.agent_log import using
+from app.background import InlineRunner
+from app.clock import current_time
+from app.config import Settings, get_settings
+from app.crypto import encrypt
+from app.db import get_log_connect
+from app.eligibility import KST
+from app.lms.assignments import CanvasAssignment
+from app.lms.client import LearningXClient
+from app.lms.sync import LmsSyncService, Repos, SyncJob, get_lms_sync_service
+from app.main import create_app
+from app.repositories.lms import (
+    AssignmentChanges,
+    Connection,
+    CourseRow,
+    SavedAssignment,
+    get_lms_repo,
+)
+from app.repositories.notifications import AssignmentNotice
+from app.repositories.runs import get_run_repo
+from app.schemas.lms import AssignmentCourse, AssignmentItem, LmsSyncResult, SyncCounts
+from tests.conftest import USER_ID, make_token
+from tests.fakes import FakeLogConnection
+from tests.lms_samples import COURSES, DB_ASSIGNMENTS, ML_ASSIGNMENTS
+from tests.prepare_fakes import FakeRunRepository, run_row
+
+SYNC = "/api/v1/lms/sync"
+ASSIGNMENTS = "/api/v1/lms/assignments"
+BASE = "https://lms.test"
+TOKEN = "18742~pAtB1g3TestTokenValue0000000000"
+NOW = datetime(2026, 10, 16, 3, 0, tzinfo=UTC)  # 2026-10-16 12:00 KST
+INTERNAL_KEY = "test-internal-key"
+JOB = "/api/v1/internal/jobs/lms-sync"
+DB_COURSE = CourseRow(id="course-db", canvas_course_id=214023, short_name="데이터베이스")
+ML_COURSE = CourseRow(id="course-ml", canvas_course_id=216515, short_name="기계학습")
+
+
+@dataclass
+class FakeLms:
+    """과제·과목 저장을 기억하는 가짜 저장소. 실제 SQL은 test_lms_db.py가 본다."""
+
+    connection_row: Connection | None = None
+    courses: list[CourseRow] = field(default_factory=lambda: [DB_COURSE, ML_COURSE])
+    changes: dict[str, AssignmentChanges] = field(default_factory=dict)  # course_id → 돌려줄 변화
+    saved: list[tuple[str, list[CanvasAssignment]]] = field(default_factory=list)
+    planned: list[AssignmentChanges] = field(default_factory=list)
+    synced_at: datetime | None = None
+    error: str | None = None
+    claims: list[str] = field(default_factory=list)
+    rows: dict[str, Connection] = field(default_factory=dict)
+    users: list[str] = field(default_factory=list)
+    before: datetime | None = None
+
+    def _row(self, user_id: str) -> Connection | None:
+        """사용자마다 따로 둔다. 배치에서 앞사람의 claim이 뒷사람을 막지 않게."""
+        if user_id == USER_ID:
+            return self.connection_row
+        return self.rows.get(user_id, self.connection_row)
+
+    def _put(self, user_id: str, row: Connection) -> None:
+        if user_id == USER_ID:
+            self.connection_row = row
+        else:
+            self.rows[user_id] = row
+
+    async def connection(self, user_id: str) -> Connection | None:
+        assert user_id == USER_ID or user_id in self.users
+        return self._row(user_id)
+
+    async def claim_sync(self, user_id: str, *, now: datetime, before: datetime) -> bool:
+        """실제 SQL과 같은 뜻: 연결이 있고 before 뒤에 받지 않았으면 시각을 밀고 True."""
+        row = self._row(user_id)
+        if row is None or row.status == "disconnected":
+            return False
+        if row.last_synced_at is not None and row.last_synced_at > before:
+            return False
+        self.claims.append(user_id)
+        self._put(user_id, Connection(**{**row.__dict__, "last_synced_at": now}))
+        return True
+
+    async def save_courses(
+        self, user_id: str, courses: list[dict[str, Any]], *, now: datetime
+    ) -> int:
+        assert user_id == USER_ID or user_id in self.users
+        return len(courses)
+
+    async def active_courses(self, user_id: str) -> list[CourseRow]:
+        return list(self.courses)
+
+    async def save_assignments(
+        self, user_id: str, course_id: str, items: list[CanvasAssignment], *, now: datetime
+    ) -> AssignmentChanges:
+        assert user_id == USER_ID or user_id in self.users
+        self.saved.append((course_id, items))
+        return self.changes.get(course_id, AssignmentChanges())
+
+    async def sync_planner(self, user_id: str, changes: AssignmentChanges, *, now: datetime) -> int:
+        self.planned.append(changes)
+        return len(changes.created)
+
+    async def touch_synced(self, user_id: str, *, now: datetime) -> None:
+        self.synced_at = now
+
+    async def mark_error(self, user_id: str, message: str) -> None:
+        self.error = message
+
+    async def connected_users(self, *, before: datetime, limit: int) -> list[str]:
+        self.before = before
+        return list(self.users)
+
+    async def assignments(
+        self, user_id: str, *, state: str = "open", course_id: str | None = None
+    ) -> list[AssignmentItem]:
+        assert user_id == USER_ID
+        self.asked = (state, course_id)  # type: ignore[attr-defined]
+        return [
+            AssignmentItem(
+                id="assignment-1",
+                course=AssignmentCourse(id=DB_COURSE.id, short_name=DB_COURSE.short_name),
+                title="실습 2주차 결과 제출",
+                due_at=datetime(2026, 10, 20, 23, 59, 59, tzinfo=KST),
+                submission_state="unsubmitted",
+                html_url=f"{BASE}/courses/214023/assignments/2811242",
+                planner_task_id="task-1",
+                calendar_registered=False,
+            )
+        ]
+
+
+@dataclass
+class FakeNotes:
+    added: list[AssignmentNotice] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+    muted: bool = False
+
+    async def add_assignment_notices(
+        self, user_id: str, notices: Sequence[AssignmentNotice], *, now: datetime
+    ) -> int:
+        assert user_id
+        if self.muted:
+            return 0
+        self.added += list(notices)
+        return len(notices)
+
+    async def drop_assignment_notices(self, user_id: str, assignment_ids: Sequence[str]) -> int:
+        self.dropped += list(assignment_ids)
+        return len(self.dropped)
+
+
+@pytest.fixture
+def lms(settings: Settings) -> FakeLms:
+    return FakeLms(
+        connection_row=Connection(
+            status="active",
+            token_last4=TOKEN[-4:],
+            access_token=encrypt(TOKEN, settings.token_encryption_key),
+            canvas_user_id=77001,
+            last_synced_at=None,
+            last_error=None,
+        )
+    )
+
+
+@pytest.fixture
+def notes() -> FakeNotes:
+    return FakeNotes()
+
+
+@pytest.fixture
+def log() -> FakeLogConnection:
+    return FakeLogConnection()
+
+
+@pytest.fixture
+def client(
+    settings: Settings, lms: FakeLms, notes: FakeNotes, log: FakeLogConnection
+) -> Iterator[TestClient]:
+    # 배치(`/internal/jobs/lms-sync`)를 부르려면 서비스 키가 있어야 한다
+    settings = Settings(**{**settings.model_dump(), "internal_api_key": INTERNAL_KEY})
+    app = create_app(settings)
+
+    @asynccontextmanager
+    async def transaction() -> AsyncIterator[Any]:
+        yield None  # 가짜 저장소는 연결을 쓰지 않는다
+
+    service = LmsSyncService(
+        transaction=transaction,
+        log_connection=using(log),  # type: ignore[arg-type]
+        client=LearningXClient(api_base=BASE),
+        encryption_key=settings.token_encryption_key,
+        runner=InlineRunner(),  # 응답 전에 동기화를 끝까지 돌린다
+        repos=lambda conn: Repos(lms=lms, notes=notes),  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_lms_sync_service] = lambda: service
+    app.dependency_overrides[get_lms_repo] = lambda: lms
+    app.dependency_overrides[get_log_connect] = lambda: using(log)  # type: ignore[arg-type]
+    app.dependency_overrides[current_time] = lambda: NOW
+    with TestClient(app) as test_client:
+        test_client.headers["Authorization"] = f"Bearer {make_token()}"
+        yield test_client
+
+
+@pytest.fixture(autouse=True)
+def canvas() -> Iterator[respx.MockRouter]:
+    """기본 응답: 과목 3개, 데이터베이스 2건·기계학습 1건."""
+    with respx.mock(assert_all_called=False) as router:
+        router.get(f"{BASE}/api/v1/courses").mock(return_value=httpx.Response(200, json=COURSES))
+        router.get(f"{BASE}/api/v1/courses/214023/assignments").mock(
+            return_value=httpx.Response(200, json=DB_ASSIGNMENTS)
+        )
+        router.get(f"{BASE}/api/v1/courses/216515/assignments").mock(
+            return_value=httpx.Response(200, json=ML_ASSIGNMENTS)
+        )
+        yield router
+
+
+def test_it_starts_a_sync_and_gives_back_the_run(client: TestClient, lms: FakeLms) -> None:
+    response = client.post(SYNC)
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "running"
+    assert body["run_id"]
+    assert lms.synced_at == NOW  # 끝나면 마지막 동기화 시각을 찍는다
+
+
+def test_it_saves_only_published_assignments(client: TestClient, lms: FakeLms) -> None:
+    client.post(SYNC)
+    saved = {course: [one.title for one in items] for course, items in lms.saved}
+    assert saved == {
+        "course-db": ["실습 2주차 결과 제출", "실습 3주차 결과 제출"],  # 준비 중 과제는 빠진다
+        "course-ml": ["3주차 퀴즈"],
+    }
+
+
+def test_the_run_records_every_outside_call_as_a_tool(
+    client: TestClient, log: FakeLogConnection
+) -> None:
+    """외부 호출은 모두 실행 안의 도구로 남는다(api/CLAUDE.md). 토큰은 입력에 넣지 않는다."""
+    client.post(SYNC)
+    assert log.tools() == ["fetch_lms_courses", "fetch_lms_assignments", "save_lms_sync"]
+    assert TOKEN not in str(log.statements)  # 입력·출력에 토큰이 남지 않는다
+
+
+def test_the_result_is_in_the_save_step(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection
+) -> None:
+    """`GET /runs/{id}`는 save_lms_sync의 출력으로 결과를 만든다(repositories/runs.py)."""
+    lms.changes["course-db"] = AssignmentChanges(
+        created=[SavedAssignment("a1", "실습 2주차 결과 제출", NOW + timedelta(days=4))],
+        due_changed=[SavedAssignment("a2", "실습 3주차 결과 제출", NOW + timedelta(days=2))],
+        submitted=["a3"],
+    )
+    client.post(SYNC)
+    output = log.outputs()["save_lms_sync"]
+    assert output["courses"] == 2
+    assert (output["new"], output["due_changed"], output["submitted"]) == (1, 1, 1)
+
+
+def test_a_new_assignment_becomes_a_task_and_a_notice(
+    client: TestClient, lms: FakeLms, notes: FakeNotes
+) -> None:
+    lms.changes["course-ml"] = AssignmentChanges(
+        created=[SavedAssignment("a9", "3주차 퀴즈", datetime(2026, 10, 11, 14, 59, tzinfo=UTC))]
+    )
+    client.post(SYNC)
+    assert [one.created for one in lms.planned] == [lms.changes["course-ml"].created]
+    assert len(notes.added) == 1
+    notice = notes.added[0]
+    assert notice.assignment_id == "a9"
+    assert notice.title == "기계학습 새 과제가 올라왔어요"
+    assert notice.body == "3주차 퀴즈 · 마감 10/11 23:59"  # KST로 보여 준다
+
+
+def test_an_assignment_already_submitted_gets_no_notice(
+    client: TestClient, lms: FakeLms, notes: FakeNotes
+) -> None:
+    """연결 첫 동기화에는 지난 학기 과제까지 들어온다. 이미 낸 과제로 알림을 보내면 안 된다."""
+    lms.changes["course-db"] = AssignmentChanges(
+        created=[
+            SavedAssignment("a1", "지난 과제", NOW - timedelta(days=9), submitted=True),
+            SavedAssignment("a2", "이번 과제", NOW + timedelta(days=2)),
+        ]
+    )
+    client.post(SYNC)
+    assert [one.assignment_id for one in notes.added] == ["a2"]
+
+
+def test_an_assignment_without_a_deadline_still_gets_a_notice(
+    client: TestClient, lms: FakeLms, notes: FakeNotes
+) -> None:
+    lms.changes["course-db"] = AssignmentChanges(
+        created=[SavedAssignment("a8", "기말 보고서", None)]
+    )
+    client.post(SYNC)
+    assert notes.added[0].body == "기말 보고서"
+
+
+def test_submitting_stops_the_pending_notice(
+    client: TestClient, lms: FakeLms, notes: FakeNotes
+) -> None:
+    """제출하면 아직 보내지 않은 알림을 지운다(명세 10장)."""
+    lms.changes["course-db"] = AssignmentChanges(submitted=["a3", "a4"])
+    client.post(SYNC)
+    assert notes.dropped == ["a3", "a4"]
+
+
+def test_it_skips_a_sync_that_just_happened(client: TestClient, lms: FakeLms) -> None:
+    """5분 안에 또 부르면 LearningX를 부르지 않는다(명세 8장)."""
+    assert lms.connection_row is not None
+    lms.connection_row = Connection(
+        **{**lms.connection_row.__dict__, "last_synced_at": NOW - timedelta(minutes=2)}
+    )
+    response = client.post(SYNC)
+    assert response.status_code == 200
+    assert response.json() == {"skipped": True, "last_synced_at": "2026-10-16T11:58:00+09:00"}
+    assert lms.saved == []  # 아무것도 받지 않았다
+
+
+def test_a_second_call_does_not_start_a_second_sync(client: TestClient, lms: FakeLms) -> None:
+    """대시보드를 두 탭에서 열어도 한 번만 받는다. claim이 한 문장으로 자리를 잡는다."""
+    assert client.post(SYNC).status_code == 202
+    first = len(lms.saved)
+    again = client.post(SYNC)
+    assert again.status_code == 200
+    assert again.json()["skipped"] is True
+    assert len(lms.saved) == first  # 두 번째는 LearningX를 부르지 않았다
+    assert lms.claims == [USER_ID]
+
+
+def test_it_syncs_again_after_five_minutes(client: TestClient, lms: FakeLms) -> None:
+    assert lms.connection_row is not None
+    lms.connection_row = Connection(
+        **{**lms.connection_row.__dict__, "last_synced_at": NOW - timedelta(minutes=6)}
+    )
+    assert client.post(SYNC).status_code == 202
+    assert lms.saved != []
+
+
+def test_it_asks_to_connect_first(client: TestClient, lms: FakeLms) -> None:
+    lms.connection_row = None
+    response = client.post(SYNC)
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "LMS_NOT_CONNECTED"
+
+
+def test_a_dead_token_marks_the_connection(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    """401이면 연결을 error로 바꿔 화면이 다시 연결을 안내한다. 실행은 실패로 남는다."""
+    canvas.get(f"{BASE}/api/v1/courses").mock(return_value=httpx.Response(401, json={}))
+    response = client.post(SYNC)
+    assert response.status_code == 202  # 동기화는 뒤에서 돌아서 시작 응답은 202다
+    assert lms.error == "토큰이 만료되었거나 삭제되었어요."
+    assert lms.synced_at is None
+
+
+def test_a_broken_stored_token_asks_to_connect_again(client: TestClient, lms: FakeLms) -> None:
+    """키를 바꿨거나 값이 깨졌다. 500으로 끝내지 않고 다시 연결하게 한다."""
+    assert lms.connection_row is not None
+    lms.connection_row = Connection(
+        **{**lms.connection_row.__dict__, "access_token": "암호문이 아니다"}
+    )
+    response = client.post(SYNC)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "LMS_TOKEN_INVALID"
+
+
+def test_learningx_being_down_does_not_mark_the_token(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    """503은 토큰 문제가 아니다. 연결 상태를 바꾸지 않고 다음 동기화에서 다시 시도한다."""
+    canvas.get(f"{BASE}/api/v1/courses").mock(return_value=httpx.Response(503, json={}))
+    client.post(SYNC)
+    assert lms.error is None
+    assert lms.synced_at is None
+
+
+def test_one_broken_course_does_not_stop_the_others(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter, log: FakeLogConnection
+) -> None:
+    """한 과목이 403이면 그 과목만 두고 넘어간다. 부분 목록으로 저장하면 과제가 사라진 것이 된다."""
+    canvas.get(f"{BASE}/api/v1/courses/214023/assignments").mock(
+        return_value=httpx.Response(403, json={})
+    )
+    client.post(SYNC)
+    assert [course for course, _ in lms.saved] == ["course-ml"]
+    assert log.outputs()["save_lms_sync"]["failed_courses"] == 1
+    assert lms.synced_at == NOW  # 나머지는 받았으니 동기화는 성공이다
+
+
+def test_a_dead_token_in_the_middle_stops_the_sync(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    canvas.get(f"{BASE}/api/v1/courses/214023/assignments").mock(
+        return_value=httpx.Response(401, json={})
+    )
+    client.post(SYNC)
+    assert lms.saved == []  # 쓰기 트랜잭션에 들어가지 않았다
+    assert lms.error == "토큰이 만료되었거나 삭제되었어요."
+
+
+def test_a_course_with_no_assignments_is_fine(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    """녹화 6과목 중 2과목이 과제 0건이었다. 빈 목록은 오류가 아니다(명세 9장)."""
+    canvas.get(f"{BASE}/api/v1/courses/216515/assignments").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    assert client.post(SYNC).status_code == 202
+    saved = dict(lms.saved)
+    assert saved["course-ml"] == []
+    assert lms.synced_at == NOW
+
+
+def test_it_sends_the_token_only_in_the_header(
+    client: TestClient, canvas: respx.MockRouter
+) -> None:
+    client.post(SYNC)
+    for call in canvas.calls:
+        assert call.request.headers["Authorization"] == f"Bearer {TOKEN}"
+        assert TOKEN not in str(call.request.url)
+
+
+def test_the_sync_needs_a_login(settings: Settings, lms: FakeLms) -> None:
+    app = create_app(settings)
+    app.dependency_overrides[get_lms_repo] = lambda: lms
+    with TestClient(app) as anonymous:
+        assert anonymous.post(SYNC).status_code == 401
+        assert anonymous.get(ASSIGNMENTS).status_code == 401
+
+
+def test_the_run_shows_the_sync_result(client: TestClient) -> None:
+    """`GET /runs/{id}`가 동기화 결과를 보여 준다(명세 8장·11장). 단계 이름도 한글로 나온다."""
+    runs = FakeRunRepository()
+    client.app.dependency_overrides[get_run_repo] = lambda: runs  # type: ignore[attr-defined]
+    run = run_row(
+        id="00000000-0000-4000-8000-0000000000b1",
+        user_id=USER_ID,
+        trigger_type="lms_sync",
+        status="succeeded",
+    )
+    runs.runs[run.id] = run
+    runs.lms_results[run.id] = LmsSyncResult(
+        courses=2, assignments=SyncCounts(new=1, due_changed=0, submitted=2)
+    )
+
+    body = client.get(f"/api/v1/runs/{run.id}").json()
+    assert body["result"] == {
+        "kind": "lms_sync",
+        "courses": 2,
+        "assignments": {"new": 1, "due_changed": 0, "submitted": 2},
+        "new_module_items": 0,
+        "new_announcements": 0,
+    }
+
+
+def test_a_sync_where_every_course_fails_is_not_a_success(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    """한 과목도 받지 못하면 성공으로 적지 않는다. 적으면 오류 표시가 지워지고 학생은 받았다고 믿는다."""
+    for course in (214023, 216515):
+        canvas.get(f"{BASE}/api/v1/courses/{course}/assignments").mock(
+            return_value=httpx.Response(403, json={})
+        )
+    client.post(SYNC)
+    assert lms.saved == []
+    assert lms.synced_at is None  # touch_synced를 부르지 않았다
+    assert lms.error is None  # 토큰 문제가 아니라 학교 쪽 문제다
+
+
+def test_a_failed_sync_closes_its_run(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection, canvas: respx.MockRouter
+) -> None:
+    """실행이 running으로 남으면 GET /runs/{id}가 끝나지 않고 성공률 지표의 분모만 늘어난다."""
+    canvas.get(f"{BASE}/api/v1/courses").mock(return_value=httpx.Response(503, json={}))
+    client.post(SYNC)
+    closed = [
+        query for query, _ in log.statements if "update agent_runs" in query and "'failed'" in query
+    ]
+    assert closed, "실패한 실행을 닫지 않았다"
+
+
+def test_a_token_we_cannot_decrypt_does_not_blame_the_student(
+    client: TestClient, lms: FakeLms
+) -> None:
+    """암호화 키 문제다. 연결을 error로 바꾸면 멀쩡한 토큰을 다시 받게 만든다(app/crypto.py 키 교체)."""
+    assert lms.connection_row is not None
+    lms.connection_row = Connection(
+        **{**lms.connection_row.__dict__, "access_token": "암호문이 아니다"}
+    )
+    lms.users = ["user-a"]
+    body = client.post(JOB, headers={"X-Internal-Key": INTERNAL_KEY}).json()
+    assert (body["synced"], body["failed"]) == (0, 1)
+    assert lms.error is None
+
+
+def test_the_batch_counts_the_ones_someone_else_took(client: TestClient, lms: FakeLms) -> None:
+    """대시보드가 방금 동기화를 시작한 사람은 배치에서 건너뛴다(claim이 막는다)."""
+    lms.users = ["user-a"]
+    assert lms.connection_row is not None
+    lms.connection_row = Connection(
+        **{**lms.connection_row.__dict__, "last_synced_at": NOW - timedelta(minutes=1)}
+    )
+    body = client.post(JOB, headers={"X-Internal-Key": INTERNAL_KEY}).json()
+    assert (body["users"], body["synced"], body["failed"], body["skipped"]) == (1, 0, 0, 1)
+
+
+def test_the_job_does_not_print_the_token() -> None:
+    """실수로 로그에 찍어도 토큰이 나오지 않게 repr에서 뺀다(Connection.access_token과 같다)."""
+    job = SyncJob(run_id="run-1", user_id=USER_ID, now=NOW, token=TOKEN)
+    assert TOKEN not in repr(job)
+    assert job.token == TOKEN
+
+
+def test_a_failed_sync_tells_the_student_about_the_sync() -> None:
+    """실패 문구가 준비하기 것("준비 일정을 만들지 못했어요")으로 나가면 안 된다."""
+    run = run_row(trigger_type="lms_sync", status="failed", error_message="RuntimeError()")
+    error = run.error()
+    assert error is not None
+    assert error.code == "INTERNAL_ERROR"
+    assert "LMS" in error.message and "준비" not in error.message
+
+
+# ── 과제 목록 ───────────────────────────────────────────────────────────────
+
+
+def test_it_lists_open_assignments_by_default(client: TestClient, lms: FakeLms) -> None:
+    response = client.get(ASSIGNMENTS)
+    assert response.status_code == 200
+    assert lms.asked == ("open", None)  # type: ignore[attr-defined]
+    item = response.json()["items"][0]
+    assert item["course"] == {"id": "course-db", "short_name": "데이터베이스"}
+    assert item["due_at"] == "2026-10-20T23:59:59+09:00"  # KST로 내려준다
+    assert item["planner_task_id"] == "task-1"
+    assert item["calendar_registered"] is False
+
+
+def test_it_passes_the_filters_through(client: TestClient, lms: FakeLms) -> None:
+    client.get(
+        ASSIGNMENTS,
+        params={"state": "all", "lms_course_id": "11111111-1111-4111-8111-111111111111"},
+    )
+    assert lms.asked == ("all", "11111111-1111-4111-8111-111111111111")  # type: ignore[attr-defined]
+
+
+def test_it_refuses_an_unknown_state(client: TestClient) -> None:
+    response = client.get(ASSIGNMENTS, params={"state": "done"})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_it_refuses_a_course_id_that_is_not_a_uuid(client: TestClient) -> None:
+    response = client.get(ASSIGNMENTS, params={"lms_course_id": "214023"})
+    assert response.status_code == 422
+
+
+# ── 30분 배치 ───────────────────────────────────────────────────────────────
+
+
+def test_the_batch_syncs_every_connected_user(client: TestClient, lms: FakeLms) -> None:
+    lms.users = ["user-a", "user-b"]
+    response = client.post(JOB, headers={"X-Internal-Key": INTERNAL_KEY})
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["users"], body["synced"], body["failed"]) == (2, 2, 0)
+    assert lms.before == NOW - timedelta(minutes=5)  # 방금 받은 사람은 건너뛴다
+
+
+def test_the_batch_goes_on_after_one_user_fails(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    """앞사람이 실패해도 뒷사람은 받는다. 첫 호출만 401로 막아 둘을 가른다."""
+    lms.users = ["user-a", "user-b"]
+    calls = {"n": 0}
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(401, json={})
+        return httpx.Response(200, json=COURSES)
+
+    canvas.get(f"{BASE}/api/v1/courses").mock(side_effect=answer)
+    body = client.post(JOB, headers={"X-Internal-Key": INTERNAL_KEY}).json()
+    assert (body["users"], body["synced"], body["failed"]) == (2, 1, 1)
+    assert lms.error == "토큰이 만료되었거나 삭제되었어요."  # 실패한 사람만 표시된다
+    assert lms.saved  # 뒷사람 과제는 저장됐다
+
+
+def test_the_batch_needs_the_service_key(client: TestClient) -> None:
+    assert client.post(JOB).status_code == 403
+    assert client.post(JOB, headers={"X-Internal-Key": "not-the-key"}).status_code == 403

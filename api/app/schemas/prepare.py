@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 from app.schemas.calendar import CalendarEventView
+from app.schemas.lms import LmsSyncResult
 from app.schemas.opportunities import DocumentItem, ProcessStep, RunStatus
 from app.schemas.posters import PosterExtractResult
 
@@ -43,7 +44,9 @@ class RunError(BaseModel):
     message: str
 
 
-RunResult = Annotated[PrepareResult | PosterExtractResult, Field(discriminator="kind")]
+RunResult = Annotated[
+    PrepareResult | PosterExtractResult | LmsSyncResult, Field(discriminator="kind")
+]
 
 
 class RunView(BaseModel):
@@ -54,6 +57,6 @@ class RunView(BaseModel):
     finished_at: datetime | None
     latency_ms: int | None
     steps: list[ProcessStep]
-    # 작업별 결과. kind로 가린다(prepare 준비하기, poster_extract 포스터 추출)
+    # 작업별 결과. kind로 가린다(prepare 준비하기, poster_extract 포스터 추출, lms_sync 동기화)
     result: RunResult | None
     error: RunError | None

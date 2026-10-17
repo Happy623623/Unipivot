@@ -56,6 +56,7 @@ LIST_LIMIT = 50
 NEW_TITLE = "지원할 수 있는 공고가 있어요"
 DEADLINE_TITLE = "마감이 가까워요"
 PROFILE_TITLE = "프로필 정보가 필요해요"
+ASSIGNMENT_TYPE = "new_assignment"  # notifications.type·user_settings.muted_notification_types
 _NEEDED = " 입력하면 판정할 수 있어요"
 
 # 공고 하나를 사용자 한 명에게 보일지 보는 조건. opportunities.VISIBLE과 같은 뜻이다
@@ -98,6 +99,15 @@ def _particle(word: str) -> str:
 
 
 @dataclass(frozen=True)
+class AssignmentNotice:
+    """새 과제 알림 하나. 문구는 과목 이름을 아는 쪽(app/lms/sync.py)에서 만든다."""
+
+    assignment_id: str
+    title: str
+    body: str
+
+
+@dataclass(frozen=True)
 class Due:
     """보낼 알림 하나. dismissed는 그새 숨긴 공고다(보내지 않고 둔다)."""
 
@@ -136,6 +146,52 @@ class NotificationRepository:
         """보낼 이유가 없어진 pending 행을 지운다. 보낸 행은 알림함에 남으므로 건드리지 않는다."""
         cursor = await self.conn.execute(_STALE, {"now": now, "types": list(_KINDS)})
         return cursor.rowcount
+
+    # ── LMS 과제 알림 (F-51) ────────────────────────────────────────────────
+
+    async def add_assignment_notices(
+        self, user_id: str, notices: Sequence[AssignmentNotice], *, now: datetime
+    ) -> int:
+        """새 과제 알림을 만든다. 만든 수를 돌려준다.
+
+        공고 알림과 달리 KST 09:00을 기다리지 않는다 — 과제는 마감이 코앞일 수 있어서 찾은 때
+        바로 보낸다(명세 10장 예시의 `new_material`도 그 시각이다). 끈 종류는 만들지 않고(F-45),
+        같은 과제의 알림은 `dedupe_key`로 한 번만 만든다.
+        """
+        created = 0
+        for notice in notices:
+            cursor = await self.conn.execute(
+                "insert into notifications (user_id, type, lms_assignment_id, title, body,"
+                " scheduled_at, dedupe_key)"
+                " select %(uid)s, %(type)s, %(aid)s::uuid, %(title)s, %(body)s, %(now)s,"
+                # 키 꼴은 ERD 5장 표 그대로다: new_assignment:asg:{lms_assignment_id}
+                " %(type)s || ':asg:' || %(aid)s"
+                " where not exists (select 1 from user_settings s where s.user_id = %(uid)s"
+                "   and %(type)s = any(coalesce(s.muted_notification_types, '{}')))"
+                " on conflict (user_id, dedupe_key) do nothing",
+                {
+                    "uid": user_id,
+                    "type": ASSIGNMENT_TYPE,
+                    "aid": notice.assignment_id,
+                    "title": notice.title,
+                    "body": notice.body,
+                    "now": now,
+                },
+            )
+            created += max(cursor.rowcount, 0)
+        return created
+
+    async def drop_assignment_notices(self, user_id: str, assignment_ids: Sequence[str]) -> int:
+        """제출한 과제의 **아직 보내지 않은** 알림을 지운다(명세 10장). 보낸 알림은 알림함에 남는다."""
+        if not assignment_ids:
+            return 0
+        cursor = await self.conn.execute(
+            "delete from notifications where user_id = %(uid)s"
+            " and lms_assignment_id = any(%(ids)s::uuid[])"
+            " and status = 'pending' and sent_at is null",
+            {"uid": user_id, "ids": list(assignment_ids)},
+        )
+        return max(cursor.rowcount, 0)
 
     # ── 발송 ────────────────────────────────────────────────────────────────
 
@@ -401,7 +457,8 @@ _LIST = (
     # lms_* 링크에는 과목 id를 함께 내려준다(명세 10장). 과제는 과목을 바로 가리키고,
     # 자료·공지는 Canvas 과목 번호라서 내 과목 행을 찾아야 한다
     " coalesce("
-    "   (select a.lms_course_id from lms_assignments a where a.id = n.lms_assignment_id),"
+    "   (select a.lms_course_id from lms_assignments a where a.id = n.lms_assignment_id"
+    "    and a.user_id = n.user_id),"
     "   (select lc.id from lms_module_items mi join lms_courses lc on lc.user_id = n.user_id"
     "    and lc.canvas_course_id = mi.canvas_course_id where mi.id = n.lms_module_item_id),"
     "   (select lc.id from lms_announcements an join lms_courses lc on lc.user_id = n.user_id"

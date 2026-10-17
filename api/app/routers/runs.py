@@ -15,7 +15,8 @@ async def read_run(run_id: UUID, user: CurrentUserDep, repo: RunRepoDep) -> RunV
     """실행 진행·결과(API 명세 11장). 본인 실행만 본다. 배치 실행은 403, 남의 실행·없는 실행은 404다.
 
     steps는 처리 과정(F-42)이고, 끝나면 result나 error(코드·문구)가 붙는다. result는 kind로 가린다:
-    준비하기는 계획·서류·할 일(prepare), 포스터 추출은 공고 초안과 중복 후보(poster_extract)다.
+    준비하기는 계획·서류·할 일(prepare), 포스터 추출은 공고 초안과 중복 후보(poster_extract),
+    LMS 동기화는 과목·과제 수(lms_sync)다.
     """
     run = await repo.run(str(run_id))
     if run is not None and run.user_id is None:
@@ -27,6 +28,8 @@ async def read_run(run_id: UUID, user: CurrentUserDep, repo: RunRepoDep) -> RunV
         result = await repo.prepare_result(user.id, run.id)
     elif run.status == "succeeded" and run.trigger_type == "poster_upload":
         result = await repo.poster_result(user.id, run.id)
+    elif run.status == "succeeded" and run.trigger_type == "lms_sync":
+        result = await repo.lms_sync_result(user.id, run.id)
     return RunView(
         id=run.id,
         trigger_type=run.trigger_type,

@@ -2,6 +2,7 @@
 
 - `GET /internal/metrics` 기간별 성공률·응답시간·호출비용 + 판정 혼동행렬 + 제품 지표 5개(PRD 8장)
 - `POST /internal/eval/run` 테스트 시나리오를 돌린다(CLI `python -m app.eval.cli`와 같은 함수)
+- `POST /internal/jobs/lms-sync` LMS 연결된 사용자 동기화(30분마다)
 - `POST /internal/jobs/schedule-notifications` 공고 알림 예약(하루 한 번)
 - `POST /internal/jobs/send-notifications` 예약된 알림 발송(5분마다)
 
@@ -20,8 +21,10 @@ from app.clock import NowDep
 from app.config import Settings, get_settings
 from app.eligibility import KST
 from app.errors import ApiError
+from app.lms.sync import LmsSyncServiceDep
 from app.repositories.metrics import MetricsRepoDep
 from app.repositories.notifications import NotificationRepoDep
+from app.schemas.lms import SyncJobResult
 from app.schemas.metrics import (
     EvalCheck,
     EvalRunRequest,
@@ -74,6 +77,25 @@ async def read_metrics(
     if end < start:
         raise _invalid({"to": "끝 날짜는 시작 날짜보다 뒤여야 해요."})
     return await repo.metrics((start, end))
+
+
+@router.post("/jobs/lms-sync", response_model=SyncJobResult)
+async def lms_sync(service: LmsSyncServiceDep, now: NowDep, _: InternalKeyDep) -> SyncJobResult:
+    """연결된 사용자의 과목·과제를 동기화한다. 30분마다 도는 작업이다(F-51).
+
+    한 사람이 실패해도 다음 사람을 계속한다(실패는 그 사람의 실행 기록에 남는다). 토큰이 막힌
+    사람은 연결을 `error`로 바꿔 화면이 다시 연결을 안내한다. 최근에 동기화한 사람은 건너뛴다.
+    """
+    outcome = await service.sync_all(now=now)
+    return SyncJobResult(
+        users=outcome.users,
+        synced=outcome.synced,
+        failed=outcome.failed,
+        skipped=outcome.skipped,
+        new_assignments=outcome.new_assignments,
+        due_changed=outcome.due_changed,
+        submitted=outcome.submitted,
+    )
 
 
 @router.post("/jobs/schedule-notifications", response_model=ScheduleResult)
