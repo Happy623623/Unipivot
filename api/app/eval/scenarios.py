@@ -3,12 +3,11 @@
 시나리오는 세계를 만들고(사용자·공고) 실제 엔드포인트를 부르며, `world.check`로 기대 결과에 닿았는지
 본다. 다르면 그 자리에서 멈추고 실패로 남는다 — 뒤 단계가 앞 단계의 결과를 쓰기 때문이다.
 
-판정·요건이 S01–S08, 포스터·준비하기·캘린더·알림이 S11–S14, LMS 과제가 S16–S18이다. PRD 8장의
-P0는 S01–S18 열여덟 개이고, 여기 있는 것은 그중 **열다섯 개**다. 없는 것과 이유:
+판정·요건이 S01–S08, 포스터·준비하기·캘린더·알림이 S11–S14, 계획서가 S15, LMS 과제가 S16–S18이다.
+PRD 8장의 P0는 S01–S18 열여덟 개이고, 여기 있는 것은 그중 **열여섯 개**다. 없는 것과 이유:
 
 - S09(요건이 첨부에만 있는 공고)·S10(공지 수정 재수집): 입력이 실제 HWP·PDF 파일과 저장한 공지
   폴더다. 그 파일을 레포에 둔 뒤에 붙인다
-- S15(강의계획서 가져오기): `POST /syllabi/extract`(F-14)를 아직 만들지 않았다
 """
 
 from __future__ import annotations
@@ -17,9 +16,11 @@ from datetime import date, datetime, time, timedelta
 
 import httpx
 
+from app.calendar import EVENT_MINUTES
 from app.eligibility import KST
 from app.eval.fakes import (
     DB_COURSE_ID,
+    course_week,
     poster_bytes,
     poster_deadline,
     poster_submit,
@@ -27,9 +28,21 @@ from app.eval.fakes import (
     tool_reply,
     youth_policy,
 )
-from app.eval.world import EvalWorld, Rule, Scenario
+from app.eval.syllabus import (
+    FINAL_LINE,
+    FINAL_WEEK,
+    MADE_UP_LINE,
+    MIDTERM_LINE,
+    MIDTERM_WEEK,
+    NO_DATE_LINE,
+    PRESENTATION_LINE,
+    PRESENTATION_WEEK,
+    syllabus_pdf,
+)
+from app.eval.world import EvalWorld, Reply, Rule, Scenario
 from app.extraction.validate import LOW_CONFIDENCE as LOW_CONFIDENCE_REASON
 from app.prepare.guide import TOOL_NAME as GUIDE_TOOL
+from app.schemas.syllabi import EXTRACT_TOOL as SYLLABUS_TOOL
 
 DEPARTMENT = "인공지능학과"
 GRADE_RULE = Rule(1, "gpa_last_semester", "gte", 3.0)
@@ -720,6 +733,268 @@ async def s18(world: EvalWorld) -> None:
     await world.check("내 알림함에 남은 것 없음", expected=0, actual=mine[0]["count"])
 
 
+# ── S15: 강의계획서 가져오기 ────────────────────────────────────────────────
+
+EXAM_TIME = time(10, 30)  # 녹화한 계획서의 시험 시각(계획서 글자에 그대로 적혀 있다)
+# 플래너를 볼 기간. 계획서를 **다음 학기** 것으로 올리는 시계도 있어서(fakes.semester_start)
+# 기말고사가 최대 여덟 달쯤 뒤다. 명세 7장 상한은 400일이다
+PLANNER_SPAN = 300
+
+
+async def s15(world: EvalWorld) -> None:
+    """LMS 과목에서 "계획서 가져오기" → PDF 업로드 → 고른 과목에 연결, 시험·발표 추출 → 확정.
+
+    녹화한 계획서는 **주차만** 적힌 꼴이다(app/eval/syllabus.py). 모델이 주차를 학기 시작일에서
+    날짜로 세어 답하는데, 그 셈을 시나리오도 같이 해서(`course_week`) 날짜가 끝까지 흐르는지 본다.
+    녹화한 과목의 학기도 주입 시계에서 세므로 어느 날에 돌려도 같은 결과가 나온다.
+
+    근거가 계획서에 없는 일정과 학기 밖 날짜도 한 건씩 답에 섞어, **버려야 할 것을 버리는지** 본다.
+    """
+    student = await world.user(grade=3)
+    client = world.client(student)
+    await _connect_calendar(world, client)
+    await _connect_lms(world, client)
+    courses = (await client.get(world.path("/lms/courses"))).json()["items"]
+    picked = {one["short_name"]: one["id"] for one in courses}
+    await world.check("과목 둘", expected=["기계학습", "데이터베이스"], actual=sorted(picked))
+
+    before = await _course(world, client, picked["데이터베이스"])
+    await world.check("계획서 없음", expected=False, actual=before["course"]["has_syllabus"])
+    await world.check("일정 없음", expected=[], actual=before["syllabus_items"])
+
+    world.records(_syllabus_reply(world.now))
+    uploaded = await client.post(
+        world.path("/files"),
+        files={"file": ("syllabus.pdf", syllabus_pdf(), "application/pdf")},
+        data={"kind": "syllabus"},
+    )
+    await world.check("계획서 올리기", expected=201, actual=uploaded.status_code)
+
+    started = await client.post(
+        world.path("/syllabi/extract"),
+        json={"file_id": uploaded.json()["file_id"], "lms_course_id": picked["데이터베이스"]},
+    )
+    await world.check("추출 시작", expected=202, actual=started.status_code)
+    run = await world.wait_run(client, started.json()["run_id"])
+    await world.check("추출 실행", expected="succeeded", actual=run["status"])
+
+    items = run["result"]["items"]
+    # 답에는 여섯 건이 있었다. 지어낸 근거·학기 밖 날짜·날짜 없는 근거는 저장하지 않는다
+    await world.check(
+        "뽑은 일정 셋(지어낸 것·학기 밖은 버림)",
+        expected=[
+            ("midterm", "중간고사"),
+            ("presentation", "팀 프로젝트 중간 발표"),
+            ("final", "기말고사"),
+        ],
+        actual=[(one["item_type"], one["title"]) for one in items],
+    )
+    await world.check(
+        "중간고사 날짜(8주차를 학기 시작에서 셈)",
+        expected=datetime.combine(
+            course_week(world.now, MIDTERM_WEEK), EXAM_TIME, tzinfo=KST
+        ).isoformat(),
+        actual=items[0]["starts_at"],
+    )
+    await world.check(
+        "발표 시각은 비어 있어 09:00",
+        expected=datetime.combine(
+            course_week(world.now, PRESENTATION_WEEK), time(9, 0), tzinfo=KST
+        ).isoformat(),
+        actual=items[1]["starts_at"],
+    )
+    # 확정 전인지는 **DB에서** 본다(응답의 is_confirmed는 저장 단계가 적어 준 값이다)
+    stored = await world.rows(
+        "select i.is_confirmed from syllabus_items i join syllabi s on s.id = i.syllabus_id"
+        " where s.user_id = %s order by i.starts_at",
+        student,
+    )
+    await world.check(
+        "DB에 확정 전으로 저장",
+        expected=[False, False, False],
+        actual=[row["is_confirmed"] for row in stored],
+    )
+
+    # 확인 화면: 중간고사·발표만 고르고 기말고사는 뺀다(아직 날짜가 안 정해졌다고 보고)
+    chosen = [
+        {"id": one["id"], "title": one["title"], "selected": one["item_type"] != "final"}
+        for one in items
+    ]
+    confirmed = await client.post(
+        world.path(f"/syllabi/{run['result']['syllabus_id']}/confirm"),
+        json={"items": chosen, "register_calendar": True},
+    )
+    await world.check("확정", expected=200, actual=confirmed.status_code)
+    await world.check(
+        "확정·할 일·캘린더 각각 둘",
+        expected=(2, 2, 2, 0),
+        actual=tuple(
+            confirmed.json()[key]
+            for key in (
+                "confirmed",
+                "planner_tasks_created",
+                "calendar_events_created",
+                "calendar_events_moved",
+            )
+        ),
+    )
+
+    after = await _course(world, client, picked["데이터베이스"])
+    await world.check("계획서 있음", expected=True, actual=after["course"]["has_syllabus"])
+    await world.check(
+        "과목 상세에 확정 표시",
+        expected=[True, True, False],
+        actual=[one["is_confirmed"] for one in after["syllabus_items"]],
+    )
+    # 학생이 고른 과목에 붙었다 — 다른 과목에는 계획서가 없다
+    other = await _course(world, client, picked["기계학습"])
+    await world.check("다른 과목은 그대로", expected=False, actual=other["course"]["has_syllabus"])
+    rows = await world.rows(
+        "select count(*) as count from syllabi where user_id = %s and lms_course_id = %s",
+        student,
+        picked["데이터베이스"],
+    )
+    await world.check("계획서 1건", expected=1, actual=rows[0]["count"])
+
+    await world.check(
+        "캘린더에 시험·발표",
+        expected=["[발표] 데이터베이스 · 팀 프로젝트 중간 발표", "[시험] 데이터베이스 · 중간고사"],
+        actual=sorted(
+            title for title in world.calendar.titles.values() if not title.startswith("[과제]")
+        ),
+    )
+    await world.check(
+        "캘린더 시각도 그 날 10:30",
+        expected=datetime.combine(course_week(world.now, MIDTERM_WEEK), EXAM_TIME, tzinfo=KST),
+        actual=_exam_start(world),
+    )
+    await world.check(
+        "플래너에 할 일 둘",
+        expected=["중간고사", "팀 프로젝트 중간 발표"],
+        actual=sorted(title for title, _ in await _syllabus_tasks(world, client)),
+    )
+    await world.check(
+        "할 일 날짜는 시험 날",
+        expected=course_week(world.now, MIDTERM_WEEK).isoformat(),
+        actual=next(
+            day for title, day in await _syllabus_tasks(world, client) if title == "중간고사"
+        ),
+    )
+
+    # 다시 확정해도 할 일·일정은 늘지 않는다(같은 자리·같은 일정 번호)
+    inserted = world.calendar.inserts
+    again = await client.post(
+        world.path(f"/syllabi/{run['result']['syllabus_id']}/confirm"),
+        json={"items": chosen, "register_calendar": True},
+    )
+    await world.check(
+        "다시 눌러도 그대로",
+        expected=(2, 0, 0, 0),
+        actual=tuple(
+            again.json()[key]
+            for key in (
+                "confirmed",
+                "planner_tasks_created",
+                "calendar_events_created",
+                "calendar_events_moved",
+            )
+        ),
+    )
+    await world.check("Google에 새로 넣지 않음", expected=inserted, actual=world.calendar.inserts)
+    await world.check(
+        "플래너 할 일 둘 그대로", expected=2, actual=len(await _syllabus_tasks(world, client))
+    )
+
+
+def _syllabus_reply(now: datetime) -> Reply:
+    """녹화한 모델 답. 주차만 적힌 계획서를 학기 시작일에서 세어 날짜를 적었다.
+
+    뒤의 세 건은 **버려져야** 하는 것이다 — 근거 줄이 계획서에 없는 일정(모델이 지어냈다),
+    학기 범위를 벗어난 날짜, 그리고 날짜도 주차도 없는 줄만 근거로 댄 일정이다
+    (app/syllabi/extract.py의 검사).
+    """
+
+    def day(week: int) -> str:
+        return course_week(now, week).isoformat()
+
+    return tool_reply(
+        SYLLABUS_TOOL,
+        course_name="데이터베이스",
+        items=[
+            {
+                "item_type": "midterm",
+                "title": "중간고사",
+                "date": day(MIDTERM_WEEK),
+                "time": EXAM_TIME.strftime("%H:%M"),
+                "evidence_text": MIDTERM_LINE,
+            },
+            {
+                "item_type": "presentation",
+                "title": "팀 프로젝트 중간 발표",
+                "date": day(PRESENTATION_WEEK),
+                "evidence_text": PRESENTATION_LINE,
+            },
+            {
+                "item_type": "final",
+                "title": "기말고사",
+                "date": day(FINAL_WEEK),
+                "time": EXAM_TIME.strftime("%H:%M"),
+                "evidence_text": FINAL_LINE,
+            },
+            {
+                "item_type": "etc",
+                "title": "보충 시험",
+                "date": day(17),
+                "evidence_text": MADE_UP_LINE,  # 계획서에 없는 줄이다
+            },
+            {
+                "item_type": "assignment",
+                "title": "기말 보고서 제출",
+                "date": (course_week(now, FINAL_WEEK) + timedelta(days=120)).isoformat(),
+                "evidence_text": FINAL_LINE,  # 근거는 있지만 날짜가 학기 밖이다
+            },
+            {
+                "item_type": "etc",
+                "title": "출석 확인",
+                "date": day(MIDTERM_WEEK),
+                "evidence_text": NO_DATE_LINE,  # 계획서에 있는 줄이지만 날짜도 주차도 없다
+            },
+        ],
+    )
+
+
+def _exam_start(world: EvalWorld) -> datetime | None:
+    """녹화한 Google 캘린더에 들어간 중간고사 일정의 시작 시각(KST)."""
+    for event_id, title in world.calendar.titles.items():
+        if title.startswith("[시험]"):
+            ends_at = world.calendar.events[event_id].ends_at
+            return (ends_at - timedelta(minutes=EVENT_MINUTES)).astimezone(KST)
+    return None
+
+
+async def _course(world: EvalWorld, client: httpx.AsyncClient, course_id: str) -> dict:
+    response = await client.get(world.path(f"/lms/courses/{course_id}"))
+    response.raise_for_status()
+    body: dict = response.json()
+    return body
+
+
+async def _syllabus_tasks(world: EvalWorld, client: httpx.AsyncClient) -> list[tuple[str, str]]:
+    """플래너에 보이는 계획서 할 일 (제목, 날짜). 기말고사까지 담기게 넉넉히 본다."""
+    planner = await client.get(
+        world.path("/planner/tasks"),
+        params={
+            "from": world.today.isoformat(),
+            "to": (world.today + timedelta(days=PLANNER_SPAN)).isoformat(),
+        },
+    )
+    return [
+        (task["title"], task["due_date"])
+        for task in planner.json()["items"]
+        if task["source"] == "syllabus"
+    ]
+
+
 async def _connect_calendar(world: EvalWorld, client: httpx.AsyncClient) -> None:
     """Google 캘린더를 먼저 연결한다(설정은 기본 켬이라 과제 마감이 자동으로 들어간다)."""
     connected = await client.post(
@@ -827,6 +1102,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("S12", "흐릿한 포스터 → 저신뢰도 배지, 수정 가능", "P0", s12),
     Scenario("S13", "준비하기 → 캘린더 연결 → 등록 → 다시 눌러도 하나", "P0", s13),
     Scenario("S14", "마감 D-3·D-1 → 알림함에 한 번씩, 중복 없음", "P0", s14),
+    Scenario("S15", "계획서 PDF 업로드 → 과목 연결·시험·발표 추출 → 확정", "P0", s15),
     Scenario("S16", "LMS 새 과제(녹화 응답) → 캘린더·플래너 1건 + 알림", "P0", s16),
     Scenario("S17", "LMS 과제 마감 변경 → 기존 캘린더 일정 수정, 새 이벤트 없음", "P0", s17),
     Scenario("S18", "LMS 과제 제출 → 플래너 자동 완료, 보내지 않은 알림 취소", "P0", s18),

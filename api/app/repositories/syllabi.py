@@ -16,6 +16,7 @@ from fastapi import Depends
 from psycopg import AsyncConnection
 
 from app.db import get_conn
+from app.eligibility import KST
 from app.lms.parse import course_name as parse_course_name
 from app.schemas.syllabi import SyllabusItemView
 from app.syllabi.extract import DraftItem
@@ -37,6 +38,27 @@ class SyllabusCourse:
     name: str
     short_name: str
     semester_start: date | None
+
+
+@dataclass(frozen=True)
+class SyllabusHead:
+    """확인 화면이 다루는 계획서 머리말. 과목을 붙였으면 그 이름도 함께."""
+
+    id: str
+    course_id: str | None
+    course_name: str | None
+    short_name: str | None
+
+
+@dataclass(frozen=True)
+class StoredItem:
+    """저장해 둔 일정 하나."""
+
+    id: str
+    item_type: str
+    title: str
+    starts_at: datetime | None
+    is_confirmed: bool
 
 
 @dataclass(frozen=True)
@@ -162,6 +184,109 @@ class SyllabusRepository:
                 )
             )
         return SavedSyllabus(syllabus_id, course_name, saved)
+
+    async def one(self, user_id: str, syllabus_id: str) -> SyllabusHead | None:
+        """내 계획서 하나(확인 화면이 보내온 것). 남의 계획서는 None이다."""
+        row = await (
+            await self.conn.execute(
+                "select s.id::text as id, s.course_name, s.lms_course_id::text as course_id,"
+                " c.name as course_full_name from syllabi s"
+                " left join lms_courses c on c.id = s.lms_course_id and c.user_id = s.user_id"
+                " where s.id = %s and s.user_id = %s",
+                (syllabus_id, user_id),
+            )
+        ).fetchone()
+        if row is None:
+            return None
+        full = row["course_full_name"]
+        return SyllabusHead(
+            id=row["id"],
+            course_id=row["course_id"],
+            course_name=row["course_name"],
+            short_name=parse_course_name(full).short_name if full else row["course_name"],
+        )
+
+    async def items(self, user_id: str, syllabus_id: str) -> list[StoredItem]:
+        """그 계획서의 일정(확인 전·후 모두). 순서는 부른 쪽이 정한다.
+
+        일정 표에는 `user_id`가 없어서 계획서로 거른다(api/CLAUDE.md: 사용자 API의 SQL에는 늘
+        `user_id` 조건). 부른 쪽이 이미 주인을 봤더라도 여기서 한 번 더 막는다.
+        """
+        rows = await (
+            await self.conn.execute(
+                "select i.id::text as id, i.item_type::text as item_type, i.title, i.starts_at,"
+                " coalesce(i.is_confirmed, false) as is_confirmed from syllabus_items i"
+                " join syllabi s on s.id = i.syllabus_id"
+                " where i.syllabus_id = %s and s.user_id = %s",
+                (syllabus_id, user_id),
+            )
+        ).fetchall()
+        return [
+            StoredItem(
+                id=row["id"],
+                item_type=row["item_type"],
+                title=row["title"],
+                starts_at=row["starts_at"],
+                is_confirmed=row["is_confirmed"],
+            )
+            for row in rows
+        ]
+
+    async def confirm_item(
+        self,
+        user_id: str,
+        item_id: str,
+        *,
+        syllabus_id: str,
+        title: str,
+        starts_at: datetime | None,
+        selected: bool,
+    ) -> None:
+        """학생이 고친 제목·시각을 저장하고 확인 여부를 적는다. 내 계획서의 일정만 고친다."""
+        await self.conn.execute(
+            "update syllabus_items set title = %(title)s, starts_at = %(starts)s,"
+            " is_confirmed = %(selected)s where id = %(iid)s and syllabus_id in"
+            "   (select id from syllabi where id = %(sid)s and user_id = %(uid)s)",
+            {
+                "title": title,
+                "starts": starts_at,
+                "selected": selected,
+                "iid": item_id,
+                "sid": syllabus_id,
+                "uid": user_id,
+            },
+        )
+
+    async def sync_task(
+        self, user_id: str, item: StoredItem, *, selected: bool, course_id: str | None
+    ) -> bool:
+        """고른 일정은 플래너 할 일로 만들고, 뺀 일정은 할 일에서 지운다.
+
+        만들었으면 True다. 이미 있으면 제목·날짜만 맞추고 False다(두 번 눌러도 하나다).
+        끝낸 할 일은 지우지 않는다 — 학생이 체크한 것을 되돌리지 않는다.
+        """
+        if not selected or item.starts_at is None:
+            await self.conn.execute(
+                "delete from planner_tasks where user_id = %s and syllabus_item_id = %s"
+                " and coalesce(is_done, false) = false",
+                (user_id, item.id),
+            )
+            return False
+        # 날짜는 KST로 센다(timestamptz는 UTC로 들어 있어 밤·새벽 일정이 하루 밀린다)
+        due = item.starts_at.astimezone(KST).date()
+        # 한 번에 넣고, 이미 있으면 제목·날짜만 맞춘다. 두 탭에서 같이 눌러도 할 일은 하나다
+        # (부분 유니크 인덱스 planner_tasks_user_syllabus_item_uq). `xmax = 0`이면 이번에 새로 넣은 행이다
+        row = await (
+            await self.conn.execute(
+                "insert into planner_tasks (user_id, source, syllabus_item_id, title, due_date)"
+                " values (%s, 'syllabus', %s, %s, %s)"
+                " on conflict (user_id, syllabus_item_id) where syllabus_item_id is not null"
+                "   do update set title = excluded.title, due_date = excluded.due_date"
+                " returning (xmax = 0) as inserted",
+                (user_id, item.id, item.title, due),
+            )
+        ).fetchone()
+        return bool(row and row["inserted"])
 
 
 def get_syllabus_repo(conn: Annotated[AsyncConnection, Depends(get_conn)]) -> SyllabusRepository:

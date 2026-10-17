@@ -1,6 +1,6 @@
 """시나리오 실행 통합 테스트(PRD 8장). DATABASE_URL이 있을 때만 돈다.
 
-시나리오 11개를 실제로 돌려 다 통과하는지 보고, 실행 기록(agent_runs·tool_calls·llm_calls)이 지표를
+시나리오를 모두 실제로 돌려 다 통과하는지 보고, 실행 기록(agent_runs·tool_calls·llm_calls)이 지표를
 낼 수 있는 모양으로 남는지 본다. 실제 Supabase DB로는 돌리지 않는다(사용자·공고를 만들고 지운다).
 """
 

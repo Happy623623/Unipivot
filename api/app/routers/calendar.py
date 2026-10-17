@@ -19,6 +19,7 @@ from app.eligibility import KST
 from app.errors import ApiError
 from app.repositories.calendar import CalendarRepoDep, CalendarRepository
 from app.schemas.calendar import CalendarEventRequest, CalendarEventView
+from app.schemas.syllabi import syllabus_title
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/calendar", tags=["캘린더"])
@@ -49,6 +50,8 @@ async def add_event(
         )
     if body.lms_assignment_id is not None:
         target = await _assignment_target(repo, user.id, str(body.lms_assignment_id), now)
+    elif body.syllabus_item_id is not None:
+        target = await _syllabus_target(repo, user.id, str(body.syllabus_item_id), now)
     else:
         target = await _opportunity_target(repo, user.id, str(body.opportunity_id), now)
     existing = await repo.event_for(user.id, body.provider, **target.key())
@@ -83,12 +86,17 @@ class _Target:
     ends_at: datetime
     opportunity_id: str | None = None
     lms_assignment_id: str | None = None
+    syllabus_item_id: str | None = None
 
     def key(self) -> dict[str, str]:
-        if self.opportunity_id is not None:
-            return {"opportunity_id": self.opportunity_id}
-        assert self.lms_assignment_id is not None
-        return {"lms_assignment_id": self.lms_assignment_id}
+        given = {
+            "opportunity_id": self.opportunity_id,
+            "lms_assignment_id": self.lms_assignment_id,
+            "syllabus_item_id": self.syllabus_item_id,
+        }
+        found = {column: value for column, value in given.items() if value is not None}
+        assert len(found) == 1
+        return found
 
 
 async def _opportunity_target(
@@ -124,6 +132,27 @@ async def _assignment_target(
         title=assignment_title(assignment.course, assignment.title),
         ends_at=ends_at,
         lms_assignment_id=assignment.id,
+    )
+
+
+async def _syllabus_target(
+    repo: CalendarRepository, user_id: str, item_id: str, now: datetime
+) -> _Target:
+    """확인한 계획서 일정(F-14). 확인 전 일정·남의 계획서는 404, 지난 일정은 409다."""
+    item = await repo.syllabus_deadline(user_id, item_id)
+    if item is None:
+        raise ApiError(404, "NOT_FOUND", "계획서 일정을 찾을 수 없어요.")
+    if item.starts_at is None:
+        raise _invalid(
+            "날짜가 없는 일정이에요. 날짜를 정한 뒤 넣어 주세요.", field="syllabus_item_id"
+        )
+    ends_at = item.starts_at.astimezone(KST) + timedelta(minutes=EVENT_MINUTES)
+    if ends_at <= now:
+        raise ApiError(409, "DEADLINE_PASSED", "이미 지난 일정이에요. 캘린더에 넣을 수 없어요.")
+    return _Target(
+        title=syllabus_title(item.item_type, item.course, item.title),
+        ends_at=ends_at,
+        syllabus_item_id=item.id,
     )
 
 

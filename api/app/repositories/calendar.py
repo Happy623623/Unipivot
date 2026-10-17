@@ -45,20 +45,38 @@ class AssignmentDeadline:
 
 
 @dataclass(frozen=True)
+class SyllabusDeadline:
+    """캘린더에 넣을 계획서 일정(F-14). 제목에 과목 이름을 붙이려고 함께 읽는다."""
+
+    id: str
+    title: str
+    course: str | None  # 과목을 붙이지 않은 계획서면 None이다
+    item_type: str
+    starts_at: datetime | None
+
+
+@dataclass(frozen=True)
 class OpportunityDeadline:
     id: str
     title: str
     deadline_at: datetime | None
 
 
-def _target(opportunity_id: str | None, lms_assignment_id: str | None) -> tuple[str, str]:
-    """일정이 가리키는 대상 한 개(칸 이름, 값). 둘을 함께 주거나 둘 다 비우면 코드 잘못이다."""
-    if (opportunity_id is None) == (lms_assignment_id is None):
-        raise ValueError("일정 대상은 공고나 LMS 과제 하나여야 해요")
-    if opportunity_id is not None:
-        return "opportunity_id", opportunity_id
-    assert lms_assignment_id is not None
-    return "lms_assignment_id", lms_assignment_id
+def _target(
+    opportunity_id: str | None,
+    lms_assignment_id: str | None,
+    syllabus_item_id: str | None = None,
+) -> tuple[str, str]:
+    """일정이 가리키는 대상 한 개(칸 이름, 값). 둘 이상 주거나 다 비우면 코드 잘못이다."""
+    given = [
+        ("opportunity_id", opportunity_id),
+        ("lms_assignment_id", lms_assignment_id),
+        ("syllabus_item_id", syllabus_item_id),
+    ]
+    found = [(column, value) for column, value in given if value is not None]
+    if len(found) != 1:
+        raise ValueError("일정 대상은 공고·LMS 과제·계획서 일정 중 하나여야 해요")
+    return found[0]
 
 
 def _event(row: dict) -> CalendarEventView:
@@ -142,6 +160,34 @@ class CalendarRepository:
             due_at=row["due_at"],
         )
 
+    async def syllabus_deadline(self, user_id: str, item_id: str) -> SyllabusDeadline | None:
+        """내 계획서 일정 하나(F-14). 남의 계획서·없는 일정은 None이다.
+
+        **확인한 일정만** 캘린더에 넣을 수 있다 — 아직 확인 전인 추출 결과는 날짜가 틀릴 수 있다.
+        """
+        row = await (
+            await self.conn.execute(
+                "select i.id::text as id, i.title, i.starts_at, i.item_type::text as item_type,"
+                # 과목 이름은 **LMS 과목명을 먼저** 쓴다. 확정 경로(repositories/syllabi.py의 one)와
+                # 같은 기준이어야 같은 일정이 어느 길로 들어와도 제목이 같다
+                " coalesce(c.name, s.course_name) as course_name"
+                " from syllabus_items i"
+                " join syllabi s on s.id = i.syllabus_id"
+                " left join lms_courses c on c.id = s.lms_course_id and c.user_id = s.user_id"
+                " where i.id = %(iid)s and s.user_id = %(uid)s and coalesce(i.is_confirmed, false)",
+                {"iid": item_id, "uid": user_id},
+            )
+        ).fetchone()
+        if row is None:
+            return None
+        return SyllabusDeadline(
+            id=row["id"],
+            title=row["title"],
+            course=course_name(row["course_name"]).short_name if row["course_name"] else None,
+            item_type=row["item_type"],
+            starts_at=row["starts_at"],
+        )
+
     async def event_for(
         self,
         user_id: str,
@@ -149,9 +195,10 @@ class CalendarRepository:
         *,
         opportunity_id: str | None = None,
         lms_assignment_id: str | None = None,
+        syllabus_item_id: str | None = None,
     ) -> CalendarEventView | None:
-        """그 대상에 이미 잡아 둔 일정. 대상은 공고나 과제 하나다."""
-        column, target = _target(opportunity_id, lms_assignment_id)
+        """그 대상에 이미 잡아 둔 일정. 대상은 공고·과제·계획서 일정 하나다."""
+        column, target = _target(opportunity_id, lms_assignment_id, syllabus_item_id)
         row = await (
             await self.conn.execute(
                 sql.SQL(
@@ -196,6 +243,7 @@ class CalendarRepository:
         starts_at: datetime,
         opportunity_id: str | None = None,
         lms_assignment_id: str | None = None,
+        syllabus_item_id: str | None = None,
     ) -> CalendarEventView:
         """Google을 부르기 전에 자리를 먼저 잡는다(external_event_id는 아직 비어 있다).
 
@@ -203,7 +251,7 @@ class CalendarRepository:
         두 개가 된다. 자리를 먼저 잡으면 그 행의 id로 Google 일정 번호를 정할 수 있어, 다시 눌러도 같은
         번호로 들어간다(두 요청이 겹쳐도 진 쪽이 이긴 쪽의 행을 그대로 쓴다).
         """
-        column, target = _target(opportunity_id, lms_assignment_id)
+        column, target = _target(opportunity_id, lms_assignment_id, syllabus_item_id)
         row = await (
             await self.conn.execute(
                 sql.SQL(
@@ -232,6 +280,7 @@ class CalendarRepository:
                 provider,
                 opportunity_id=opportunity_id,
                 lms_assignment_id=lms_assignment_id,
+                syllabus_item_id=syllabus_item_id,
             )
             assert existing is not None
             return existing
@@ -287,12 +336,18 @@ class CalendarRepository:
             (external_event_id, event_id, user_id),
         )
 
-    async def move(self, user_id: str, event_id: str, *, starts_at: datetime) -> None:
-        """마감이 바뀌어 일정 시각을 고쳤다(Google에 고친 뒤 기록도 맞춘다)."""
+    async def move(
+        self, user_id: str, event_id: str, *, starts_at: datetime, title: str | None = None
+    ) -> None:
+        """마감이 바뀌어 일정 시각을 고쳤다(Google에 고친 뒤 기록도 맞춘다).
+
+        제목까지 달라졌으면(계획서 일정을 고쳐 다시 확정) 함께 맞춘다. 비우면 제목은 그대로다.
+        """
         await self.conn.execute(
-            "update calendar_events set starts_at = %s, synced_at = now()"
-            " where id = %s and user_id = %s",
-            (starts_at, event_id, user_id),
+            "update calendar_events set starts_at = %(starts)s,"
+            " title = coalesce(%(title)s, title), synced_at = now()"
+            " where id = %(id)s and user_id = %(uid)s",
+            {"starts": starts_at, "title": title, "id": event_id, "uid": user_id},
         )
 
     async def auto_lms(self, user_id: str) -> bool:
