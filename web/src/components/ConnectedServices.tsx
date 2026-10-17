@@ -82,7 +82,7 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
             <p className="mt-1 text-[12px] text-[#667085]">
               {lms.status === "active"
                 ? `토큰 끝 4자리 ${lms.token_last4} · 마지막 동기화 ${lms.last_synced_at ? formatRelativeTime(lms.last_synced_at, nowIso()) : "없음"}`
-                : "연결되지 않음"}
+                : "연결되지 않음. 학업 화면에서 연결할 수 있어요."}
             </p>
           </div>
           {lms.status === "active" && (

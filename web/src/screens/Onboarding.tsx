@@ -6,7 +6,6 @@ import {
   getDepartments,
   getMe,
   getProfile,
-  LMS_CONNECT_READY,
   saveConsents,
   saveProfile,
   updateIncomeConsent,
@@ -75,8 +74,8 @@ export default function Onboarding({ onDone }: OnboardingProps) {
   }
 
   const [me, profile] = request.data;
-  // LMS 연결이 준비되지 않았으면(실제 모드, LMS API 전) 마지막 LMS 단계를 건너뛴다
-  const finish = () => (me.lms?.status === "active" || !LMS_CONNECT_READY ? onDone() : setStage({ kind: "lms" }));
+  // 이미 LearningX를 연결한 사람은 마지막 LMS 단계를 건너뛴다
+  const finish = () => (me.lms?.status === "active" ? onDone() : setStage({ kind: "lms" }));
   // 소득 단계는 선택 동의를 했을 때만 입력받고, 안 했으면 동의를 한 번 더 묻는다
   const openStep = (index: number) => {
     setErrors({});

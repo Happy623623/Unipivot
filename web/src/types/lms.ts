@@ -9,6 +9,14 @@ export interface LmsConnection {
   last_error: string | null;
 }
 
+// POST /lms/connection — 토큰을 확인하고 수강 과목을 받아 둔 결과(첫 동기화가 바로 시작된다)
+export interface LmsConnectResult {
+  status: "active";
+  token_last4: string;
+  courses: number;
+  first_sync_run_id: string | null;
+}
+
 // GET /lms/courses
 export interface Course {
   id: string;
