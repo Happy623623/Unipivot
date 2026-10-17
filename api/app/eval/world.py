@@ -36,17 +36,27 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from app.agent_log import AgentRun
+from app.agent_log import AgentRun, LogConnect
+from app.background import TaskRunner, get_runner
 from app.calendar.service import CalendarService, get_calendar_service
 from app.clock import current_time
 from app.config import Settings, get_settings
-from app.db import create_pools, get_conn
+from app.db import create_pools, get_conn, get_log_connect
 from app.eligibility import KST
-from app.eval.fakes import RecordedCalendar, RecordedLlm, RecordedStorage, Reply
+from app.eval.fakes import (
+    RecordedCalendar,
+    RecordedLearningX,
+    RecordedLlm,
+    RecordedStorage,
+    Reply,
+)
 from app.eval.models import Check, CheckFailed, plain
 from app.llm.deps import get_llm
+from app.lms.service import LmsService, get_lms_service
+from app.lms.sync import LmsSyncService, get_lms_sync_service
 from app.main import create_app
 from app.repositories.calendar import CalendarRepository
+from app.repositories.lms import LmsRepository, get_lms_repo
 from app.repositories.profiles import ProfileRepository
 from app.schemas.me import INCOME_FIELDS
 from app.schemas.metrics import CHECK_TOOL, ELIGIBILITY_CHECK
@@ -138,6 +148,7 @@ class EvalWorld:
         llm: RecordedLlm,
         storage: RecordedStorage,
         calendar: RecordedCalendar,
+        lms: RecordedLearningX,
     ) -> None:
         self.conn = conn  # autocommit. 세계를 만들고 치운다
         self.app = app
@@ -147,6 +158,7 @@ class EvalWorld:
         self.run = run
         self.scenario_code = scenario_code
         self.llm, self.storage, self.calendar = llm, storage, calendar
+        self.lms = lms  # 녹화한 LearningX. 시나리오가 과제·마감·제출을 고친다(S16–S18)
         self.users: list[str] = []
         self.opportunities: list[str] = []
         self.checks: list[Check] = []
@@ -468,6 +480,19 @@ class EvalWorld:
             statements.append(
                 ("delete from departments where name = any(%s)", (self._departments,))
             )
+        # 주차 항목·공지는 **과목 공통 표**라 사용자를 지워도 남는다(ERD 3-2). 남겨 두면 다음
+        # 실행에서 "처음 본 자료"가 0건이 되어 재현되지 않는다. **녹화가 쓰는 과목 번호**(시나리오
+        # 전용 번호대)이고 아무도 듣지 않는 것만 지운다 — 실제 학생의 과목 자료는 건드리지 않는다
+        canvas_ids = [row["id"] for row in self.lms.rows]
+        for table in ("lms_module_items", "lms_announcements"):
+            statements.append(
+                (
+                    f"delete from {table} t where t.canvas_course_id = any(%s::bigint[])"
+                    " and not exists (select 1 from lms_courses c"
+                    "   where c.canvas_course_id = t.canvas_course_id)",
+                    (canvas_ids,),
+                )
+            )
         for query, params in statements:
             try:
                 await self.conn.execute(query, params)
@@ -495,8 +520,9 @@ async def open_app(
     llm: RecordedLlm,
     storage: RecordedStorage,
     calendar: RecordedCalendar,
+    lms: RecordedLearningX,
 ) -> tuple[FastAPI, AsyncConnectionPool, AsyncConnectionPool]:
-    """실제 풀을 달고 시계·모델·파일 저장소·Google 캘린더만 녹화한 것으로 바꾼 앱.
+    """실제 풀을 달고 시계·모델·파일 저장소·Google 캘린더·LearningX만 녹화한 것으로 바꾼 앱.
 
     lifespan은 돌지 않는다(ASGITransport는 부르지 않는다). 그래서 풀을 여기서 열고 부른 쪽이 닫는다.
     여는 중에 터지면 먼저 연 풀을 닫고 올린다.
@@ -518,9 +544,31 @@ async def open_app(
         """토큰 저장소는 실제 DB를 쓰고 Google만 녹화한 것으로 바꾼다."""
         return CalendarService(CalendarRepository(conn), calendar, settings.token_encryption_key)
 
+    def recorded_lms(
+        repo: Annotated[LmsRepository, Depends(get_lms_repo)],
+        log_connect: Annotated[LogConnect, Depends(get_log_connect)],
+    ) -> LmsService:
+        """토큰 저장·과목 저장은 실제 DB를 쓰고 LearningX만 녹화한 것으로 바꾼다."""
+        return LmsService(
+            repo, lms, encryption_key=settings.token_encryption_key, log_connect=log_connect
+        )
+
+    def recorded_sync(runner: Annotated[TaskRunner, Depends(get_runner)]) -> LmsSyncService:
+        """동기화도 LearningX와 Google만 녹화한 것으로 바꾼다(저장·로그는 실제 DB)."""
+        return LmsSyncService(
+            transaction=pool.connection,
+            log_connection=log_pool.connection,
+            client=lms,
+            calendar_client=calendar,
+            encryption_key=settings.token_encryption_key,
+            runner=runner,
+        )
+
     app.dependency_overrides.update(
         {
             get_settings: lambda: settings,
+            get_lms_service: recorded_lms,
+            get_lms_sync_service: recorded_sync,
             current_time: lambda: clock.now,  # 주입 시계(PRD 8장). travel로 옮긴다
             get_llm: lambda: llm,
             get_storage: lambda: storage,

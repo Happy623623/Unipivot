@@ -253,13 +253,17 @@ _UPSERT_ITEM = (
     " returning id"
 )
 
+# 연결할 때 `last_synced_at`을 비워 둔다. 연결은 **과목 목록까지**만 받으므로(명세 8장) 과제·주차
+# 자료는 아직 하나도 없다. 여기에 지금 시각을 찍으면 바로 뒤에 부르는 `POST /lms/sync`가 "5분 안에
+# 받았다"며 건너뛰고, 학생은 연결 직후 5분 동안 과제가 비어 있는 화면을 본다. 토큰을 갈아 끼울
+# 때도 비운다 — 방금 고친 토큰으로 곧바로 다시 받아야 한다
 _SAVE = (
     "insert into lms_connections (user_id, access_token, token_last4, canvas_user_id, status,"
     " last_synced_at, last_error) values (%(uid)s, %(token)s, %(last4)s, %(canvas)s, 'active',"
-    " %(now)s, null)"
+    " null, null)"
     " on conflict (user_id) do update set access_token = excluded.access_token,"
     " token_last4 = excluded.token_last4, canvas_user_id = excluded.canvas_user_id,"
-    " status = 'active', last_synced_at = excluded.last_synced_at, last_error = null"
+    " status = 'active', last_synced_at = null, last_error = null"
 )
 
 _UPSERT_COURSE = (
@@ -286,18 +290,15 @@ class LmsRepository:
         return Connection(**row) if row else None
 
     async def save_connection(
-        self, user_id: str, *, token: str, last4: str, canvas_user_id: int | None, now: datetime
+        self, user_id: str, *, token: str, last4: str, canvas_user_id: int | None
     ) -> None:
-        """연결을 만들거나 토큰을 갈아 끼운다(명세 8장: 이미 연결돼 있으면 교체)."""
+        """연결을 만들거나 토큰을 갈아 끼운다(명세 8장: 이미 연결돼 있으면 교체).
+
+        `last_synced_at`은 찍지 않는다(비운다) — 연결은 과목 목록까지만 받는다. 이유는 `_SAVE` 머리말.
+        """
         await self.conn.execute(
             _SAVE,
-            {
-                "uid": user_id,
-                "token": token,
-                "last4": last4,
-                "canvas": canvas_user_id,
-                "now": now,
-            },
+            {"uid": user_id, "token": token, "last4": last4, "canvas": canvas_user_id},
         )
 
     async def mark_error(self, user_id: str, message: str) -> None:

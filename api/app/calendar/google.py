@@ -124,6 +124,9 @@ class GoogleCalendarClient:
         except GoogleCalendarError as exc:
             if exc.status != 409:  # 409는 같은 번호가 이미 있다는 뜻이다
                 raise
+            # 앞 요청이 이미 넣었다. **그때의 시각이 남아 있다** — 그 사이 마감이 바뀌었으면
+            # 캘린더가 옛 시각을 가리키므로, 성공으로 보되 시각·제목을 한 번 맞춰 준다
+            return await self.move(access_token, event_id=event_id, title=title, ends_at=ends_at)
         return GoogleEvent(event_id, starts_at, ends_at)
 
     async def move(

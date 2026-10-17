@@ -398,7 +398,8 @@ def test_retrying_after_a_lost_response_keeps_one_event(
     """넣는 응답을 못 받고 다시 눌러도 캘린더에 일정이 하나다.
 
     번호를 우리가 정해 보내므로 두 번째 요청은 같은 번호로 간다. Google은 409(같은 번호가 있다)를
-    주는데 그것은 앞 요청이 이미 넣었다는 뜻이라 성공으로 본다.
+    주는데 그것은 앞 요청이 이미 넣었다는 뜻이라 성공으로 본다. **그때 Google에 남은 시각은 앞
+    요청이 보낸 것**이라, 이어서 한 번 고쳐 이번 마감으로 맞춘다.
     """
     with respx.mock(assert_all_called=True) as router:
         router.post(INSERT).mock(side_effect=httpx.ReadTimeout("늦었다"))
@@ -408,10 +409,16 @@ def test_retrying_after_a_lost_response_keeps_one_event(
         route = router.post(INSERT).mock(
             return_value=httpx.Response(409, json={"error": "duplicate"})
         )
+        fixed = router.patch(f"{API_BASE}/calendars/primary/events/{GCAL_ID}").mock(
+            return_value=httpx.Response(200, json={"id": GCAL_ID})
+        )
         again = client.post(EVENTS, json={"opportunity_id": OPPORTUNITY_ID}, headers=auth)
     assert again.status_code == 201
     assert again.json()["external_event_id"] == GCAL_ID
-    assert __import__("json").loads(route.calls[0].request.content)["id"] == GCAL_ID
+    assert json.loads(route.calls[0].request.content)["id"] == GCAL_ID
+    # 409 뒤에 시각을 맞춘다. 그 사이 마감이 바뀌었으면 캘린더가 옛 시각을 가리킨다
+    sent = json.loads(fixed.calls[0].request.content)
+    assert sent["end"]["dateTime"] == DEADLINE.astimezone(KST).isoformat()
     assert len(calendar.added) == 1  # 자리는 하나만 잡았다
 
 
