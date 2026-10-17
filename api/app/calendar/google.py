@@ -61,6 +61,11 @@ def event_title(opportunity_title: str) -> str:
     return f"[마감] {opportunity_title}"
 
 
+def assignment_title(course: str, assignment: str) -> str:
+    """LMS 과제 일정 제목. 과목을 앞에 둬서 캘린더에서 어느 수업인지 바로 보인다(F-51)."""
+    return f"[과제] {course} · {assignment}"
+
+
 class GoogleCalendarClient:
     def __init__(
         self, *, api_base: str, token_url: str, client_id: str, client_secret: str
@@ -119,6 +124,27 @@ class GoogleCalendarClient:
         except GoogleCalendarError as exc:
             if exc.status != 409:  # 409는 같은 번호가 이미 있다는 뜻이다
                 raise
+        return GoogleEvent(event_id, starts_at, ends_at)
+
+    async def move(
+        self, access_token: str, *, event_id: str, title: str, ends_at: datetime
+    ) -> GoogleEvent:
+        """이미 넣은 일정의 시각·제목을 고친다(마감이 바뀐 과제). 일정이 없으면(404·410) 예외다.
+
+        없어진 일정은 부른 쪽이 다시 넣는다 — 여기서 넣어 버리면 학생이 지운 일정이 되살아난다.
+        """
+        starts_at = ends_at - timedelta(minutes=EVENT_MINUTES)
+        body = {
+            "summary": title,
+            "start": {"dateTime": starts_at.isoformat(), "timeZone": _KST_NAME},
+            "end": {"dateTime": ends_at.isoformat(), "timeZone": _KST_NAME},
+        }
+        await self._send(
+            "PATCH",
+            f"{self.api_base}/calendars/primary/events/{quote(event_id, safe='')}",
+            json=body,
+            token=access_token,
+        )
         return GoogleEvent(event_id, starts_at, ends_at)
 
     async def delete(self, access_token: str, event_id: str) -> None:

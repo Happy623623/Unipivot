@@ -94,13 +94,16 @@ class SyncCounts(BaseModel):
 
 
 class LmsSyncResult(BaseModel):
-    """`GET /runs/{id}`의 동기화 결과(명세 8장). 주차 항목·공지는 F-52·F-53이라 아직 0이다."""
+    """`GET /runs/{id}`의 동기화 결과(명세 8장). 공지는 F-53이라 아직 0이다."""
 
     kind: Literal["lms_sync"] = "lms_sync"
     courses: int
     assignments: SyncCounts
     new_module_items: int = 0
     new_announcements: int = 0
+    # 캘린더에 새로 넣은 과제 마감 수와 시각을 고친 수(설정을 켠 사람만, F-51)
+    calendar_events: int = 0
+    calendar_moved: int = 0
 
 
 class AssignmentCourse(BaseModel):

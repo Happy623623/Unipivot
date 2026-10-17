@@ -48,13 +48,15 @@ export interface LmsSyncJobResult {
   submitted: number;
 }
 
-// GET /runs/{id}의 result (kind: "lms_sync"). 주차 항목·공지는 F-52·F-53이라 아직 0이다
+// GET /runs/{id}의 result (kind: "lms_sync"). 공지는 F-53이라 아직 0이다
 export interface LmsSyncResult {
   kind: "lms_sync";
   courses: number;
   assignments: { new: number; due_changed: number; submitted: number };
   new_module_items: number;
   new_announcements: number;
+  calendar_events: number; // 캘린더에 새로 넣은 과제 마감 수(설정을 켠 사람만)
+  calendar_moved: number; // 마감이 바뀌어 시각을 고친 일정 수
 }
 
 // GET /lms/assignments?state=open|submitted|all&lms_course_id= (주지 않으면 open)
