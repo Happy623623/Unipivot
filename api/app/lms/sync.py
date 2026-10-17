@@ -29,6 +29,8 @@ from psycopg import AsyncConnection
 
 from app.agent_log import AgentRun, LogConnect, abandon_run, agent_run, start_run
 from app.background import RunnerDep, TaskRunner
+from app.calendar import EVENT_MINUTES, GoogleCalendarClient, assignment_title, event_id_for
+from app.calendar.service import CalendarService
 from app.config import Settings, get_settings
 from app.crypto import decrypt
 from app.eligibility import KST
@@ -37,6 +39,7 @@ from app.lms.assignments import CanvasAssignment, assignments
 from app.lms.client import LearningXClient, LearningXError
 from app.lms.modules import CanvasModuleItem, module_items, needs_items
 from app.lms.service import API_ERROR, NOT_CONNECTED, TOKEN_EXPIRED, student_courses
+from app.repositories.calendar import AssignmentDeadline, CalendarRepository
 from app.repositories.lms import (
     AssignmentChanges,
     CourseRow,
@@ -77,10 +80,26 @@ class Repos:
 
     lms: LmsRepository
     notes: NotificationRepository
+    calendar: CalendarRepository
 
     @classmethod
     def of(cls, conn: AsyncConnection) -> "Repos":
-        return cls(lms=LmsRepository(conn), notes=NotificationRepository(conn))
+        return cls(
+            lms=LmsRepository(conn),
+            notes=NotificationRepository(conn),
+            calendar=CalendarRepository(conn),
+        )
+
+
+@dataclass(frozen=True)
+class _EventPlan:
+    """Google에 넣거나 고칠 일정 하나. 트랜잭션을 닫은 뒤에 쓰려고 미리 모은다."""
+
+    event_id: str
+    title: str
+    due_at: datetime
+    new: bool
+    external: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +119,8 @@ class SyncOutcome:
     due_changed: int = 0
     submitted: int = 0
     new_items: int = 0  # 처음 본 주차 항목(F-52)
+    events: int = 0  # 캘린더에 넣은 과제 마감(F-51)
+    moved_events: int = 0  # 마감이 바뀌어 시각을 고친 일정
     notices: int = 0
     failed_courses: int = 0
 
@@ -127,6 +148,7 @@ class LmsSyncService:
         transaction: Connect,
         log_connection: LogConnect,
         client: LearningXClient,
+        calendar_client: GoogleCalendarClient,
         encryption_key: str,
         runner: TaskRunner,
         repos: Callable[[AsyncConnection], Repos] = Repos.of,
@@ -134,6 +156,7 @@ class LmsSyncService:
         self.transaction = transaction  # 블록이 끝나면 커밋하는 연결(요청 트랜잭션과 따로)
         self.log_connection = log_connection
         self.client = client
+        self.calendar_client = calendar_client
         self.key = encryption_key
         self.runner = runner
         self.repos = repos
@@ -240,7 +263,8 @@ class LmsSyncService:
             # 과목이 있는데 한 과목도 받지 못했다. 저장할 것도 없고 성공으로 적으면 안 된다
             # (`touch_synced`가 오류 표시를 지워 버린다). 다음 배치에서 다시 시도한다
             raise ApiError(502, "LMS_API_ERROR", API_ERROR)
-        outcome = await self._save(job, fetched, modules, failed=failed)
+        outcome, changes = await self._save(job, fetched, modules, failed=failed)
+        outcome = await self._calendar(run, job, outcome, changes)
         async with run.tool(SAVE_TOOL) as call:
             # `GET /runs/{id}`가 이 출력으로 결과를 만든다(repositories/runs.py)
             call.output = {
@@ -251,6 +275,8 @@ class LmsSyncService:
                 "new_module_items": outcome.new_items,
                 "notices": outcome.notices,
                 "failed_courses": outcome.failed_courses,
+                "calendar_events": outcome.events,
+                "calendar_moved": outcome.moved_events,
             }
         return outcome
 
@@ -332,8 +358,11 @@ class LmsSyncService:
         modules: list[tuple[CourseRow, list[CanvasModuleItem]]],
         *,
         failed: int,
-    ) -> SyncOutcome:
-        """받아 둔 과제·주차 항목을 한 트랜잭션에 쓰고, 플래너·알림을 맞춘다."""
+    ) -> tuple[SyncOutcome, AssignmentChanges]:
+        """받아 둔 과제·주차 항목을 한 트랜잭션에 쓰고, 플래너·알림을 맞춘다.
+
+        바뀐 과제도 함께 돌려준다 — 캘린더 단계(`_calendar`)가 그걸 보고 넣을 것을 고른다.
+        """
         changes = AssignmentChanges()
         notices: list[AssignmentNotice] = []
         items = ModuleChanges()
@@ -364,15 +393,190 @@ class LmsSyncService:
                     now=job.now,
                 )
             await repo.touch_synced(job.user_id, now=job.now)
-        return SyncOutcome(
-            courses=len(fetched),
-            created=len(changes.created),
-            due_changed=len(changes.due_changed),
-            submitted=len(changes.submitted),
-            new_items=len(items.created),
-            notices=made,
-            failed_courses=failed,
+        return (
+            SyncOutcome(
+                courses=len(fetched),
+                created=len(changes.created),
+                due_changed=len(changes.due_changed),
+                submitted=len(changes.submitted),
+                new_items=len(items.created),
+                notices=made,
+                failed_courses=failed,
+            ),
+            changes,
         )
+
+    # ── 캘린더 (F-51·F-32) ──────────────────────────────────────────────────
+
+    async def _calendar(
+        self, run: AgentRun, job: SyncJob, outcome: SyncOutcome, changes: AssignmentChanges
+    ) -> SyncOutcome:
+        """새 과제 마감을 캘린더에 넣고, 바뀐 마감은 이미 넣은 일정의 시각을 고친다.
+
+        설정(`calendar_auto_lms`, 기본 켬)을 끄면 하지 않고, Google 연결이 없으면 조용히 건너뛴다.
+        **실패해도 동기화는 성공이다** — 과제·주차 자료는 이미 저장했고, 다음 동기화가 다시 시도한다.
+        """
+        fresh = [one for one in changes.created if one.due_at and not one.submitted]
+        moved = [one for one in changes.due_changed if one.due_at]
+        async with self.transaction() as conn:
+            repos = self.repos(conn)
+            if not await repos.calendar.auto_lms(job.user_id):
+                return outcome  # 설정을 껐다. 도구 호출도 열지 않는다
+            # 앞 동기화에서 Google이 막혀 넣다 만 과제를 여기서 줍는다(그러지 않으면 영영 안 들어간다)
+            done = {one.id for one in fresh} | {one.id for one in moved}
+            retry = [
+                one
+                for one in await repos.calendar.unfinished_assignment_events(job.user_id)
+                if one.id not in done
+            ]
+        if not fresh and not moved and not retry:
+            return outcome
+        async with run.tool(
+            "register_calendar",
+            {"new": len(fresh), "due_changed": len(moved), "retry": len(retry)},
+        ) as call:
+            plan = await self._calendar_plan(job, fresh, moved, retry)
+            if plan is None:  # Google 연결이 없거나 토큰을 받지 못했다
+                call.output = {"skipped": True}
+                return outcome
+            token, targets = plan
+            made = await self._write_calendar(job, token, targets)
+            call.output = {"created": made.events, "moved": made.moved_events}
+            return SyncOutcome(
+                **{
+                    **outcome.__dict__,
+                    "events": made.events,
+                    "moved_events": made.moved_events,
+                }
+            )
+
+    async def _calendar_plan(
+        self,
+        job: SyncJob,
+        fresh: list[SavedAssignment],
+        moved: list[SavedAssignment],
+        retry: list[AssignmentDeadline],
+    ) -> tuple[str, list["_EventPlan"]] | None:
+        """연결을 보고 넣을 것을 고른다. 자리도 미리 잡아 둔다(일정 번호를 정하려고).
+
+        Google 호출은 이 트랜잭션을 닫은 뒤에 한다(요청용 연결을 쥐고 외부를 부르지 않는다).
+        """
+        async with self.transaction() as conn:
+            repos = self.repos(conn)
+            service = self._calendar_service(repos.calendar)
+            try:
+                token = await service.access_token(job.user_id, job.now)
+            except ApiError as exc:
+                # 캘린더를 안 쓰는 학생(연결 없음)이거나 Google 토큰 서버가 막혔다.
+                # 어느 쪽이든 동기화는 성공이다 — 과제·주차 자료는 이미 저장했다
+                logger.info("캘린더를 건너뛰어요: %s", exc.code)
+                return None
+            titles = await repos.lms.assignment_titles(
+                job.user_id, [one.id for one in fresh + moved]
+            )
+            existing = await repos.calendar.events_for_assignments(
+                job.user_id, [one.id for one in moved]
+            )
+            plans: list[_EventPlan] = []
+            for saved in fresh:
+                title = titles.get(saved.id)
+                if title is None or saved.due_at is None:
+                    continue
+                row = await repos.calendar.reserve(
+                    job.user_id,
+                    provider="google",
+                    title=title,
+                    starts_at=saved.due_at - timedelta(minutes=EVENT_MINUTES),
+                    lms_assignment_id=saved.id,
+                )
+                if row.external_event_id is None:
+                    plans.append(_EventPlan(row.id, title, saved.due_at, new=True))
+                elif row.starts_at != saved.due_at - timedelta(minutes=EVENT_MINUTES):
+                    # 지웠다 다시 올라온 과제다(행은 그대로 살아 있다). 마감이 달라졌으면 고친다
+                    plans.append(
+                        _EventPlan(
+                            row.id, title, saved.due_at, new=False, external=row.external_event_id
+                        )
+                    )
+            for saved in moved:
+                row, title = existing.get(saved.id), titles.get(saved.id)
+                if row is None or title is None or saved.due_at is None:
+                    continue  # 캘린더에 없던 과제는 마감이 바뀌어도 새로 넣지 않는다
+                plans.append(
+                    _EventPlan(
+                        row.id, title, saved.due_at, new=False, external=row.external_event_id
+                    )
+                )
+            for pending in retry:  # 자리만 잡고 못 넣은 과제. 같은 자리로 다시 넣는다
+                if pending.due_at is None:
+                    continue
+                row = await repos.calendar.reserve(
+                    job.user_id,
+                    provider="google",
+                    title=assignment_title(pending.course, pending.title),
+                    starts_at=pending.due_at - timedelta(minutes=EVENT_MINUTES),
+                    lms_assignment_id=pending.id,
+                )
+                if row.external_event_id is None:
+                    plans.append(_EventPlan(row.id, row.title, pending.due_at, new=True))
+        return token, plans
+
+    async def _write_calendar(
+        self, job: SyncJob, token: str, plans: list["_EventPlan"]
+    ) -> SyncOutcome:
+        """Google을 부르고(트랜잭션 밖) 결과를 기록한다. 한 건이 실패해도 나머지를 계속한다."""
+        made = SyncOutcome()
+        for plan in plans:
+            try:
+                if plan.new:
+                    external = await self._calendar_service(None).insert(
+                        token,
+                        event_id=event_id_for(plan.event_id),
+                        title=plan.title,
+                        ends_at=plan.due_at.astimezone(KST),
+                    )
+                    await self._attach_event(job, plan, external=external)
+                    made = SyncOutcome(**{**made.__dict__, "events": made.events + 1})
+                    continue
+                if plan.external is None:  # 넣다 말았던 일정이다. 다시 넣는다
+                    external = await self._calendar_service(None).insert(
+                        token,
+                        event_id=event_id_for(plan.event_id),
+                        title=plan.title,
+                        ends_at=plan.due_at.astimezone(KST),
+                    )
+                    await self._attach_event(job, plan, external=external)
+                    made = SyncOutcome(**{**made.__dict__, "events": made.events + 1})
+                    continue
+                found = await self._calendar_service(None).move(
+                    token,
+                    event_id=plan.external,
+                    title=plan.title,
+                    ends_at=plan.due_at.astimezone(KST),
+                )
+                if found is None:  # 학생이 캘린더에서 지웠다. 되살리지 않는다
+                    continue
+                await self._attach_event(job, plan, external=plan.external)
+                made = SyncOutcome(**{**made.__dict__, "moved_events": made.moved_events + 1})
+            except ApiError as exc:
+                logger.warning(
+                    "과제 마감을 캘린더에 넣지 못했어요: event %s, %s", plan.event_id, exc.code
+                )
+        return made
+
+    async def _attach_event(self, job: SyncJob, plan: "_EventPlan", *, external: str) -> None:
+        async with self.transaction() as conn:
+            repos = self.repos(conn)
+            await repos.calendar.attach(job.user_id, plan.event_id, external)
+            await repos.calendar.move(
+                job.user_id,
+                plan.event_id,
+                starts_at=plan.due_at - timedelta(minutes=EVENT_MINUTES),
+            )
+
+    def _calendar_service(self, repo: CalendarRepository | None) -> CalendarService:
+        """캘린더 서비스. Google만 부를 때는 저장소가 필요 없다(토큰은 이미 받아 뒀다)."""
+        return CalendarService(repo, self.calendar_client, self.key)  # type: ignore[arg-type]
 
     # ── 거들기 ──────────────────────────────────────────────────────────────
 
@@ -443,6 +647,12 @@ def get_lms_sync_service(
         transaction=pool.connection,
         log_connection=log_pool.connection,
         client=LearningXClient(api_base=settings.lms_api_base),
+        calendar_client=GoogleCalendarClient(
+            api_base=settings.google_calendar_api_base,
+            token_url=settings.google_token_url,
+            client_id=settings.google_oauth_client_id,
+            client_secret=settings.google_oauth_client_secret,
+        ),
         encryption_key=settings.token_encryption_key,
         runner=runner,
     )

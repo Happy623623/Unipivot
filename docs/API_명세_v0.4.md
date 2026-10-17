@@ -56,6 +56,8 @@
 >
 > v0.4 보강(10/17, 과목 상세): 과목 상세 규칙(F-14)
 >
+> v0.4 보강(10/17, 과제 캘린더): `POST /calendar/events`가 `lms_assignment_id`를 받는다, 동기화가 새 과제 마감을 설정 켠 사람만 자동 등록하고 마감 변경은 기존 일정만 고친다, result에 `calendar_events`·`calendar_moved`
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -758,19 +760,20 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 ### `POST /calendar/events`
 
 - 연결이 없거나 만료됐으면 `409 CALENDAR_NOT_CONNECTED`(`details.reason`)를 돌려준다
-- 지금은 공고 마감일만 넣는다(`opportunity_id`). `syllabus_item_id`·`lms_assignment_id`는 그 기능(F-14·F-51)과 함께 열고, 지금 보내면 `422`다. `provider`는 `google`만 받는다(`ics`는 F-34)
+- 대상은 공고 마감일(`opportunity_id`)과 LMS 과제 마감(`lms_assignment_id`) 둘이다. **정확히 하나만** 보낸다(둘 다 보내거나 둘 다 비우면 `422`). `syllabus_item_id`는 그 기능(F-14)과 함께 열고, 지금 보내면 `422`다. `provider`는 `google`만 받는다(`ics`는 F-34)
+- 과제는 **내 과제**이고 LMS에서 사라지지 않았고 수강 중인 과목의 것이어야 한다(아니면 `404 NOT_FOUND`). 마감이 없으면 `422`(`details.fields.lms_assignment_id`), 마감이 지났으면 `409 DEADLINE_PASSED`다. 제출했는지는 보지 않는다(학생이 직접 누른 것이다). 제목은 `[과제] 과목 이름 · 과제 제목`이다
 - **준비를 마친** 공고만 넣을 수 있다(공고 상세의 `prep.prepared`와 같은 기준). 아니면 `422`이고 `details.fields.opportunity_id`에 이유를 담는다. 마감일이 없는 상시 공고도 `422`, 마감이 지난 공고는 `409 DEADLINE_PASSED`다
 - 일정은 **마감 시각으로 끝나는 1시간짜리**다(18:00 마감이면 17:00~18:00, `all_day: false`, 시간대 `Asia/Seoul`). 제목은 `[마감] 공고 제목`이다
 - 일정 번호는 서버가 `calendar_events.id`에서 만들어 Google에 보낸다. 그래서 응답을 받지 못하고 다시 눌러도 캘린더에 일정이 하나다(Google이 같은 번호를 409로 거절하면 이미 넣은 것으로 본다). Google에 넣기 전의 기록은 `external_event_id`가 null이고, 공고 상세의 `prep.calendar_events`에는 번호가 붙은 것만 들어간다
 
 ```json
-// Request: 대상 셋 중 정확히 하나
+// Request: 대상 하나만 (syllabus_item_id는 아직 422)
 { "provider": "google", "opportunity_id": "uuid" }
-{ "provider": "google", "syllabus_item_id": "uuid" }
 { "provider": "google", "lms_assignment_id": "uuid" }
 
 // Response 201 (이미 등록돼 있으면 200 + 기존 이벤트)
 { "id": "uuid", "provider": "google", "external_event_id": "abc123", "title": "[마감] 2026-2 한양브레인 장학금", "starts_at": "2026-10-15T22:59:00+09:00", "all_day": false }
+{ "id": "uuid", "provider": "google", "external_event_id": "def456", "title": "[과제] 데이터베이스 · 실습 2주차 결과 제출", "starts_at": "2026-10-20T22:59:00+09:00", "all_day": false }
 ```
 
 에러: `CALENDAR_NOT_CONNECTED`(409, `details.reason`은 `not_connected` 또는 `expired`. 권한이 없어졌거나(401) 갱신하지 못했을 때다. 프론트는 캘린더 연결(4장)로 보낸다), `GOOGLE_API_ERROR`(502, 403·5xx·연결 오류)
@@ -975,14 +978,18 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   "courses": 8,
   "assignments": { "new": 1, "due_changed": 0, "submitted": 2 },
   "new_module_items": 1,
-  "new_announcements": 2
+  "new_announcements": 2,
+  "calendar_events": 1,
+  "calendar_moved": 0
 }
 ```
 
 - `courses`는 이번에 과제까지 받은 과목 수다. `new`는 처음 저장한 과제, `due_changed`는 마감이 바뀐 과제, `submitted`는 이번에 제출로 바뀐 과제 수다
 - **처음 저장한 과제가 이미 제출된 상태면 할 일도 알림도 만들지 않는다**(`new`에는 센다). 연결하고 처음 받을 때 지난 학기 과제까지 한꺼번에 들어오기 때문이다(녹화 17건 중 13건이 제출·채점 완료였다)
 - 새 과제는 플래너 할 일이 되고 `new_assignment` 알림이 생긴다(마감이 있는 미제출 과제만). 마감이 바뀌면 아직 끝내지 않은 할 일의 날짜만 고친다. 제출하면 할 일이 자동 완료되고 아직 보내지 않은 알림은 지워진다(10장)
-- 마감 날짜를 캘린더에 넣는 일은 이 동기화에서 하지 않는다(사용자 캘린더에 쓰는 일이라 따로 정한다). `new_announcements`는 F-53이 채운다
+- 새 과제 마감은 **설정을 켠 사람만**(`calendar_auto_lms`, 기본 켬) 캘린더에 들어간다. 마감이 있고 아직 제출하지 않은 새 과제만이고, 마감이 바뀌면 **이미 넣은 일정의 시각만 고친다**(캘린더에 없던 과제를 새로 넣지는 않는다 — 학생이 지웠을 수 있다). 결과의 `calendar_events`는 새로 넣은 수, `calendar_moved`는 시각을 고친 수다
+- Google 연결이 없거나 설정을 껐으면 조용히 건너뛴다. 캘린더에 넣다 실패해도 **동기화는 성공이다**(과제·주차 자료는 이미 저장했고, 다음 동기화가 다시 시도한다). 학생이 Google에서 지운 일정은 되살리지 않는다(404·410)
+- `new_announcements`는 F-53이 채운다
 - `new_module_items`는 이번에 **처음 본 주차 항목** 수다. 그 과목의 항목을 처음 받는 동기화에서는 수만 세고 알림을 만들지 않는다 — 연결 직후에는 한 학기 분량이 한꺼번에 들어온다(녹화 87건). 그때 `lms_courses.last_viewed_at`도 지금으로 올려서 "새 자료" 수에도 들어가지 않게 한다
 - 새 주차 항목 알림(`new_material`)은 그 과목을 듣는 **수강생 모두에게** 간다(항목은 과목 공통이다, ERD 3-2). 연결을 끊은 사람과 설정에서 끈 사람은 뺀다
 

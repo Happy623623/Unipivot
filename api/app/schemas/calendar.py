@@ -4,18 +4,28 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 CalendarProvider = Literal["google", "ics"]
 
 
 class CalendarEventRequest(BaseModel):
-    """지금은 공고 마감일만 넣는다. 강의계획서 일정·LMS 과제는 그 기능(F-14·F-51)과 함께 연다."""
+    """대상은 **정확히 하나**다 — 공고 마감(F-32)이나 LMS 과제 마감(F-51).
+
+    강의계획서 일정(`syllabus_item_id`)은 F-14와 함께 연다(지금 보내면 모르는 칸이라 422다).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     provider: CalendarProvider = "google"
-    opportunity_id: UUID  # 형식이 틀리면 422다
+    opportunity_id: UUID | None = None  # 형식이 틀리면 422다
+    lms_assignment_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_target(self) -> "CalendarEventRequest":
+        if (self.opportunity_id is None) == (self.lms_assignment_id is None):
+            raise ValueError("공고나 LMS 과제 하나를 골라 주세요.")
+        return self
 
 
 class CalendarEventView(BaseModel):

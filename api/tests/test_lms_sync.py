@@ -4,6 +4,7 @@ LearningX 호출은 respx로 가로채고 저장소는 가짜로 바꿔 끼운�
 SQL은 test_lms_db.py가 실제 스키마로 본다.
 """
 
+import json
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from app.agent_log import using
 from app.background import InlineRunner
+from app.calendar import GoogleCalendarClient
 from app.clock import current_time
 from app.config import Settings, get_settings
 from app.crypto import encrypt
@@ -27,6 +29,7 @@ from app.lms.assignments import CanvasAssignment
 from app.lms.client import LearningXClient
 from app.lms.sync import LmsSyncService, Repos, SyncJob, get_lms_sync_service
 from app.main import create_app
+from app.repositories.calendar import AssignmentDeadline, GoogleTokens
 from app.repositories.lms import (
     AssignmentChanges,
     Connection,
@@ -40,6 +43,7 @@ from app.repositories.lms import (
 from app.repositories.notifications import AssignmentNotice, MaterialNotice
 from app.repositories.opportunities import Cursor
 from app.repositories.runs import get_run_repo
+from app.schemas.calendar import CalendarEventView
 from app.schemas.lms import (
     AssignmentCourse,
     AssignmentItem,
@@ -69,10 +73,12 @@ from tests.prepare_fakes import FakeRunRepository, run_row
 SYNC = "/api/v1/lms/sync"
 ASSIGNMENTS = "/api/v1/lms/assignments"
 BASE = "https://lms.test"
+GOOGLE = "https://calendar.test"  # 가짜 Google 캘린더(respx가 가로챈다)
 TOKEN = "18742~pAtB1g3TestTokenValue0000000000"
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=UTC)  # 2026-10-16 12:00 KST
 INTERNAL_KEY = "test-internal-key"
 COURSE_UUID = "33333333-3333-4333-8333-333333333333"
+EVENT_ROW = "88888888-8888-4888-8888-888888888888"  # 캘린더 일정 행 id(Google 번호의 바탕)
 FEED_ITEM = "22222222-2222-4222-8222-222222222222"  # 커서는 uuid만 받는다(decode_cursor)
 JOB = "/api/v1/internal/jobs/lms-sync"
 DB_COURSE = CourseRow(id="course-db", canvas_course_id=214023, short_name="데이터베이스")
@@ -97,6 +103,12 @@ class FakeLms:
     )
     opened: list[tuple[str, datetime, str]] = field(default_factory=list)
     module_changes: dict[int, ModuleChanges] = field(default_factory=dict)
+    titles: dict[str, str] = field(default_factory=dict)
+
+    async def assignment_titles(self, user_id: str, ids: list[str]) -> dict[str, str]:
+        assert user_id == USER_ID or user_id in self.users
+        return {key: value for key, value in self.titles.items() if key in set(ids)}
+
     rows: dict[str, Connection] = field(default_factory=dict)
     users: list[str] = field(default_factory=list)
     before: datetime | None = None
@@ -310,6 +322,81 @@ def lms(settings: Settings) -> FakeLms:
     )
 
 
+@dataclass
+class FakeCalendar:
+    """캘린더 저장소 흉내. 기본은 "자동 등록 켬 + 구글 연결 있음"이다."""
+
+    key: str = ""  # 토큰 암호화 키(settings와 같아야 복호화된다)
+    auto: bool = True
+    connected: bool = True
+    expires_in: timedelta = timedelta(hours=1)  # 0이면 갱신 경로를 탄다
+    pending: list[AssignmentDeadline] = field(default_factory=list)
+    reserved: list[dict[str, Any]] = field(default_factory=list)
+    attached: list[tuple[str, str]] = field(default_factory=list)
+    moved: list[tuple[str, datetime]] = field(default_factory=list)
+    events: dict[str, CalendarEventView] = field(default_factory=dict)
+
+    async def auto_lms(self, user_id: str) -> bool:
+        return self.auto
+
+    async def unfinished_assignment_events(
+        self, user_id: str, provider: str = "google"
+    ) -> list[AssignmentDeadline]:
+        return list(self.pending)
+
+    async def tokens(self, user_id: str) -> GoogleTokens | None:
+        if not self.connected:
+            return None
+        return GoogleTokens(
+            encrypt("access-1", self.key), encrypt("refresh-1", self.key), NOW + self.expires_in
+        )
+
+    async def save_access_token(self, user_id: str, encrypted: str, expires_in: int) -> None:
+        pass
+
+    async def events_for_assignments(
+        self, user_id: str, assignment_ids: Any, provider: str = "google"
+    ) -> dict[str, CalendarEventView]:
+        return {key: value for key, value in self.events.items() if key in set(assignment_ids)}
+
+    async def reserve(self, user_id: str, **values: Any) -> CalendarEventView:
+        """실제 저장소를 그대로 흉내 낸다(`on conflict ... where external_event_id is null`).
+
+        이미 잡아 둔 자리가 있으면 그 행을 쓴다. 아직 Google에 안 넣은 자리는 제목·시각을 새로
+        맞추고, 이미 넣은 일정은 그대로 둔다.
+        """
+        self.reserved.append(values)
+        target = values.get("lms_assignment_id") or values.get("opportunity_id")
+        found = self.events.get(str(target))
+        if found is not None:
+            if found.external_event_id is not None:
+                return found
+            fresh = found.model_copy(
+                update={"title": values["title"], "starts_at": values["starts_at"]}
+            )
+            self.events[str(target)] = fresh
+            return fresh
+        return CalendarEventView(
+            id=EVENT_ROW,
+            provider="google",
+            external_event_id=None,
+            title=values["title"],
+            starts_at=values["starts_at"],
+            all_day=False,
+        )
+
+    async def attach(self, user_id: str, event_id: str, external_event_id: str) -> None:
+        self.attached.append((event_id, external_event_id))
+
+    async def move(self, user_id: str, event_id: str, *, starts_at: datetime) -> None:
+        self.moved.append((event_id, starts_at))
+
+
+@pytest.fixture
+def calendar(settings: Settings) -> FakeCalendar:
+    return FakeCalendar(key=settings.token_encryption_key)
+
+
 @pytest.fixture
 def notes() -> FakeNotes:
     return FakeNotes()
@@ -322,7 +409,11 @@ def log() -> FakeLogConnection:
 
 @pytest.fixture
 def client(
-    settings: Settings, lms: FakeLms, notes: FakeNotes, log: FakeLogConnection
+    settings: Settings,
+    lms: FakeLms,
+    notes: FakeNotes,
+    calendar: FakeCalendar,
+    log: FakeLogConnection,
 ) -> Iterator[TestClient]:
     # 배치(`/internal/jobs/lms-sync`)를 부르려면 서비스 키가 있어야 한다
     settings = Settings(**{**settings.model_dump(), "internal_api_key": INTERNAL_KEY})
@@ -336,9 +427,15 @@ def client(
         transaction=transaction,
         log_connection=using(log),  # type: ignore[arg-type]
         client=LearningXClient(api_base=BASE),
+        calendar_client=GoogleCalendarClient(
+            api_base=GOOGLE,
+            token_url=f"{GOOGLE}/token",
+            client_id="client-1",
+            client_secret="secret-1",
+        ),
         encryption_key=settings.token_encryption_key,
         runner=InlineRunner(),  # 응답 전에 동기화를 끝까지 돌린다
-        repos=lambda conn: Repos(lms=lms, notes=notes),  # type: ignore[arg-type]
+        repos=lambda conn: Repos(lms=lms, notes=notes, calendar=calendar),  # type: ignore[arg-type]
     )
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_lms_sync_service] = lambda: service
@@ -612,6 +709,8 @@ def test_the_run_shows_the_sync_result(client: TestClient) -> None:
         "assignments": {"new": 1, "due_changed": 0, "submitted": 2},
         "new_module_items": 0,
         "new_announcements": 0,
+        "calendar_events": 0,
+        "calendar_moved": 0,
     }
 
 
@@ -1008,3 +1107,375 @@ def test_a_course_id_that_is_not_a_uuid_is_refused(client: TestClient) -> None:
     response = client.get("/api/v1/lms/courses/214023")
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+# ── 과제 마감 캘린더 자동 등록 (F-51·F-32) ──────────────────────────────────
+
+INSERT_EVENT = f"{GOOGLE}/calendars/primary/events"
+PATCH_EVENT = f"{GOOGLE}/calendars/primary/events/{EVENT_ROW.replace('-', '')}"
+
+
+def _new_assignment(title: str = "실습 2주차 결과 제출") -> AssignmentChanges:
+    return AssignmentChanges(created=[SavedAssignment("a-1", title, NOW + timedelta(days=4))])
+
+
+def test_a_new_assignment_goes_into_the_calendar(
+    client: TestClient,
+    lms: FakeLms,
+    calendar: FakeCalendar,
+    canvas: respx.MockRouter,
+    log: FakeLogConnection,
+) -> None:
+    lms.changes["course-db"] = _new_assignment()
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습 2주차 결과 제출"}
+    route = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "gcal-1"}))
+
+    client.post(SYNC)
+    assert route.called
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["summary"] == "[과제] 데이터베이스 · 실습 2주차 결과 제출"
+    assert sent["id"] == EVENT_ROW.replace("-", "")  # 우리 행 id가 Google 번호다
+    # Google 일정 번호는 우리 행 id에서 만든 값이다(응답의 id를 믿지 않는다)
+    assert calendar.attached == [(EVENT_ROW, EVENT_ROW.replace("-", ""))]
+    output = log.outputs()["save_lms_sync"]
+    assert (output["calendar_events"], output["calendar_moved"]) == (1, 0)
+
+
+def test_the_setting_turns_the_calendar_off(
+    client: TestClient, lms: FakeLms, calendar: FakeCalendar, canvas: respx.MockRouter
+) -> None:
+    """`calendar_auto_lms`를 끄면 Google을 부르지 않는다(명세 4장)."""
+    calendar.auto = False
+    lms.changes["course-db"] = _new_assignment()
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습"}
+    route = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    client.post(SYNC)
+    assert not route.called
+    assert calendar.reserved == []
+    assert lms.synced_at == NOW  # 동기화 자체는 성공이다
+
+
+def test_without_a_google_connection_the_calendar_is_skipped(
+    client: TestClient,
+    lms: FakeLms,
+    calendar: FakeCalendar,
+    canvas: respx.MockRouter,
+    log: FakeLogConnection,
+) -> None:
+    calendar.connected = False
+    lms.changes["course-db"] = _new_assignment()
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습"}
+    route = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    client.post(SYNC)
+    assert not route.called
+    assert lms.synced_at == NOW
+    assert "save_lms_sync" in log.tools()  # 동기화가 끝까지 갔다(캘린더만 건너뛴 것이다)
+
+
+def test_an_already_submitted_new_assignment_gets_no_event(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    lms.changes["course-db"] = AssignmentChanges(
+        created=[SavedAssignment("a-1", "지난 과제", NOW + timedelta(days=4), submitted=True)]
+    )
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 지난 과제"}
+    route = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    client.post(SYNC)
+    assert not route.called
+
+
+def test_an_assignment_without_a_deadline_gets_no_event(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    lms.changes["course-db"] = AssignmentChanges(
+        created=[SavedAssignment("a-1", "마감 없는 과제", None)]
+    )
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 마감 없는 과제"}
+    route = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    client.post(SYNC)
+    assert not route.called
+
+
+def test_a_changed_deadline_moves_the_event(
+    client: TestClient,
+    lms: FakeLms,
+    calendar: FakeCalendar,
+    canvas: respx.MockRouter,
+    log: FakeLogConnection,
+) -> None:
+    """마감이 바뀌면 이미 넣은 일정의 시각을 고친다 — 새 일정을 만들지 않는다(S17)."""
+    moved_to = NOW + timedelta(days=6)
+    lms.changes["course-db"] = AssignmentChanges(
+        due_changed=[SavedAssignment("a-1", "실습 2주차 결과 제출", moved_to)]
+    )
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습 2주차 결과 제출"}
+    calendar.events["a-1"] = CalendarEventView(
+        id=EVENT_ROW,
+        provider="google",
+        external_event_id="gcal-1",
+        title="[과제] 데이터베이스 · 실습 2주차 결과 제출",
+        starts_at=NOW,
+        all_day=False,
+    )
+    insert = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "new"}))
+    patch = canvas.patch(f"{GOOGLE}/calendars/primary/events/gcal-1").mock(
+        return_value=httpx.Response(200, json={"id": "gcal-1"})
+    )
+
+    client.post(SYNC)
+    assert patch.called and not insert.called
+    assert calendar.moved and calendar.moved[0][0] == EVENT_ROW
+    output = log.outputs()["save_lms_sync"]
+    assert (output["calendar_events"], output["calendar_moved"]) == (0, 1)
+
+
+def test_a_changed_deadline_without_an_event_adds_nothing(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter, log: FakeLogConnection
+) -> None:
+    """캘린더에 넣지 않았던 과제는 마감이 바뀌어도 새로 넣지 않는다(학생이 지웠을 수 있다)."""
+    lms.changes["course-db"] = AssignmentChanges(
+        due_changed=[SavedAssignment("a-1", "실습", NOW + timedelta(days=6))]
+    )
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습"}
+    insert = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    client.post(SYNC)
+    assert not insert.called
+    assert "save_lms_sync" in log.tools()  # 터지지 않고 끝까지 갔다
+
+
+def test_a_deadline_that_disappeared_moves_nothing(
+    client: TestClient,
+    lms: FakeLms,
+    calendar: FakeCalendar,
+    canvas: respx.MockRouter,
+    log: FakeLogConnection,
+) -> None:
+    """마감이 사라진 과제(due_at이 null로 바뀜)는 일정을 고치지 않는다."""
+    lms.changes["course-db"] = AssignmentChanges(due_changed=[SavedAssignment("a-1", "실습", None)])
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습"}
+    calendar.events["a-1"] = CalendarEventView(
+        id=EVENT_ROW,
+        provider="google",
+        external_event_id="gcal-1",
+        title="[과제] 데이터베이스 · 실습",
+        starts_at=NOW,
+        all_day=False,
+    )
+    patch = canvas.patch(f"{GOOGLE}/calendars/primary/events/gcal-1").mock(
+        return_value=httpx.Response(200, json={"id": "gcal-1"})
+    )
+
+    client.post(SYNC)
+    assert not patch.called
+    assert calendar.moved == []
+    # 할 일이 없으면 캘린더 단계 자체를 열지 않는다(토큰을 꺼내 볼 이유가 없다)
+    assert "register_calendar" not in log.tools()
+
+
+def test_an_assignment_already_in_the_calendar_is_not_added_twice(
+    client: TestClient, lms: FakeLms, calendar: FakeCalendar, canvas: respx.MockRouter
+) -> None:
+    """앞선 동기화가 이미 넣었다(자리에 Google 번호가 붙어 있다). 또 부르지 않는다."""
+    lms.changes["course-db"] = _new_assignment()
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습 2주차 결과 제출"}
+    calendar.events["a-1"] = CalendarEventView(
+        id=EVENT_ROW,
+        provider="google",
+        external_event_id="gcal-1",
+        title="[과제] 데이터베이스 · 실습 2주차 결과 제출",
+        starts_at=NOW,
+        all_day=False,
+    )
+    insert = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    client.post(SYNC)
+    assert not insert.called
+    assert calendar.attached == []
+
+
+def test_an_event_the_student_deleted_is_not_brought_back(
+    client: TestClient, lms: FakeLms, calendar: FakeCalendar, canvas: respx.MockRouter
+) -> None:
+    lms.changes["course-db"] = AssignmentChanges(
+        due_changed=[SavedAssignment("a-1", "실습", NOW + timedelta(days=6))]
+    )
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습"}
+    calendar.events["a-1"] = CalendarEventView(
+        id=EVENT_ROW,
+        provider="google",
+        external_event_id="gcal-1",
+        title="[과제] 데이터베이스 · 실습",
+        starts_at=NOW,
+        all_day=False,
+    )
+    canvas.patch(f"{GOOGLE}/calendars/primary/events/gcal-1").mock(
+        return_value=httpx.Response(404, json={})
+    )
+    insert = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "new"}))
+
+    client.post(SYNC)
+    assert not insert.called
+    assert calendar.attached == []
+
+
+def test_a_google_outage_does_not_fail_the_sync(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter, log: FakeLogConnection
+) -> None:
+    """과제·주차 자료는 이미 저장했다. 캘린더만 다음 동기화로 미룬다."""
+    lms.changes["course-db"] = _new_assignment()
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습"}
+    canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(503, json={}))
+
+    assert client.post(SYNC).status_code == 202
+    assert lms.synced_at == NOW
+    assert log.outputs()["save_lms_sync"]["calendar_events"] == 0
+
+
+def test_a_token_refresh_failure_does_not_fail_the_sync(
+    client: TestClient,
+    lms: FakeLms,
+    calendar: FakeCalendar,
+    canvas: respx.MockRouter,
+    log: FakeLogConnection,
+) -> None:
+    """Google 토큰 갱신이 막혀도(502) 과제·자료는 저장되고 동기화는 성공이다.
+
+    액세스 토큰은 1시간, 배치는 30분이라 갱신 경로는 자주 탄다. 여기서 터지면 다 받아 놓고도
+    학생 화면에는 "LMS 자료를 가져오지 못했어요"가 뜬다.
+    """
+    calendar.expires_in = timedelta(0)  # 만료됐다 → 갱신 경로
+    canvas.post(f"{GOOGLE}/token").mock(return_value=httpx.Response(503, json={}))
+    insert = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "x"}))
+    lms.changes["course-db"] = _new_assignment()
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습"}
+
+    client.post(SYNC)
+    assert not insert.called
+    output = log.outputs()["save_lms_sync"]  # 저장 단계가 있다 = 동기화는 끝까지 갔다
+    assert (output["new"], output["calendar_events"]) == (1, 0)
+    assert log.outputs()["register_calendar"] == {"skipped": True}
+
+
+def test_the_next_sync_retries_what_google_refused(
+    client: TestClient,
+    lms: FakeLms,
+    calendar: FakeCalendar,
+    canvas: respx.MockRouter,
+    log: FakeLogConnection,
+) -> None:
+    """앞 동기화에서 Google이 막혀 자리만 남은 과제를, 변화가 없는 다음 동기화가 다시 넣는다."""
+    calendar.pending = [
+        AssignmentDeadline("a-1", "실습 2주차 결과 제출", "데이터베이스", NOW + timedelta(days=4))
+    ]
+    calendar.events["a-1"] = CalendarEventView(
+        id=EVENT_ROW,
+        provider="google",
+        external_event_id=None,  # 자리는 잡았는데 Google에 못 넣었다
+        title="[과제] 데이터베이스 · 실습 2주차 결과 제출",
+        starts_at=NOW,
+        all_day=False,
+    )
+    route = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "gcal-1"}))
+
+    client.post(SYNC)  # 이번 동기화에는 새 과제도 마감 변경도 없다
+    assert route.called
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["summary"] == "[과제] 데이터베이스 · 실습 2주차 결과 제출"
+    assert sent["id"] == EVENT_ROW.replace(
+        "-", ""
+    )  # 같은 자리 = 같은 번호. 일정이 둘로 늘지 않는다
+    assert calendar.attached == [(EVENT_ROW, EVENT_ROW.replace("-", ""))]
+    assert log.outputs()["save_lms_sync"]["calendar_events"] == 1
+
+
+def test_an_assignment_in_this_round_is_not_retried_twice(
+    client: TestClient, lms: FakeLms, calendar: FakeCalendar, canvas: respx.MockRouter
+) -> None:
+    """이번에 새로 들어온 과제가 줍는 목록에도 있으면 한 번만 넣는다."""
+    lms.changes["course-db"] = _new_assignment()
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습 2주차 결과 제출"}
+    calendar.pending = [
+        AssignmentDeadline("a-1", "실습 2주차 결과 제출", "데이터베이스", NOW + timedelta(days=4))
+    ]
+    route = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "gcal-1"}))
+
+    client.post(SYNC)
+    assert len(route.calls) == 1
+
+
+def test_an_assignment_that_came_back_with_a_new_deadline_moves(
+    client: TestClient,
+    lms: FakeLms,
+    calendar: FakeCalendar,
+    canvas: respx.MockRouter,
+    log: FakeLogConnection,
+) -> None:
+    """내렸다 다시 올린 과제는 "새 과제"로 들어오지만 일정은 이미 있다. 마감이 다르면 고친다."""
+    lms.changes["course-db"] = _new_assignment()  # 마감 NOW+4일
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습 2주차 결과 제출"}
+    calendar.events["a-1"] = CalendarEventView(
+        id=EVENT_ROW,
+        provider="google",
+        external_event_id="gcal-1",
+        title="[과제] 데이터베이스 · 실습 2주차 결과 제출",
+        starts_at=NOW,  # 옛 마감
+        all_day=False,
+    )
+    insert = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "x"}))
+    patch = canvas.patch(f"{GOOGLE}/calendars/primary/events/gcal-1").mock(
+        return_value=httpx.Response(200, json={"id": "gcal-1"})
+    )
+
+    client.post(SYNC)
+    assert not insert.called
+    assert patch.called
+    sent = json.loads(patch.calls[0].request.content)
+    assert sent["end"]["dateTime"] == (NOW + timedelta(days=4)).astimezone(KST).isoformat()
+    assert log.outputs()["save_lms_sync"]["calendar_moved"] == 1
+
+
+def test_the_event_ends_at_the_deadline_and_lasts_an_hour(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    """자동 등록도 "마감 시각으로 끝나는 1시간, KST"다(명세 7장)."""
+    due = NOW + timedelta(days=4)
+    lms.changes["course-db"] = _new_assignment()
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습"}
+    route = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "gcal-1"}))
+
+    client.post(SYNC)
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["end"]["dateTime"] == due.astimezone(KST).isoformat()
+    assert sent["start"]["dateTime"] == (due - timedelta(hours=1)).astimezone(KST).isoformat()
+    assert sent["start"]["timeZone"] == "Asia/Seoul"
+
+
+def test_an_event_gone_from_google_410_is_not_brought_back(
+    client: TestClient, lms: FakeLms, calendar: FakeCalendar, canvas: respx.MockRouter
+) -> None:
+    """410(완전히 지움)도 404와 같다 — 학생이 지운 일정은 되살리지 않는다."""
+    lms.changes["course-db"] = AssignmentChanges(
+        due_changed=[SavedAssignment("a-1", "실습", NOW + timedelta(days=6))]
+    )
+    lms.titles = {"a-1": "[과제] 데이터베이스 · 실습"}
+    calendar.events["a-1"] = CalendarEventView(
+        id=EVENT_ROW,
+        provider="google",
+        external_event_id="gcal-1",
+        title="[과제] 데이터베이스 · 실습",
+        starts_at=NOW,
+        all_day=False,
+    )
+    canvas.patch(f"{GOOGLE}/calendars/primary/events/gcal-1").mock(
+        return_value=httpx.Response(410, json={})
+    )
+    insert = canvas.post(INSERT_EVENT).mock(return_value=httpx.Response(200, json={"id": "x"}))
+
+    client.post(SYNC)
+    assert not insert.called
+    assert calendar.moved == []
