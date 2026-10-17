@@ -133,7 +133,7 @@ def inspect_syllabus(data: bytes) -> Inspected:
             "강의계획서는 PDF만 올릴 수 있어요. 포털 계획서를 "
             f"PDF로 저장해서 올려 주세요({SYLLABUS_MAX_PAGES}쪽까지).",
         )
-    pages = _pdf_pages(data)
+    pages = _pdf_pages(data, advice="포털 계획서를 브라우저에서 PDF로 저장해 올려 주세요.")
     if pages > SYLLABUS_MAX_PAGES:
         raise ApiError(
             413,
@@ -173,16 +173,13 @@ def pdf_text(data: bytes, *, max_chars: int = PDF_TEXT_MAX_CHARS) -> str:
     return "\n".join(found)[:max_chars]
 
 
-def _pdf_pages(data: bytes) -> int:
+def _pdf_pages(data: bytes, *, advice: str = "사진으로 찍어서 올려 주세요.") -> int:
     try:
         return len(PdfReader(io.BytesIO(data)).pages)
     except (PdfReadError, ValueError, OSError) as exc:
-        # 앞 5바이트는 %PDF-인데 안이 깨졌다. 쪽수를 모르면 2쪽 제한을 지킬 수 없어 받지 않는다
-        raise ApiError(
-            400,
-            "UNSUPPORTED_FILE_TYPE",
-            "PDF를 읽지 못했어요. 사진으로 찍어서 올려 주세요.",
-        ) from exc
+        # 앞 5바이트는 %PDF-인데 안이 깨졌다. 쪽수를 모르면 쪽 제한을 지킬 수 없어 받지 않는다.
+        # 무엇을 하면 되는지는 종류마다 다르다 — 계획서는 사진을 받지 않는다
+        raise ApiError(400, "UNSUPPORTED_FILE_TYPE", f"PDF를 읽지 못했어요. {advice}") from exc
 
 
 def clean_name(name: str | None) -> str | None:

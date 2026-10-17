@@ -240,6 +240,38 @@ export function addStoredManualTask(
   return task;
 }
 
+// 계획서 일정을 확정했다(F-14). 같은 일정의 할 일은 하나이고, 체크를 풀면 지운다.
+// 만들었으면 true다(실제 서버의 planner_tasks_created와 같은 뜻)
+export function syncStoredSyllabusTask(
+  itemId: string,
+  title: string,
+  dueDate: string,
+  course: string | null,
+  selected: boolean,
+): boolean {
+  const found = plannerState.items.find((task) => task.link.id === itemId);
+  if (!selected) {
+    if (found && !found.is_done) {
+      plannerState.items = plannerState.items.filter((task) => task !== found);
+    }
+    return false;
+  }
+  if (found) {
+    found.title = title;
+    found.due_date = dueDate;
+    return false;
+  }
+  plannerState.items.push({
+    id: `syllabus-task-${itemId}`,
+    title,
+    due_date: dueDate,
+    is_done: false,
+    source: "syllabus",
+    link: { type: "syllabus_item", id: itemId, title: course, category: null },
+  });
+  return true;
+}
+
 export function updateStoredManualTask(
   id: string,
   title: string,

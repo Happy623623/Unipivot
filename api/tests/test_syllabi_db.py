@@ -997,3 +997,24 @@ async def test_a_fixed_time_moves_the_google_event_and_our_row(settings: Setting
     assert rows[0]["title"] == "[시험] 데이터베이스 · 중간고사(온라인)"
     assert rows[0]["starts_at"].astimezone(KST).isoformat() == "2026-10-22T13:00:00+09:00"
     assert rows[0]["external_event_id"] == event_id  # 같은 일정을 고쳤다
+
+
+async def test_the_course_detail_carries_the_syllabus_id(settings: Settings) -> None:
+    """확인 전 일정이 남으면 과목 상세의 `syllabus_id`로 확인 화면을 다시 연다(명세 9장)."""
+    async with committed() as world:
+        async with confirmed(settings, world) as (client, syllabus_id, items):
+            http = client(world.user)
+            course = world.courses["202620HY23525_데이터베이스"]
+            detail = (await http.get(f"/api/v1/lms/courses/{course}")).json()
+            # 그 번호로 바로 확정할 수 있다(다시 올리지 않는다)
+            confirm = await http.post(
+                f"/api/v1/syllabi/{detail['course']['syllabus_id']}/confirm",
+                json={"items": _chosen(items, "중간고사")},
+            )
+            other = client(world.other)
+            mine = (await other.get(f"/api/v1/lms/courses/{course}")).status_code
+
+    assert detail["course"]["has_syllabus"] is True
+    assert detail["course"]["syllabus_id"] == syllabus_id
+    assert confirm.status_code == 200, confirm.text
+    assert mine == 404  # 남의 과목은 상세도 못 본다
