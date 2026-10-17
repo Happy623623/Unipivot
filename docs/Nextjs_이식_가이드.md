@@ -542,6 +542,10 @@ npm run build      # 타입 검사 포함
 | `uploadPosterFile` | `POST /files` | 실제 API 연결(10/15) · multipart, 같은 파일이면 200 `reused` |
 | `extractPoster` | `POST /posters/extract` → `waitForRun` | 실제 API 연결(10/15) · 처리 과정은 실행의 steps를 그대로 보여 준다. run_id도 함께 돌려준다(등록에 쓴다) |
 | `registerPosterOpportunity` | `POST /posters/confirm` | 실제 API 연결(10/15) · run_id와 고친 draft를 보낸다. 중복이면 `merged: true`와 기존 공고 |
+| `uploadSyllabusFile` (새로) | `POST /files` (`kind=syllabus`) | 실제 API 연결(10/17) · 글자가 있는 10쪽 이하 PDF만 받는다 |
+| `extractSyllabus` (새로) | `POST /syllabi/extract` → `waitForRun` | 실제 API 연결(10/17) · 이미 계획서가 있는 과목은 `409 SYLLABUS_EXISTS`다. 화면이 "바꾸기"를 물어 `replace: true`로 다시 부른다 |
+| `confirmSyllabus` (새로) | `POST /syllabi/{id}/confirm` | 실제 API 연결(10/17) · 확인 화면의 일정을 모두 보내고 고른 것만 플래너·캘린더로 간다. 시각은 오프셋(`+09:00`)을 붙여 보낸다 |
+| `registerSyllabusCalendarEvent` (새로) | `POST /calendar/events` (`syllabus_item_id`) | 실제 API 연결(10/17) · 확정한 뒤에 캘린더에 넣는 길(연결 없이 확정한 학생) |
 | `getLmsConnection` · `connectLms` · `disconnectLms` | `GET` · `POST` · `DELETE /lms/connection` | 실제 API 연결(10/17) · 연결이 없으면 404라 '연결 안 됨'으로 바꿔 준다. `connectLms`는 연결 결과(`LmsConnectResult`)를 주고 첫 동기화까지 기다린다 |
 | `syncLmsNow` (새로) | `POST /lms/sync` → `waitForRun` | 실제 API 연결(10/17) · 학업 화면을 열 때 한 번. 5분 안에 받았으면 서버가 건너뛰고 false다 |
 | `getCourses` · `getCourse` | `GET /lms/courses` · `GET /lms/courses/{id}` | 실제 API 연결(10/17) · 상세를 열면 서버가 '봤다'고 적어 새 자료 수가 줄어든다 |

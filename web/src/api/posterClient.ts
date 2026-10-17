@@ -6,7 +6,7 @@ import { registerStoredPoster } from "@/mocks/posterStore";
 import type {
   PosterConfirmResult,
   PosterExtractResult,
-  PosterUploadResult,
+  FileUploadResult,
   ProcessStep,
 } from "@/types/api";
 
@@ -31,7 +31,7 @@ export const EXTRACT_STEPS = ["포스터에서 글자·날짜 읽기"];
 export const SHOW_MOCK_STEPS = USE_MOCKS;
 
 // 포스터 파일 올리기 (POST /files). 목 모드는 올린 척하고 file_id를 지어낸다
-export function uploadPosterFile(file: File): Promise<PosterUploadResult> {
+export function uploadPosterFile(file: File): Promise<FileUploadResult> {
   if (USE_MOCKS) {
     if (getDevScenario() === "upload_limit") {
       return rejectAfter(
@@ -53,7 +53,7 @@ export function uploadPosterFile(file: File): Promise<PosterUploadResult> {
   const form = new FormData();
   form.append("file", file);
   form.append("kind", "poster");
-  return apiFetch<PosterUploadResult>("/files", { method: "POST", body: form });
+  return apiFetch<FileUploadResult>("/files", { method: "POST", body: form });
 }
 
 export function getPosterPreviewState(): Promise<PosterPreviewState> {

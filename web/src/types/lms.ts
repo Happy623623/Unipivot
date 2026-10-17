@@ -1,6 +1,42 @@
 // LMS·강의자료 타입 (API 명세 8·9장). 화면은 @/types/api에서 가져간다
 import type { RunStatus } from "@/types/api";
 
+// 계획서에서 뽑는 일정 종류 (ERD syllabus_item_type). 일반 강의 주차는 넣지 않는다
+export type SyllabusItemType = "midterm" | "final" | "presentation" | "assignment" | "etc";
+
+// 계획서 일정 하나 (POST /syllabi/extract 결과·과목 상세 공통, API 명세 8장)
+export interface SyllabusItemView {
+  id: string;
+  item_type: SyllabusItemType;
+  title: string;
+  starts_at: string | null; // KST 오프셋. 날짜만 적힌 일정은 그날 09:00이다
+  is_confirmed: boolean;
+}
+
+// GET /runs/{id}의 계획서 추출 결과 (API 명세 8장)
+export interface SyllabusExtractResult {
+  kind: "syllabus_extract";
+  syllabus_id: string;
+  course_name: string | null;
+  items: SyllabusItemView[];
+}
+
+// POST /syllabi/{id}/confirm — 확인 화면이 보내는 일정 하나
+export interface SyllabusConfirmItem {
+  id: string;
+  title: string;
+  starts_at?: string | null; // 비우면 저장해 둔 값을 그대로 둔다. 오프셋을 함께 보낸다
+  selected: boolean;
+}
+
+// POST /syllabi/{id}/confirm 결과
+export interface SyllabusConfirmResult {
+  confirmed: number;
+  planner_tasks_created: number;
+  calendar_events_created: number;
+  calendar_events_moved: number;
+}
+
 // GET /lms/connection
 export interface LmsConnection {
   status: "active" | "error" | "disconnected";
@@ -91,6 +127,7 @@ export interface CourseDetail {
     short_name: string;
     html_url: string;
     has_syllabus: boolean;
+    syllabus_id: string | null; // 확인 전 일정을 다시 열 때 쓴다(F-14)
     portal_syllabus_url: string | null;
   }; // html_url: 과목 홈 (API v0.3 보완)
   // LMS가 비워 보내는 칸은 null이 올 수 있다(마감 없는 과제, 주차 이름·링크 없는 항목)
@@ -118,13 +155,7 @@ export interface CourseDetail {
     posted_at: string | null;
     opportunity_id: string | null;
   }[];
-  syllabus_items: {
-    id: string;
-    item_type: "midterm" | "final" | "presentation" | "assignment" | "etc";
-    title: string;
-    starts_at: string | null;
-    is_confirmed: boolean;
-  }[];
+  syllabus_items: SyllabusItemView[];
   materials: {
     file_id: string;
     original_name: string | null;

@@ -84,6 +84,7 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
       short_name: course.short_name,
       html_url: `https://lms.example.edu/courses/${course.canvas_course_id}`,
       has_syllabus: course.has_syllabus,
+      syllabus_id: course.has_syllabus ? `mock-syllabus-${course.id}` : null,
       portal_syllabus_url: course.portal_syllabus_url,
     },
     assignments: prefixes.map((title, assignmentIndex) => ({
@@ -128,29 +129,33 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
         opportunity_id: course.id === "database" ? "database-hackathon" : null,
       },
     ],
-    syllabus_items: [
-      {
-        id: `${course.id}-s1`,
-        item_type: "midterm",
-        title: "중간고사",
-        starts_at: "2026-10-22T10:00:00+09:00",
-        is_confirmed: true,
-      },
-      {
-        id: `${course.id}-s2`,
-        item_type: "assignment",
-        title: "Homework 4",
-        starts_at: "2026-10-13T23:59:00+09:00",
-        is_confirmed: true,
-      },
-      {
-        id: `${course.id}-s3`,
-        item_type: "presentation",
-        title: "팀 발표",
-        starts_at: "2026-11-12T14:00:00+09:00",
-        is_confirmed: false,
-      },
-    ],
+    // 계획서를 올리지 않은 과목은 일정도 없다(서버는 계획서 행이 있을 때만 준다). "데이터베이스"가
+    // 그 상태라 목 모드에서 올리기 → 확인 → 확정 흐름을 그대로 돈다
+    syllabus_items: course.has_syllabus
+      ? [
+          {
+            id: `${course.id}-s1`,
+            item_type: "midterm",
+            title: "중간고사",
+            starts_at: "2026-10-22T10:00:00+09:00",
+            is_confirmed: true,
+          },
+          {
+            id: `${course.id}-s2`,
+            item_type: "assignment",
+            title: "Homework 4",
+            starts_at: "2026-10-13T23:59:00+09:00",
+            is_confirmed: true,
+          },
+          {
+            id: `${course.id}-s3`,
+            item_type: "presentation",
+            title: "팀 발표",
+            starts_at: "2026-11-12T14:00:00+09:00",
+            is_confirmed: false,
+          },
+        ]
+      : [],
     materials: [
       {
         file_id: `${course.id}-material`,

@@ -233,7 +233,7 @@ export interface Run<R = unknown> {
   error: { code: string; message: string } | null;
 }
 // POST /files (API 명세 6장). 같은 파일을 다시 올리면 reused가 true이고 file_id는 처음 것이다
-export interface PosterUploadResult {
+export interface FileUploadResult {
   file_id: string;
   kind: "poster" | "syllabus" | "lecture_material";
   page_count: number | null;

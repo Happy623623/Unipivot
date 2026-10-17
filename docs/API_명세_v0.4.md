@@ -62,6 +62,8 @@
 >
 > v0.4 보강(10/17, 계획서 확정): `POST /syllabi/{id}/confirm` 규칙(고른 것만 플래너·캘린더, 뺀 것은 끝내지 않은 할 일만 지움, 연결이 없으면 아무것도 바꾸지 않고 409, 시간대 없는 시각은 KST), 응답에 `calendar_events_moved`, 캘린더 대상에 `syllabus_item_id`(확인한 일정만, 시작 시각 기준 1시간)
 >
+> v0.4 보강(10/17, 계획서 화면): 과목 상세에 `course.syllabus_id`(확인 전 일정을 다시 열 때 쓴다), 깨진 PDF 안내는 올린 종류에 맞춘다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -592,7 +594,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 - 같은 사용자가 같은 파일(sha256)을 같은 kind로 다시 올리면 새로 저장하지 않고 `200`과 기존 `file_id`를 준다. 다섯 필드는 두 경우 모두 있다
 - 에러: `FILE_TOO_LARGE`(413), `PAGE_LIMIT_EXCEEDED`(413), `UNSUPPORTED_FILE_TYPE`(400), `DAILY_UPLOAD_LIMIT`(429, `details.reset_at`은 한도가 풀리는 KST 내일 0시), `STORAGE_API_ERROR`(502)
-- 허용 형식: poster는 jpg·png·webp와 **2쪽 이하 PDF**, syllabus는 **글자가 있는 10쪽 이하 PDF**, lecture_material은 pdf다. 쪽수를 넘기면 `413 PAGE_LIMIT_EXCEEDED`. 크기는 20MB까지다
+- 허용 형식: poster는 jpg·png·webp와 **2쪽 이하 PDF**, syllabus는 **글자가 있는 10쪽 이하 PDF**, lecture_material은 pdf다. 쪽수를 넘기면 `413 PAGE_LIMIT_EXCEEDED`. 크기는 20MB까지다. 안이 깨진 PDF는 `400 UNSUPPORTED_FILE_TYPE`이고, 무엇을 하면 되는지는 종류마다 다르다(포스터는 사진으로 다시 찍기, 계획서는 포털에서 PDF로 다시 저장하기)
 - 계획서(syllabus)는 **PDF에서 글자를 뽑을 수 있어야** 받는다. 사진을 PDF로 감싼 파일은 `400 UNSUPPORTED_FILE_TYPE`이고, 포털 계획서를 브라우저에서 PDF로 저장해 올리라고 안내한다
 - 형식은 파일 이름·Content-Type이 아니라 **앞부분 바이트**로 가린다. 이름만 `.jpg`로 바꾼 파일은 `400 UNSUPPORTED_FILE_TYPE`이다
 - HEIC(아이폰 기본 사진 형식)는 **아직 받지 않는다**. `400 UNSUPPORTED_FILE_TYPE`과 함께 JPG로 바꿔 올리라고 안내한다(W6 2차 이후에 연다)
@@ -1048,7 +1050,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 
 ```json
 {
-  "course": { "id": "uuid", "short_name": "선형대수", "has_syllabus": true, "portal_syllabus_url": "https://portal.hanyang.ac.kr/...", "html_url": "https://learning.hanyang.ac.kr/courses/..." },
+  "course": { "id": "uuid", "short_name": "선형대수", "has_syllabus": true, "syllabus_id": "uuid", "portal_syllabus_url": "https://portal.hanyang.ac.kr/...", "html_url": "https://learning.hanyang.ac.kr/courses/..." },
   "assignments": [ { "id": "uuid", "title": "Homework 4", "due_at": "2026-10-13T23:59:00+09:00", "submission_state": "unsubmitted", "html_url": "https://learning.hanyang.ac.kr/..." } ],
   "module_items": [ { "id": "uuid", "module_name": "8주차", "title": "08 - Eigenvalues", "item_type": "ExternalTool", "html_url": "https://learning.hanyang.ac.kr/...", "is_new": true, "uploaded_file_id": null } ],
   "announcements": [ { "id": "uuid", "title": "강의실 변경 안내", "summary": "다음 주 수업은 다른 강의실에서 한다", "category": "schedule_change", "posted_at": "2026-10-04T14:00:00+09:00", "opportunity_id": null } ],
@@ -1064,6 +1066,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - 순서는 서버가 정한다(DB 정렬 규칙에 맡기지 않는다): 과제는 마감이 가까운 순(마감 없는 것은 뒤), 주차 항목은 **새 항목 먼저** 다음 주차·제목 순, 공지는 올린 순(최신 먼저), 계획서 일정은 날짜 순, 내 자료는 올린 순(최신 먼저). 값이 같으면 id로 가른다
 - `module_items[].item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`다(녹화에 `File`은 없었다). `module_name`·`html_url`·`item_type`은 null일 수 있다
 - `materials[].status`는 요약 상태다. 파일만 올리고 아직 요약하지 않았으면 `pending`이다
+- `course.syllabus_id`는 그 과목 계획서의 번호다(없으면 null, `has_syllabus`와 같은 뜻이다). 뽑아 두고 **확인하지 않은 일정**(`is_confirmed` false)이 남았을 때, 계획서를 다시 올리지 않고 이 번호로 `POST /syllabi/{id}/confirm`을 부르라고 준다
 
 ### `GET /lms/assignments`
 
