@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import count
 from typing import Any
 
 import httpx
@@ -30,15 +31,32 @@ from app.repositories.lms import (
     AssignmentChanges,
     Connection,
     CourseRow,
+    ModuleChanges,
     SavedAssignment,
+    SavedItem,
     get_lms_repo,
+    update_scope,
 )
-from app.repositories.notifications import AssignmentNotice
+from app.repositories.notifications import AssignmentNotice, MaterialNotice
+from app.repositories.opportunities import Cursor
 from app.repositories.runs import get_run_repo
-from app.schemas.lms import AssignmentCourse, AssignmentItem, LmsSyncResult, SyncCounts
+from app.schemas.lms import (
+    AssignmentCourse,
+    AssignmentItem,
+    LmsSyncResult,
+    ModuleItemUpdate,
+    SyncCounts,
+)
 from tests.conftest import USER_ID, make_token
 from tests.fakes import FakeLogConnection
-from tests.lms_samples import COURSES, DB_ASSIGNMENTS, ML_ASSIGNMENTS
+from tests.lms_samples import (
+    COURSES,
+    DB_ASSIGNMENTS,
+    DB_MODULES,
+    ML_ASSIGNMENTS,
+    ML_MODULES,
+    MODULE_WITHOUT_ITEMS,
+)
 from tests.prepare_fakes import FakeRunRepository, run_row
 
 SYNC = "/api/v1/lms/sync"
@@ -47,6 +65,7 @@ BASE = "https://lms.test"
 TOKEN = "18742~pAtB1g3TestTokenValue0000000000"
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=UTC)  # 2026-10-16 12:00 KST
 INTERNAL_KEY = "test-internal-key"
+FEED_ITEM = "22222222-2222-4222-8222-222222222222"  # 커서는 uuid만 받는다(decode_cursor)
 JOB = "/api/v1/internal/jobs/lms-sync"
 DB_COURSE = CourseRow(id="course-db", canvas_course_id=214023, short_name="데이터베이스")
 ML_COURSE = CourseRow(id="course-ml", canvas_course_id=216515, short_name="기계학습")
@@ -64,6 +83,11 @@ class FakeLms:
     synced_at: datetime | None = None
     error: str | None = None
     claims: list[str] = field(default_factory=list)
+    items: list[tuple[int, list[Any]]] = field(default_factory=list)
+    feed_calls: list[tuple[datetime, tuple[str, ...], str | None, Any]] = field(
+        default_factory=list
+    )
+    module_changes: dict[int, ModuleChanges] = field(default_factory=dict)
     rows: dict[str, Connection] = field(default_factory=dict)
     users: list[str] = field(default_factory=list)
     before: datetime | None = None
@@ -111,6 +135,13 @@ class FakeLms:
         self.saved.append((course_id, items))
         return self.changes.get(course_id, AssignmentChanges())
 
+    async def save_module_items(
+        self, user_id: str, canvas_course_id: int, items: list[Any], *, now: datetime
+    ) -> ModuleChanges:
+        assert user_id == USER_ID or user_id in self.users
+        self.items.append((canvas_course_id, items))
+        return self.module_changes.get(canvas_course_id, ModuleChanges())
+
     async def sync_planner(self, user_id: str, changes: AssignmentChanges, *, now: datetime) -> int:
         self.planned.append(changes)
         return len(changes.created)
@@ -124,6 +155,33 @@ class FakeLms:
     async def connected_users(self, *, before: datetime, limit: int) -> list[str]:
         self.before = before
         return list(self.users)
+
+    async def updates(
+        self,
+        user_id: str,
+        *,
+        since: datetime,
+        now: datetime,
+        kinds: list[str],
+        course_id: str | None = None,
+        cursor: Any = None,
+        limit: int = 50,
+    ) -> tuple[list[Any], Any]:
+        assert user_id == USER_ID
+        self.feed_calls.append((since, tuple(kinds), course_id, cursor))
+        item = ModuleItemUpdate(
+            id=FEED_ITEM,
+            course=AssignmentCourse(id=DB_COURSE.id, short_name=DB_COURSE.short_name),
+            module_name="3주차",
+            title="3주차 강의",
+            item_type="ExternalTool",
+            html_url=f"{BASE}/courses/214023/modules/items/8569302",
+            first_seen_at=NOW.astimezone(KST),
+            uploaded_file_id=None,
+        )
+        if cursor is not None:  # 둘째 쪽은 한 줄만 주고 끝낸다
+            return [item], None
+        return [item], Cursor(scope=update_scope(kinds, course_id, since), value=NOW, id=FEED_ITEM)
 
     async def assignments(
         self, user_id: str, *, state: str = "open", course_id: str | None = None
@@ -147,8 +205,16 @@ class FakeLms:
 @dataclass
 class FakeNotes:
     added: list[AssignmentNotice] = field(default_factory=list)
+    materials: list[MaterialNotice] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
     muted: bool = False
+
+    async def add_material_notices(
+        self, canvas_course_id: int, notices: Sequence[MaterialNotice], *, now: datetime
+    ) -> int:
+        assert canvas_course_id
+        self.materials += list(notices)
+        return len(notices)
 
     async def add_assignment_notices(
         self, user_id: str, notices: Sequence[AssignmentNotice], *, now: datetime
@@ -229,6 +295,12 @@ def canvas() -> Iterator[respx.MockRouter]:
         router.get(f"{BASE}/api/v1/courses/216515/assignments").mock(
             return_value=httpx.Response(200, json=ML_ASSIGNMENTS)
         )
+        router.get(f"{BASE}/api/v1/courses/214023/modules").mock(
+            return_value=httpx.Response(200, json=DB_MODULES)
+        )
+        router.get(f"{BASE}/api/v1/courses/216515/modules").mock(
+            return_value=httpx.Response(200, json=ML_MODULES)
+        )
         yield router
 
 
@@ -255,7 +327,12 @@ def test_the_run_records_every_outside_call_as_a_tool(
 ) -> None:
     """외부 호출은 모두 실행 안의 도구로 남는다(api/CLAUDE.md). 토큰은 입력에 넣지 않는다."""
     client.post(SYNC)
-    assert log.tools() == ["fetch_lms_courses", "fetch_lms_assignments", "save_lms_sync"]
+    assert log.tools() == [
+        "fetch_lms_courses",
+        "fetch_lms_assignments",
+        "fetch_lms_modules",
+        "save_lms_sync",
+    ]
     assert TOKEN not in str(log.statements)  # 입력·출력에 토큰이 남지 않는다
 
 
@@ -472,6 +549,96 @@ def test_the_run_shows_the_sync_result(client: TestClient) -> None:
     }
 
 
+def test_it_saves_the_module_items_of_every_course(client: TestClient, lms: FakeLms) -> None:
+    client.post(SYNC)
+    saved = {course: [one.title for one in items] for course, items in lms.items}
+    assert saved == {
+        214023: ["3주차 강의", "3주차 강의", "3주차 퀴즈"],  # 제목이 같은 둘도 따로 저장된다
+        216515: ["3주차 과제 안내"],
+    }
+
+
+def test_a_new_module_item_becomes_a_notice(
+    client: TestClient, lms: FakeLms, notes: FakeNotes
+) -> None:
+    """명세 10장 예시와 같은 꼴: "기계학습 8주차 자료가 올라왔어요" + 항목 제목."""
+    lms.module_changes[216515] = ModuleChanges(
+        created=[SavedItem("item-1", "8주차", "08 - Ensemble Methods")]
+    )
+    client.post(SYNC)
+    assert len(notes.materials) == 1
+    notice = notes.materials[0]
+    assert notice.item_id == "item-1"
+    assert notice.title == "기계학습 8주차 자료가 올라왔어요"
+    assert notice.body == "08 - Ensemble Methods"
+
+
+def test_the_first_load_of_a_course_is_silent(
+    client: TestClient, lms: FakeLms, notes: FakeNotes
+) -> None:
+    """연결하고 처음 받으면 한 학기 분량(녹화 87건)이 모두 새 항목이다. 알림을 보내지 않는다."""
+    lms.module_changes[214023] = ModuleChanges(
+        created=[SavedItem("item-1", "1주차", "01 - 소개"), SavedItem("item-2", "2주차", "02")],
+        first_load=True,
+    )
+    client.post(SYNC)
+    assert notes.materials == []
+    assert [course for course, _ in lms.items] == [214023, 216515]  # 저장은 했다
+
+
+def test_the_result_counts_new_module_items(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection
+) -> None:
+    lms.module_changes[214023] = ModuleChanges(
+        created=[SavedItem("item-1", "1주차", "01"), SavedItem("item-2", "1주차", "02")],
+        first_load=True,  # 첫 수집이어도 수는 센다(알림만 안 보낸다)
+    )
+    client.post(SYNC)
+    assert log.outputs()["save_lms_sync"]["new_module_items"] == 2
+
+
+def test_a_course_whose_modules_fail_does_not_fail_the_sync(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    """과제는 받았는데 주차 항목만 못 받았다고 동기화를 실패로 적지 않는다."""
+    canvas.get(f"{BASE}/api/v1/courses/214023/modules").mock(
+        return_value=httpx.Response(500, json={})
+    )
+    client.post(SYNC)
+    assert [course for course, _ in lms.items] == [216515]
+    assert [course for course, _ in lms.saved] == ["course-db", "course-ml"]  # 과제는 둘 다
+    assert lms.synced_at == NOW
+
+
+def test_a_dead_token_while_reading_modules_stops_the_sync(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    canvas.get(f"{BASE}/api/v1/courses/214023/modules").mock(
+        return_value=httpx.Response(401, json={})
+    )
+    client.post(SYNC)
+    assert lms.error == "토큰이 만료되었거나 삭제되었어요."
+    assert lms.synced_at is None  # 저장까지 가지 않았다
+
+
+def test_items_that_did_not_come_inline_are_fetched(
+    client: TestClient, lms: FakeLms, canvas: respx.MockRouter
+) -> None:
+    """`include[]=items`로 항목이 오지 않은 모듈은 허용된 보충 경로로 따로 받는다(명세 9장)."""
+    canvas.get(f"{BASE}/api/v1/courses/214023/modules").mock(
+        return_value=httpx.Response(200, json=[MODULE_WITHOUT_ITEMS])
+    )
+    separate = canvas.get(f"{BASE}/api/v1/courses/214023/modules/2871999/items").mock(
+        return_value=httpx.Response(
+            200, json=[{"id": 999, "title": "5주차 강의", "type": "ExternalTool"}]
+        )
+    )
+    client.post(SYNC)
+    assert separate.called
+    saved = dict(lms.items)
+    assert [one.title for one in saved[214023]] == ["5주차 강의"]
+
+
 def test_a_sync_where_every_course_fails_is_not_a_success(
     client: TestClient, lms: FakeLms, canvas: respx.MockRouter
 ) -> None:
@@ -607,3 +774,97 @@ def test_the_batch_goes_on_after_one_user_fails(
 def test_the_batch_needs_the_service_key(client: TestClient) -> None:
     assert client.post(JOB).status_code == 403
     assert client.post(JOB, headers={"X-Internal-Key": "not-the-key"}).status_code == 403
+
+
+# ── 새 자료·과제 피드 (F-52) ────────────────────────────────────────────────
+
+UPDATES = "/api/v1/lms/updates"
+
+
+def test_the_feed_defaults_to_the_last_two_weeks(client: TestClient, lms: FakeLms) -> None:
+    response = client.get(UPDATES)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"][0] == {
+        "type": "module_item",
+        "id": FEED_ITEM,
+        "course": {"id": "course-db", "short_name": "데이터베이스"},
+        "module_name": "3주차",
+        "title": "3주차 강의",
+        "item_type": "ExternalTool",
+        "html_url": f"{BASE}/courses/214023/modules/items/8569302",
+        "first_seen_at": "2026-10-16T12:00:00+09:00",
+        "uploaded_file_id": None,
+    }
+    since, kinds, course, cursor = lms.feed_calls[0]
+    assert since == NOW - timedelta(days=14)
+    assert kinds == ("module_item", "assignment") and course is None and cursor is None
+
+
+def test_the_feed_passes_the_filters_through(client: TestClient, lms: FakeLms) -> None:
+    client.get(
+        UPDATES,
+        params={
+            "since": "2026-10-01T00:00:00+09:00",
+            "type": "module_item",
+            "lms_course_id": "11111111-1111-4111-8111-111111111111",
+        },
+    )
+    since, kinds, course, _ = lms.feed_calls[0]
+    assert since == datetime(2026, 9, 30, 15, 0, tzinfo=UTC)  # KST → UTC
+    assert kinds == ("module_item",)
+    assert course == "11111111-1111-4111-8111-111111111111"
+
+
+def test_the_feed_reads_the_next_page_without_since(client: TestClient, lms: FakeLms) -> None:
+    """`since`를 안 주면 기본값이 요청마다 달라진다. 그래도 다음 쪽을 부를 수 있어야 한다.
+
+    실제 시계는 요청마다 다르다(`datetime.now`). 테스트의 고정 시계로는 이 문제가 안 보여서,
+    이 테스트만 요청마다 1마이크로초씩 가는 시계를 쓴다.
+    """
+    ticking = count()
+    client.app.dependency_overrides[current_time] = (  # type: ignore[attr-defined]
+        lambda: NOW + timedelta(microseconds=next(ticking))
+    )
+    first = client.get(UPDATES).json()
+    assert first["next_cursor"]
+
+    second = client.get(UPDATES, params={"cursor": first["next_cursor"]})
+    assert second.status_code == 200
+    assert second.json()["next_cursor"] is None
+    # 둘째 쪽은 커서에 적힌 since를 그대로 쓴다(지금 - 14일을 다시 계산하지 않는다)
+    assert lms.feed_calls[1][0] == lms.feed_calls[0][0]
+    assert lms.feed_calls[1][3] is not None  # 커서를 그대로 저장소에 넘겼다
+
+
+def test_the_feed_refuses_a_cursor_from_another_list(client: TestClient) -> None:
+    first = client.get(UPDATES).json()
+    response = client.get(UPDATES, params={"cursor": first["next_cursor"], "type": "module_item"})
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_FAILED"
+    assert "cursor" in error["details"]["fields"]
+
+
+def test_the_feed_refuses_a_broken_cursor(client: TestClient) -> None:
+    assert client.get(UPDATES, params={"cursor": "커서가 아니다"}).status_code == 422
+
+
+def test_the_feed_refuses_an_unknown_kind(client: TestClient) -> None:
+    for value in ("", "nope", "module_item,nope", "MODULE_ITEM"):
+        response = client.get(UPDATES, params={"type": value})
+        assert response.status_code == 422, value
+        assert "type" in response.json()["error"]["details"]["fields"]
+
+
+def test_the_feed_accepts_announcements_but_has_none_yet(client: TestClient, lms: FakeLms) -> None:
+    """공지는 F-53이 채운다. 그때까지는 조건만 받아 두고 빈 목록이다."""
+    assert client.get(UPDATES, params={"type": "announcement"}).status_code == 200
+    assert lms.feed_calls[0][1] == ("announcement",)
+
+
+def test_the_feed_needs_a_login(settings: Settings, lms: FakeLms) -> None:
+    app = create_app(settings)
+    app.dependency_overrides[get_lms_repo] = lambda: lms
+    with TestClient(app) as anonymous:
+        assert anonymous.get(UPDATES).status_code == 401

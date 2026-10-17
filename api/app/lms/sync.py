@@ -11,7 +11,10 @@
 - 토큰이 막히면(401) 거기서 멈추고 연결을 `error`로 바꾼다. 화면이 다시 연결을 안내한다
 - 마지막 동기화가 5분 안이면 건너뛴다(명세 9장). 대시보드를 여러 번 열어도 LearningX를 또 부르지 않는다
 
-캘린더 등록은 아직 하지 않는다(사용자 구글 캘린더에 쓰는 일이라 따로 정한다). 주차 항목·공지는 F-52·F-53다.
+캘린더 등록은 아직 하지 않는다(사용자 구글 캘린더에 쓰는 일이라 따로 정한다). 과목 공지는 F-53이다.
+
+주차 항목(F-52)은 과목 공통이라 저장도 알림도 과목 단위다. 그 과목의 항목을 **이번에 처음** 받으면
+한 학기 분량이 모두 "새 항목"이라 알림을 보내지 않고 저장만 한다.
 """
 
 import logging
@@ -32,9 +35,21 @@ from app.eligibility import KST
 from app.errors import ApiError
 from app.lms.assignments import CanvasAssignment, assignments
 from app.lms.client import LearningXClient, LearningXError
+from app.lms.modules import CanvasModuleItem, module_items, needs_items
 from app.lms.service import API_ERROR, NOT_CONNECTED, TOKEN_EXPIRED, student_courses
-from app.repositories.lms import AssignmentChanges, CourseRow, LmsRepository, SavedAssignment
-from app.repositories.notifications import AssignmentNotice, NotificationRepository
+from app.repositories.lms import (
+    AssignmentChanges,
+    CourseRow,
+    LmsRepository,
+    ModuleChanges,
+    SavedAssignment,
+    SavedItem,
+)
+from app.repositories.notifications import (
+    AssignmentNotice,
+    MaterialNotice,
+    NotificationRepository,
+)
 from app.schemas.lms import SAVE_TOOL, SyncCounts, SyncResponse, SyncSkipped, SyncStarted
 
 logger = logging.getLogger(__name__)
@@ -45,6 +60,7 @@ BATCH_USERS = 50  # 배치 한 번에 보는 사용자 수 상한. 넘으면 다
 STOPPED = "동기화를 시작하지 못했어요. 잠시 후 다시 시도해 주세요."
 TOKEN_UNREADABLE = "저장한 토큰을 읽을 수 없어요. 다시 연결해 주세요."
 NEW_TITLE = "{course} 새 과제가 올라왔어요"
+MATERIAL_TITLE = "{course} {module} 자료가 올라왔어요"
 
 
 class StoredTokenUnreadable(Exception):
@@ -83,6 +99,7 @@ class SyncOutcome:
     created: int = 0
     due_changed: int = 0
     submitted: int = 0
+    new_items: int = 0  # 처음 본 주차 항목(F-52)
     notices: int = 0
     failed_courses: int = 0
 
@@ -218,11 +235,12 @@ class LmsSyncService:
             await repo.save_courses(job.user_id, courses, now=job.now)
             rows = await repo.active_courses(job.user_id)
         fetched, failed = await self._fetch_assignments(run, job, rows)
+        modules = await self._fetch_modules(run, job, rows)
         if rows and failed and not fetched:
             # 과목이 있는데 한 과목도 받지 못했다. 저장할 것도 없고 성공으로 적으면 안 된다
             # (`touch_synced`가 오류 표시를 지워 버린다). 다음 배치에서 다시 시도한다
             raise ApiError(502, "LMS_API_ERROR", API_ERROR)
-        outcome = await self._save(job, fetched, failed=failed)
+        outcome = await self._save(job, fetched, modules, failed=failed)
         async with run.tool(SAVE_TOOL) as call:
             # `GET /runs/{id}`가 이 출력으로 결과를 만든다(repositories/runs.py)
             call.output = {
@@ -230,6 +248,7 @@ class LmsSyncService:
                 "new": outcome.created,
                 "due_changed": outcome.due_changed,
                 "submitted": outcome.submitted,
+                "new_module_items": outcome.new_items,
                 "notices": outcome.notices,
                 "failed_courses": outcome.failed_courses,
             }
@@ -246,14 +265,7 @@ class LmsSyncService:
                 try:
                     raw = await self.client.assignments(job.token, course.canvas_course_id)
                 except LearningXError as exc:
-                    if exc.unauthorized:  # 토큰이 막혔다. 남은 과목도 못 받는다
-                        raise ApiError(422, "LMS_TOKEN_INVALID", TOKEN_EXPIRED) from exc
-                    logger.warning(
-                        "과제 목록을 받지 못해 그 과목은 두고 넘어가요: course %s, status %s",
-                        course.canvas_course_id,
-                        exc.status,
-                    )
-                    failed += 1
+                    failed += self._skip(exc, course, what="과제 목록")
                     continue
                 fetched.append((course, assignments(raw)))
             call.output = {
@@ -263,34 +275,101 @@ class LmsSyncService:
             }
         return fetched, failed
 
+    async def _fetch_modules(
+        self, run: AgentRun, job: SyncJob, rows: list[CourseRow]
+    ) -> list[tuple[CourseRow, list[CanvasModuleItem]]]:
+        """과목마다 주차 모듈·항목을 받는다(F-52). 실패한 과목은 그냥 두고 넘어간다.
+
+        과제와 달리 실패를 세지 않는다 — 과제는 받았는데 주차 항목만 못 받았다고 동기화 전체를
+        실패로 적을 이유가 없다(새 자료 수가 잠깐 비어 있을 뿐이다).
+        """
+        fetched: list[tuple[CourseRow, list[CanvasModuleItem]]] = []
+        async with run.tool("fetch_lms_modules", {"courses": len(rows)}) as call:
+            for course in rows:
+                try:
+                    modules = await self.client.modules(job.token, course.canvas_course_id)
+                    extra = await self._missing_items(job, course, modules)
+                except LearningXError as exc:
+                    self._skip(exc, course, what="주차 모듈")
+                    continue
+                fetched.append((course, module_items(modules, extra=extra)))
+            call.output = {
+                "courses": len(fetched),
+                "items": sum(len(items) for _, items in fetched),
+            }
+        return fetched
+
+    async def _missing_items(
+        self, job: SyncJob, course: CourseRow, modules: list[Any]
+    ) -> dict[int, list[Any]]:
+        """`include[]=items`로 항목이 오지 않은 모듈만 따로 받는다(녹화에서는 없었다)."""
+        extra: dict[int, list[Any]] = {}
+        for module in modules:
+            number = needs_items(module)
+            if number is None:
+                continue
+            extra[number] = await self.client.module_items(
+                job.token, course.canvas_course_id, number
+            )
+        return extra
+
+    def _skip(self, exc: LearningXError, course: CourseRow, *, what: str) -> int:
+        """한 과목을 건너뛴다. 토큰이 막힌 경우(401)는 남은 과목도 못 받으니 멈춘다."""
+        if exc.unauthorized:
+            raise ApiError(422, "LMS_TOKEN_INVALID", TOKEN_EXPIRED) from exc
+        logger.warning(
+            "%s을 받지 못해 그 과목은 두고 넘어가요: course %s, status %s",
+            what,
+            course.canvas_course_id,
+            exc.status,
+        )
+        return 1
+
     async def _save(
         self,
         job: SyncJob,
         fetched: list[tuple[CourseRow, list[CanvasAssignment]]],
+        modules: list[tuple[CourseRow, list[CanvasModuleItem]]],
         *,
         failed: int,
     ) -> SyncOutcome:
-        """받아 둔 과제를 한 트랜잭션에 쓰고, 플래너·알림을 맞춘다."""
+        """받아 둔 과제·주차 항목을 한 트랜잭션에 쓰고, 플래너·알림을 맞춘다."""
         changes = AssignmentChanges()
         notices: list[AssignmentNotice] = []
+        items = ModuleChanges()
+        made = 0
         async with self.transaction() as conn:
             repos = self.repos(conn)
             repo, notes = repos.lms, repos.notes
-            for course, items in fetched:
-                one = await repo.save_assignments(job.user_id, course.id, items, now=job.now)
+            for course, assignment_items in fetched:
+                one = await repo.save_assignments(
+                    job.user_id, course.id, assignment_items, now=job.now
+                )
                 changes = changes + one
                 # 이미 낸 과제는 알리지 않는다(연결 첫 동기화에 지난 과제가 한꺼번에 들어온다)
                 notices += [_notice(course, saved) for saved in one.created if not saved.submitted]
             await repo.sync_planner(job.user_id, changes, now=job.now)
             # 제출한 과제는 알림을 멈춘다(명세 10장). 새 과제 알림은 찾은 때 바로 보낸다
             await notes.drop_assignment_notices(job.user_id, changes.submitted)
-            made = await notes.add_assignment_notices(job.user_id, notices, now=job.now)
+            made += await notes.add_assignment_notices(job.user_id, notices, now=job.now)
+            for course, module_list in modules:
+                one_course = await repo.save_module_items(
+                    job.user_id, course.canvas_course_id, module_list, now=job.now
+                )
+                items = items + one_course
+                # 주차 항목은 과목 공통이라 그 과목 수강생 모두에게 간다(첫 수집이면 보내지 않는다)
+                made += await notes.add_material_notices(
+                    course.canvas_course_id,
+                    [_material(course, saved) for saved in one_course.notifiable],
+                    now=job.now,
+                )
             await repo.touch_synced(job.user_id, now=job.now)
         return SyncOutcome(
             courses=len(fetched),
             created=len(changes.created),
             due_changed=len(changes.due_changed),
             submitted=len(changes.submitted),
+            new_items=len(items.created),
             notices=made,
             failed_courses=failed,
         )
@@ -339,6 +418,15 @@ def _notice(course: CourseRow, saved: SavedAssignment) -> AssignmentNotice:
         body = f"{saved.title} · 마감 {when.month}/{when.day} {when:%H:%M}"
     return AssignmentNotice(
         assignment_id=saved.id, title=NEW_TITLE.format(course=course.short_name), body=body
+    )
+
+
+def _material(course: CourseRow, saved: SavedItem) -> MaterialNotice:
+    """새 주차 항목 알림 문구(명세 10장 예시와 같은 꼴): "기계학습 8주차 자료가 올라왔어요"."""
+    return MaterialNotice(
+        item_id=saved.id,
+        title=MATERIAL_TITLE.format(course=course.short_name, module=saved.module_name),
+        body=saved.title,
     )
 
 

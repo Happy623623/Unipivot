@@ -29,6 +29,8 @@
 > v0.9 보강(10/16): LMS 응답 규칙 확정(10/16 녹화), 허용 경로 여섯 개
 >
 > v0.9 보강(10/17): LMS 과제 동기화 규칙(F-51)
+>
+> v0.9 보강(10/17): 주차 항목 첫 수집 표시(F-52)
 
 ---
 
@@ -216,6 +218,7 @@ erDiagram
         text portal_course_no "예: 23525"
         boolean is_active
         timestamptz last_viewed_at "새 자료 기준"
+        timestamptz modules_synced_at "주차 항목 첫 수집"
     }
     lms_assignments {
         uuid id PK
@@ -663,7 +666,7 @@ erDiagram
 - **개인 vs 과목 공통**: 과제는 제출 상태가 사람마다 달라서 `lms_assignments`를 사용자별로 둔다. 주차학습 항목과 과목 공지는 수강생 모두에게 같으므로 `canvas_course_id` 기준으로 한 번만 저장하고, 공지 분류(LLM)도 과목당 한 번만 한다. 수강 여부는 `lms_courses`로 판단한다
 - **과제 동기화(F-51)**: 과제는 `(user_id, canvas_assignment_id)`로 upsert한다. `first_seen_at`은 처음 본 때로 두고 다시 받을 때 밀지 않는다. 이번 목록에 없던 과제는 `removed_at`을 찍고(**목록이 비어 와도 찍는다** — 과제 0건인 과목이 흔하고, 클라이언트는 끝까지 받지 못하면 예외라 빈 목록은 "정말 없다"는 뜻이다), 다시 나타나면 지우고 새 과제로 센다. 수강을 뺀 과목(`lms_courses.is_active` false)의 과제는 더 받지 않으므로 목록에서 과목 조건으로 뺀다. `lms_connections.last_synced_at`은 동기화를 **시작할** 때 찍는다(같은 사용자를 동시에 두 번 동기화하지 않고, 실패한 사용자가 배치 앞자리를 차지하지 않게). 성공은 `status`·`last_error`로 적는다.
 - **LMS 과제 할 일(F-51·F-43)**: `planner_tasks`에는 **마감이 있는 미제출 과제**만 넣는다(`due_date`가 not null이고, 연결 첫 동기화에 들어오는 지난 과제로 할 일을 만들지 않는다). 마감이 바뀌면 아직 끝내지 않은 할 일의 날짜만 고치고, 마감이 없다가 생긴 과제는 그때 할 일을 만든다. 값에서 값으로 바뀐 마감은 할 일을 새로 만들지 않는다 — 학생이 지운 할 일을 되살리지 않으려는 것이다. 제출하면 할 일을 완료로 바꾸고 아직 보내지 않은 알림(`notifications.status = pending`)을 지운다.
-- **새 자료 감지**: 동기화 때 `canvas_item_id`가 처음 보이면 `lms_module_items`에 넣고, 그 과목 수강생에게 `new_material` 알림을 만든다. 같은 제목의 항목이 여러 개인 과목이 있어서(영상·슬라이드 추정) 비교 기준은 제목이 아니라 ID다
+- **새 자료 감지**: 동기화 때 `canvas_item_id`가 처음 보이면 `lms_module_items`에 넣고, 그 과목 수강생에게 `new_material` 알림을 만든다(**연결을 끊은 사람과 수강을 뺀 과목은 뺀다** — 해제하면 동기화를 멈춘다). 그 과목의 첫 수집에는 만들지 않는다. 같은 제목의 항목이 여러 개인 과목이 있어서(영상·슬라이드 추정) 비교 기준은 제목이 아니라 ID다
 - **제출 연동**: `submission_state`가 submitted·graded로 바뀌면 연결된 `planner_tasks.is_done = true`로 바꾸고, 아직 안 보낸 마감 임박 알림을 취소한다
 - **공지 → 공고**: 기회성 공지는 `opportunities`에 `source_type = 'lms_announcement'`, `visible_canvas_course_id = 과목 ID`로 넣는다. 이 공고는 해당 과목 수강생에게만 보이고, 배치 판정도 수강생에게만 돌린다
 - **LMS 응답 규칙(10/16 녹화)**: `lms_assignments.due_at`은 Canvas `due_at ?? lock_at`이다(녹화 17건 중 5건이 `due_at` null). `submission_state`는 Canvas `submission.workflow_state`를 그대로 쓰고(`unsubmitted`·`submitted`·`graded` 관측, `pending_review`는 아직 못 봤지만 제출로 센다), 과목 전체 기준인 `has_submitted_submissions`는 쓰지 않는다. `lms_module_items.canvas_item_id`가 유일 키다 — 한 모듈에 제목이 같은 항목이 둘씩 있다(87건 중 15쌍). `item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`가 관측됐고 `File`은 0건이다. `module_name`은 `1주차`·`Week 3 : …` 꼴이 섞이고 Canvas `position`은 연속이 아니라 저장하지 않는다. `lms_courses.term`은 과목명에서 만든 `2026-2`이고, 과목명 꼴이 다르면 LearningX가 준 학기 이름(`2026년 2학기`)을 넣는다
@@ -707,7 +710,8 @@ erDiagram
 - **서류 체크**: 상세의 서류 체크는 `planner_tasks`(prep_plan_id, document_id) 행의 `is_done`을 그대로 쓴다. 준비하기 전에는 행이 없어 체크할 수 없고, 부분 유니크 인덱스가 서류당 할 일 1개를 보장한다.
 - **서류 소요**: `lead_days` 0은 즉시 발급이다. `effort_minutes`는 화면 표시용이라 역산에 쓰지 않는다.
 - **플래너 마감 표시**: 공고 마감일은 `planner_tasks`에 넣지 않고, 조회 때 `prep_plans → opportunities.deadline_at`에서 읽어 함께 내려준다.
-- **과목 새 자료**: `first_seen_at`이 `lms_courses.last_viewed_at`보다 뒤인 주차 항목 수다. 과목 행이 생길 때 기본값이 첫 동기화 시각이라 연결 전부터 있던 항목은 세지 않고, 과목 상세를 열면 갱신한다.
+- **과목 새 자료**: `first_seen_at`이 `lms_courses.last_viewed_at`보다 뒤인 주차 항목 수다. 과목 행이 생길 때 기본값이 첫 동기화 시각이고, **주차 항목을 그 과목에서 처음 받을 때 다시 지금으로 올린다**(F-50 연결은 과목 목록까지만 받아서, 항목은 그 뒤 동기화에 들어온다 — 올리지 않으면 연결 전부터 있던 항목이 모두 "새 자료"가 된다). 과목 상세를 열면 또 갱신한다.
+- **첫 수집 가리기**: 주차 항목을 그 과목에서 처음 받았는지는 `lms_courses.modules_synced_at`으로 본다. 표에 행이 있는지로 가리면 안 된다 — 항목이 0건인 과목이 흔해서(녹화 6과목 중 2과목) 나중에 올라온 첫 자료가 영원히 "첫 수집"으로 묶인다.
 - **공지 요약**: `classify_announcement`가 분류하면서 한 줄 요약을 함께 만든다. 공지당 1회다.
 
 ### 알림 중복 방지
@@ -795,6 +799,9 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 6 | `supabase/migrations/20261010000100_seed_departments.sql` | 학과 목록 seed(ERICA 48개) |
 | 7 | `supabase/migrations/20261012000000_degree_program.sql` | profiles.degree_program(학위과정), requirements.field·eligibility_results.missing_fields 제약에 degree_program 추가 |
 | 8 | `supabase/migrations/20261013000000_opportunity_marks.sql` | opportunity_marks(관심·관심 없음 표시, F-45), opportunity_id 인덱스, RLS 본인 행 읽기 |
+| 9 | `supabase/migrations/20261014090000_region_merge_jeonnam_gwangju.sql` | 지역 코드 정리(전남·광주 병합) |
+| 10 | `supabase/migrations/20261014091000_tool_calls_input_comment.sql` | tool_calls.input 주석(프로필 값을 넣지 않는다) |
+| 11 | `supabase/migrations/20261017000000_lms_modules_synced_at.sql` | lms_courses.modules_synced_at(주차 항목 첫 수집, F-52) |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 

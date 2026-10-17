@@ -57,6 +57,7 @@ NEW_TITLE = "지원할 수 있는 공고가 있어요"
 DEADLINE_TITLE = "마감이 가까워요"
 PROFILE_TITLE = "프로필 정보가 필요해요"
 ASSIGNMENT_TYPE = "new_assignment"  # notifications.type·user_settings.muted_notification_types
+MATERIAL_TYPE = "new_material"  # 새 주차 항목(F-52). 과목 수강생 모두에게 간다
 _NEEDED = " 입력하면 판정할 수 있어요"
 
 # 공고 하나를 사용자 한 명에게 보일지 보는 조건. opportunities.VISIBLE과 같은 뜻이다
@@ -103,6 +104,15 @@ class AssignmentNotice:
     """새 과제 알림 하나. 문구는 과목 이름을 아는 쪽(app/lms/sync.py)에서 만든다."""
 
     assignment_id: str
+    title: str
+    body: str
+
+
+@dataclass(frozen=True)
+class MaterialNotice:
+    """새 주차 항목 알림 하나. 문구는 과목 이름을 아는 쪽(app/lms/sync.py)에서 만든다."""
+
+    item_id: str
     title: str
     body: str
 
@@ -173,6 +183,42 @@ class NotificationRepository:
                     "uid": user_id,
                     "type": ASSIGNMENT_TYPE,
                     "aid": notice.assignment_id,
+                    "title": notice.title,
+                    "body": notice.body,
+                    "now": now,
+                },
+            )
+            created += max(cursor.rowcount, 0)
+        return created
+
+    async def add_material_notices(
+        self, canvas_course_id: int, notices: Sequence[MaterialNotice], *, now: datetime
+    ) -> int:
+        """새 주차 항목 알림을 **그 과목 수강생 모두에게** 만든다(ERD 3-2: 항목은 과목 공통이다).
+
+        과제 알림과 달리 사용자를 받지 않는다 — 항목을 처음 본 쪽이 누구든 수강생 전체가 받는다.
+        연결을 끊은 사람과 끈 종류는 만들지 않고, 같은 항목은 `dedupe_key`로 한 번만 만든다.
+        """
+        created = 0
+        for notice in notices:
+            cursor = await self.conn.execute(
+                "insert into notifications (user_id, type, lms_module_item_id, title, body,"
+                " scheduled_at, dedupe_key)"
+                " select c.user_id, %(type)s, %(item)s::uuid, %(title)s, %(body)s, %(now)s,"
+                # 키 꼴은 ERD 5장 표 그대로다: new_material:mod:{lms_module_item_id}
+                " %(type)s || ':mod:' || %(item)s"
+                " from lms_courses c"
+                # 연결을 끊은 사람에게는 보내지 않는다(명세 9장: 해제하면 동기화를 멈춘다).
+                # 해제하면 연결 행이 지워지므로 inner join이다
+                " join lms_connections n on n.user_id = c.user_id and n.status <> 'disconnected'"
+                " left join user_settings s on s.user_id = c.user_id"
+                " where c.canvas_course_id = %(canvas)s and coalesce(c.is_active, true)"
+                "   and not (%(type)s = any(coalesce(s.muted_notification_types, '{}')))"
+                " on conflict (user_id, dedupe_key) do nothing",
+                {
+                    "canvas": canvas_course_id,
+                    "type": MATERIAL_TYPE,
+                    "item": notice.item_id,
                     "title": notice.title,
                     "body": notice.body,
                     "now": now,

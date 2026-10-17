@@ -9,7 +9,7 @@
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -121,6 +121,45 @@ class AssignmentItem(BaseModel):
 
 class AssignmentList(BaseModel):
     items: list[AssignmentItem]
+
+
+# `GET /lms/updates?type=`에 쓸 수 있는 값. 공지(`announcement`)는 F-53이 채운다(그때까지 결과가 빈다)
+UpdateType = Literal["module_item", "assignment", "announcement"]
+
+
+class ModuleItemUpdate(BaseModel):
+    """새 주차 항목 하나(F-52)."""
+
+    type: Literal["module_item"] = "module_item"
+    id: str
+    course: AssignmentCourse
+    module_name: str | None
+    title: str
+    item_type: str | None  # ExternalTool · Assignment · Quiz · Page (녹화에 File은 없었다)
+    html_url: str | None
+    first_seen_at: datetime  # KST 오프셋
+    uploaded_file_id: str | None  # 이 항목 알림에서 올린 PDF가 있으면 그 파일
+
+
+class AssignmentUpdate(BaseModel):
+    """새 과제나 마감이 가까운 미제출 과제 하나(F-51)."""
+
+    type: Literal["assignment"] = "assignment"
+    id: str
+    course: AssignmentCourse
+    title: str
+    due_at: datetime | None
+    submission_state: SubmissionState
+    html_url: str | None
+    first_seen_at: datetime
+
+
+LmsUpdateItem = Annotated[ModuleItemUpdate | AssignmentUpdate, Field(discriminator="type")]
+
+
+class LmsUpdateList(BaseModel):
+    items: list[LmsUpdateItem]
+    next_cursor: str | None
 
 
 class SyncJobResult(BaseModel):

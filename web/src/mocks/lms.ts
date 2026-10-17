@@ -92,7 +92,7 @@ export const materials: Record<string, MaterialDetail> = Object.fromEntries(
 );
 
 export const lmsUpdates: LmsUpdate[] = [
-  { type: "module_item", id: "analysis-m4", course: { id: "analysis", short_name: "해석학" }, module_name: "8주차", title: "Decision Trees", html_url: "https://lms.example.edu/analysis/modules/4", first_seen_at: "2026-10-05T09:20:00+09:00", uploaded_file_id: "analysis-material" },
-  { type: "assignment", id: "capstone-a1", course: { id: "capstone", short_name: "DS창업캡스톤디자인1" }, title: "창업아이템 정의", due_at: "2026-10-06T23:59:00+09:00", submission_state: "unsubmitted" },
+  { type: "module_item", id: "analysis-m4", course: { id: "analysis", short_name: "해석학" }, module_name: "8주차", title: "Decision Trees", item_type: "ExternalTool", html_url: "https://lms.example.edu/analysis/modules/4", first_seen_at: "2026-10-05T09:20:00+09:00", uploaded_file_id: "analysis-material" },
+  { type: "assignment", id: "capstone-a1", course: { id: "capstone", short_name: "DS창업캡스톤디자인1" }, title: "창업아이템 정의", due_at: "2026-10-06T23:59:00+09:00", submission_state: "unsubmitted", html_url: "https://lms.example.edu/capstone/assignments/1", first_seen_at: "2026-10-02T09:00:00+09:00" },
   { type: "announcement", id: "database-n1", course: { id: "database", short_name: "데이터베이스" }, title: "다음 주 강의실 변경", summary: "제2공학관 301호에서 수업해요.", posted_at: "2026-10-05T08:00:00+09:00", category: "schedule_change", attachment_count: 0, opportunity_id: null, planner_task_id: "task-db-notice" },
 ];
