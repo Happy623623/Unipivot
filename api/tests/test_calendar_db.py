@@ -1,4 +1,5 @@
-"""캘린더 기록 SQL(F-32)을 실제 스키마에 대고 확인한다: 토큰, 준비한 공고, 등록·중복·취소·격리.
+"""캘린더 기록 SQL(F-32·F-51)을 실제 스키마에 대고 확인한다: 토큰, 준비한 공고, LMS 과제 마감,
+등록·중복·시각 고치기·취소·격리.
 
 트랜잭션을 되돌려 지운다. DATABASE_URL이 있을 때만 돈다.
 """
@@ -109,8 +110,8 @@ async def test_find_and_remove(calendar: Any) -> None:
         starts_at=ends_at - timedelta(hours=1),
     )
     await repo.attach(user, event.id, "gcal-1")
-    assert (await repo.event_for(user, prepared, "google")).id == event.id
-    assert await repo.event_for(user, prepared, "ics") is None
+    assert (await repo.event_for(user, "google", opportunity_id=prepared)).id == event.id
+    assert await repo.event_for(user, "ics", opportunity_id=prepared) is None
     assert await repo.one(other, event.id) is None  # 남의 일정은 안 보인다
     await repo.remove(other, event.id)  # 남의 일정은 못 지운다
     assert await repo.one(user, event.id) is not None
@@ -161,3 +162,259 @@ async def test_a_reserved_event_is_not_shown_as_registered(calendar: Any) -> Non
     )
     assert after is not None
     assert [ref.id for ref in after.prep.calendar_events] == [event.id]
+
+
+# ── LMS 과제 마감 (F-51) ────────────────────────────────────────────────────
+
+
+async def _assignment(
+    conn: Any, user: str, *, due: Any, title: str = "실습 2주차 결과 제출"
+) -> str:
+    """과목 하나와 과제 하나를 넣고 과제 id를 돌려준다."""
+    course = await (
+        await conn.execute(
+            "insert into lms_courses (user_id, canvas_course_id, name)"
+            " values (%s, 214023, '202620HY23525_데이터베이스') returning id",
+            (user,),
+        )
+    ).fetchone()
+    row = await (
+        await conn.execute(
+            "insert into lms_assignments (user_id, lms_course_id, canvas_assignment_id, title,"
+            " due_at, submission_state) values (%s, %s, 11, %s, %s, 'unsubmitted') returning id",
+            (user, course["id"], title, due),
+        )
+    ).fetchone()
+    return str(row["id"])
+
+
+async def test_an_assignment_deadline_comes_with_the_course_name(calendar: Any) -> None:
+    repo, user, _, _, _, now = calendar
+    due = now + timedelta(days=4)
+    assignment_id = await _assignment(repo.conn, user, due=due)
+
+    found = await repo.assignment_deadline(user, assignment_id)
+    assert found is not None
+    assert (found.title, found.course) == ("실습 2주차 결과 제출", "데이터베이스")
+    assert found.due_at == due
+
+
+async def test_another_students_assignment_is_not_mine(calendar: Any) -> None:
+    repo, user, other, _, _, now = calendar
+    assignment_id = await _assignment(repo.conn, user, due=now + timedelta(days=4))
+    assert await repo.assignment_deadline(other, assignment_id) is None
+
+
+async def test_a_removed_assignment_or_dropped_course_is_gone(calendar: Any) -> None:
+    repo, user, _, _, _, now = calendar
+    assignment_id = await _assignment(repo.conn, user, due=now + timedelta(days=4))
+    await repo.conn.execute(
+        "update lms_assignments set removed_at = %s where id = %s", (now, assignment_id)
+    )
+    assert await repo.assignment_deadline(user, assignment_id) is None
+
+    await repo.conn.execute("update lms_assignments set removed_at = null")
+    await repo.conn.execute("update lms_courses set is_active = false where user_id = %s", (user,))
+    assert await repo.assignment_deadline(user, assignment_id) is None
+
+
+async def test_an_assignment_event_is_one_per_assignment(calendar: Any) -> None:
+    """같은 과제를 두 번 넣어도 일정은 하나다(부분 유니크 인덱스)."""
+    repo, user, _, _, _, now = calendar
+    due = (now + timedelta(days=4)).astimezone(KST)
+    assignment_id = await _assignment(repo.conn, user, due=due)
+
+    event = await repo.reserve(
+        user,
+        provider="google",
+        title="[과제] 데이터베이스 · 실습 2주차 결과 제출",
+        starts_at=due - timedelta(hours=1),
+        lms_assignment_id=assignment_id,
+    )
+    again = await repo.reserve(
+        user,
+        provider="google",
+        title="[과제] 데이터베이스 · 실습 2주차 결과 제출",
+        starts_at=due - timedelta(hours=1),
+        lms_assignment_id=assignment_id,
+    )
+    assert again.id == event.id
+    rows = await (
+        await repo.conn.execute(
+            "select count(*) as n from calendar_events where lms_assignment_id = %s",
+            (assignment_id,),
+        )
+    ).fetchone()
+    assert rows["n"] == 1
+
+    found = await repo.event_for(user, "google", lms_assignment_id=assignment_id)
+    assert found is not None and found.id == event.id
+    assert await repo.event_for(user, "ics", lms_assignment_id=assignment_id) is None
+
+
+async def test_events_for_assignments_reads_only_mine(calendar: Any) -> None:
+    repo, user, other, _, _, now = calendar
+    due = (now + timedelta(days=4)).astimezone(KST)
+    mine = await _assignment(repo.conn, user, due=due)
+    event = await repo.reserve(
+        user,
+        provider="google",
+        title="[과제] 데이터베이스 · 실습",
+        starts_at=due - timedelta(hours=1),
+        lms_assignment_id=mine,
+    )
+    await repo.attach(user, event.id, "gcal-1")
+
+    found = await repo.events_for_assignments(user, [mine])
+    assert set(found) == {mine}
+    assert found[mine].external_event_id == "gcal-1"
+    assert await repo.events_for_assignments(other, [mine]) == {}
+    assert await repo.events_for_assignments(user, []) == {}
+
+
+async def test_moving_an_event_changes_only_the_time(calendar: Any) -> None:
+    repo, user, other, _, _, now = calendar
+    due = (now + timedelta(days=4)).astimezone(KST)
+    assignment_id = await _assignment(repo.conn, user, due=due)
+    event = await repo.reserve(
+        user,
+        provider="google",
+        title="[과제] 데이터베이스 · 실습",
+        starts_at=due - timedelta(hours=1),
+        lms_assignment_id=assignment_id,
+    )
+    await repo.attach(user, event.id, "gcal-1")
+
+    moved = (now + timedelta(days=9)).astimezone(KST)
+    await repo.move(user, event.id, starts_at=moved - timedelta(hours=1))
+    found = await repo.one(user, event.id)
+    assert found is not None
+    assert found.starts_at == moved - timedelta(hours=1)
+    assert found.external_event_id == "gcal-1"  # Google 번호는 그대로다
+
+    await repo.move(other, event.id, starts_at=now)  # 남의 일정은 못 고친다
+    again = await repo.one(user, event.id)
+    assert again is not None and again.starts_at == moved - timedelta(hours=1)
+
+
+async def test_the_auto_setting_defaults_to_on(calendar: Any) -> None:
+    """설정 행이 없으면 기본 켬이다(ERD 기본값). 끄면 false를 본다."""
+    repo, user, _, _, _, _ = calendar
+    assert await repo.auto_lms(user) is True
+
+    await repo.conn.execute(
+        "insert into user_settings (user_id, calendar_auto_lms) values (%s, false)", (user,)
+    )
+    assert await repo.auto_lms(user) is False
+
+
+async def test_one_target_only(calendar: Any) -> None:
+    """공고와 과제를 함께 주거나 둘 다 비우면 코드 잘못이다(SQL까지 가지 않는다)."""
+    repo, user, _, prepared, _, now = calendar
+    with pytest.raises(ValueError):
+        await repo.event_for(user, "google")
+    with pytest.raises(ValueError):
+        await repo.event_for(user, "google", opportunity_id=prepared, lms_assignment_id=prepared)
+
+
+async def test_unfinished_events_are_picked_up_again(calendar: Any) -> None:
+    """Google에 넣지 못해 자리만 남은 과제는 다음 동기화가 다시 가져간다(F-51)."""
+    repo, user, other, _, _, now = calendar
+    due = now + timedelta(days=4)
+    assignment_id = await _assignment(repo.conn, user, due=due)
+    await repo.reserve(
+        user, provider="google", title="[과제] 데이터베이스 · 실습", starts_at=now,
+        lms_assignment_id=assignment_id,
+    )  # fmt: skip
+
+    pending = await repo.unfinished_assignment_events(user)
+    assert [(one.id, one.course, one.due_at) for one in pending] == [
+        (assignment_id, "데이터베이스", due)
+    ]
+    assert await repo.unfinished_assignment_events(other) == []  # 남의 것은 안 준다
+
+
+async def test_an_event_already_in_google_is_not_picked_up(calendar: Any) -> None:
+    repo, user, _, _, _, now = calendar
+    assignment_id = await _assignment(repo.conn, user, due=now + timedelta(days=4))
+    event = await repo.reserve(
+        user, provider="google", title="[과제] 데이터베이스 · 실습", starts_at=now,
+        lms_assignment_id=assignment_id,
+    )  # fmt: skip
+    await repo.attach(user, event.id, "gcal-1")
+
+    assert await repo.unfinished_assignment_events(user) == []
+
+
+async def test_a_gone_assignment_is_not_picked_up(calendar: Any) -> None:
+    """사라진 과제·수강 뺀 과목·마감이 없어진 과제는 다시 넣지 않는다."""
+    repo, user, _, _, _, now = calendar
+    assignment_id = await _assignment(repo.conn, user, due=now + timedelta(days=4))
+    await repo.reserve(
+        user, provider="google", title="[과제] 데이터베이스 · 실습", starts_at=now,
+        lms_assignment_id=assignment_id,
+    )  # fmt: skip
+
+    await repo.conn.execute(
+        "update lms_assignments set removed_at = now() where id = %s", (assignment_id,)
+    )
+    assert await repo.unfinished_assignment_events(user) == []
+    await repo.conn.execute(
+        "update lms_assignments set removed_at = null, due_at = null where id = %s",
+        (assignment_id,),
+    )
+    assert await repo.unfinished_assignment_events(user) == []
+    await repo.conn.execute(
+        "update lms_assignments set due_at = %s where id = %s",
+        (now + timedelta(days=4), assignment_id),
+    )
+    await repo.conn.execute("update lms_courses set is_active = false where user_id = %s", (user,))
+    assert await repo.unfinished_assignment_events(user) == []
+
+
+async def test_a_place_not_yet_in_google_takes_the_new_time(calendar: Any) -> None:
+    """넣다 만 자리를 다시 쓸 때는 제목·시각을 새로 맞춘다(그새 마감이 바뀌었을 수 있다)."""
+    repo, user, _, prepared, _, now = calendar
+    first = await repo.reserve(
+        user, provider="google", title="[마감] 준비한 장학", starts_at=now, opportunity_id=prepared
+    )  # fmt: skip
+    later = now + timedelta(days=1)
+
+    again = await repo.reserve(
+        user, provider="google", title="[마감] 준비한 장학 (연장)", starts_at=later,
+        opportunity_id=prepared,
+    )  # fmt: skip
+    assert (again.id, again.title, again.starts_at) == (
+        first.id,
+        "[마감] 준비한 장학 (연장)",
+        later,
+    )
+
+
+async def test_a_place_already_in_google_keeps_its_time(calendar: Any) -> None:
+    """이미 Google에 들어간 일정은 기록만 바꾸면 캘린더와 어긋난다. 그대로 둔다."""
+    repo, user, _, prepared, _, now = calendar
+    first = await repo.reserve(
+        user, provider="google", title="[마감] 준비한 장학", starts_at=now, opportunity_id=prepared
+    )  # fmt: skip
+    await repo.attach(user, first.id, "gcal-1")
+
+    again = await repo.reserve(
+        user, provider="google", title="[마감] 바뀐 제목", starts_at=now + timedelta(days=1),
+        opportunity_id=prepared,
+    )  # fmt: skip
+    assert (again.title, again.starts_at, again.external_event_id) == (
+        "[마감] 준비한 장학",
+        now,
+        "gcal-1",
+    )
+
+
+async def test_the_time_comes_back_in_kst(calendar: Any) -> None:
+    """화면은 KST로 보여 준다(명세 1장). 저장은 UTC다."""
+    repo, user, _, prepared, _, now = calendar
+    event = await repo.reserve(
+        user, provider="google", title="[마감] 준비한 장학", starts_at=now, opportunity_id=prepared
+    )  # fmt: skip
+    assert event.starts_at.utcoffset() == KST.utcoffset(None)
+    assert event.starts_at == now

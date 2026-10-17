@@ -23,6 +23,7 @@ from typing import Annotated, Any
 from fastapi import Depends
 from psycopg import AsyncConnection
 
+from app.calendar import assignment_title
 from app.db import get_conn
 from app.eligibility import KST
 from app.lms.assignments import SUBMITTED, CanvasAssignment
@@ -743,6 +744,22 @@ class LmsRepository:
             {"uid": user_id, "canvas": canvas_course_id, "now": now},
         )
         return ModuleChanges(created=created, first_load=first_load)
+
+    async def assignment_titles(self, user_id: str, ids: list[str]) -> dict[str, str]:
+        """과제 id → 캘린더 일정 제목(`[과제] 과목 · 과제`). 사라진 과제·수강 뺀 과목은 빠진다."""
+        if not ids:
+            return {}
+        rows = await self._rows(
+            "select a.id::text as id, a.title, c.name as course_name from lms_assignments a"
+            " join lms_courses c on c.id = a.lms_course_id and c.user_id = a.user_id"
+            " where a.user_id = %(uid)s and a.id = any(%(ids)s::uuid[])"
+            "   and a.removed_at is null and coalesce(c.is_active, true)",
+            {"uid": user_id, "ids": ids},
+        )
+        return {
+            row["id"]: assignment_title(course_name(row["course_name"]).short_name, row["title"])
+            for row in rows
+        }
 
     async def claim_sync(self, user_id: str, *, now: datetime, before: datetime) -> bool:
         """동기화를 시작한다고 한 문장으로 못 박는다. 이미 누가 가져갔으면 False다.

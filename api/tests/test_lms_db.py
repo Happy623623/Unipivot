@@ -1077,6 +1077,27 @@ async def test_the_run_result_comes_from_the_save_step(world: dict[str, Any]) ->
     assert (found.assignments.new, found.assignments.due_changed) == (1, 0)
     assert found.assignments.submitted == 2
     assert (found.new_module_items, found.new_announcements) == (0, 0)  # F-52·F-53
+    assert (found.calendar_events, found.calendar_moved) == (0, 0)  # 캘린더 전 실행에는 칸이 없다
+
+
+async def test_the_run_result_carries_the_calendar_counts(world: dict[str, Any]) -> None:
+    """캘린더에 넣은 수·시각을 고친 수가 `GET /runs/{id}`까지 간다(명세 9장)."""
+    conn, me = world["conn"], world["me"]
+    run_id = await _run_with(
+        world,
+        SAVE_TOOL,
+        {
+            "courses": 2,
+            "new": 1,
+            "due_changed": 1,
+            "submitted": 0,
+            "calendar_events": 1,
+            "calendar_moved": 2,
+        },
+    )
+    found = await RunRepository(conn).lms_sync_result(me, run_id)
+    assert found is not None
+    assert (found.calendar_events, found.calendar_moved) == (1, 2)
 
 
 async def test_a_connect_run_has_no_sync_result(world: dict[str, Any]) -> None:
@@ -1797,3 +1818,45 @@ async def test_the_detail_shows_my_summary_status(world: dict[str, Any]) -> None
     assert [(one.original_name, one.status) for one in detail.materials] == [
         ("요약된.pdf", "succeeded")
     ]
+
+
+# ── 캘린더 제목 (F-51·F-32) ─────────────────────────────────────────────────
+
+
+async def test_assignment_titles_put_the_course_first(world: dict[str, Any]) -> None:
+    """캘린더 일정 제목이다. 과목을 앞세워 어느 수업 과제인지 보이게 한다."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    changes = await repo.save_assignments(
+        me, course, [_one(11, due=now + timedelta(days=3))], now=now
+    )
+    assignment_id = changes.created[0].id
+
+    titles = await repo.assignment_titles(me, [assignment_id])
+    assert titles == {assignment_id: "[과제] 데이터베이스 · 실습 2주차 결과 제출"}
+    assert await repo.assignment_titles(me, []) == {}
+
+
+async def test_assignment_titles_leave_out_what_is_gone(world: dict[str, Any]) -> None:
+    repo, me, other, now, conn = (
+        world["repo"],
+        world["me"],
+        world["other"],
+        world["now"],
+        world["conn"],
+    )
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    changes = await repo.save_assignments(
+        me, course, [_one(11, due=now + timedelta(days=3)), _one(12, title="사라질 과제")], now=now
+    )
+    kept, gone = (one.id for one in changes.created)
+    await repo.save_assignments(me, course, [_one(11, due=now + timedelta(days=3))], now=now)
+
+    titles = await repo.assignment_titles(me, [kept, gone])
+    assert set(titles) == {kept}  # 사라진 과제는 빠진다
+    assert await repo.assignment_titles(other, [kept]) == {}  # 남의 과제도 아니다
+
+    await conn.execute("update lms_courses set is_active = false where user_id = %s", (me,))
+    assert await repo.assignment_titles(me, [kept]) == {}  # 수강을 뺀 과목도 빠진다

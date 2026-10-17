@@ -1,18 +1,23 @@
-"""마감일 캘린더 등록 (F-32, API 명세 7장)."""
+"""마감일 캘린더 등록 (F-32·F-51, API 명세 7장).
+
+대상은 공고 마감이나 LMS 과제 마감 하나다. 일정은 마감 시각으로 끝나는 1시간짜리이고, 일정 번호는
+우리 행 id에서 만들어 보내므로 다시 눌러도 캘린더에 하나만 들어간다.
+"""
 
 import logging
-from datetime import timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Response
 
 from app.auth import CurrentUserDep
-from app.calendar import EVENT_MINUTES, event_id_for, event_title
+from app.calendar import EVENT_MINUTES, assignment_title, event_id_for, event_title
 from app.calendar.service import CalendarServiceDep
 from app.clock import NowDep
 from app.eligibility import KST
 from app.errors import ApiError
-from app.repositories.calendar import CalendarRepoDep
+from app.repositories.calendar import CalendarRepoDep, CalendarRepository
 from app.schemas.calendar import CalendarEventRequest, CalendarEventView
 
 logger = logging.getLogger(__name__)
@@ -42,12 +47,55 @@ async def add_event(
             "입력값을 확인해 주세요.",
             {"fields": {"provider": "지금은 Google 캘린더만 등록할 수 있어요."}},
         )
-    opportunity_id = str(body.opportunity_id)
-    existing = await repo.event_for(user.id, opportunity_id, body.provider)
+    if body.lms_assignment_id is not None:
+        target = await _assignment_target(repo, user.id, str(body.lms_assignment_id), now)
+    else:
+        target = await _opportunity_target(repo, user.id, str(body.opportunity_id), now)
+    existing = await repo.event_for(user.id, body.provider, **target.key())
     if existing is not None and existing.external_event_id:
         response.status_code = 200
         return existing
-    opportunity = await repo.prepared_opportunity(user.id, opportunity_id)
+    token = await service.access_token(user.id, now)
+    # 자리를 먼저 잡고 그 행의 id로 Google 일정 번호를 정한다(다시 눌러도 일정은 하나다).
+    # 넣다 만 자리가 남아 있으면 그 자리를 제목·시각만 새로 맞춰 다시 쓴다
+    event = await repo.reserve(
+        user.id,
+        provider=body.provider,
+        title=target.title,
+        starts_at=target.ends_at - timedelta(minutes=EVENT_MINUTES),
+        **target.key(),
+    )
+    # Google을 부르기 전에 확정한다. 실패하면 요청 전체가 롤백돼 자리가 사라지고,
+    # 다시 눌렀을 때 새 번호로 들어가 캘린더에 같은 마감이 두 개가 된다
+    await repo.commit_reservation()
+    external_id = await service.insert(
+        token, event_id=event_id_for(event.id), title=target.title, ends_at=target.ends_at
+    )
+    await repo.attach(user.id, event.id, external_id)
+    return event.model_copy(update={"external_event_id": external_id})
+
+
+@dataclass(frozen=True)
+class _Target:
+    """캘린더에 넣을 대상 하나. 공고 마감이거나 LMS 과제 마감이다."""
+
+    title: str
+    ends_at: datetime
+    opportunity_id: str | None = None
+    lms_assignment_id: str | None = None
+
+    def key(self) -> dict[str, str]:
+        if self.opportunity_id is not None:
+            return {"opportunity_id": self.opportunity_id}
+        assert self.lms_assignment_id is not None
+        return {"lms_assignment_id": self.lms_assignment_id}
+
+
+async def _opportunity_target(
+    repo: CalendarRepository, user_id: str, opportunity_id: str, now: datetime
+) -> _Target:
+    """준비를 마친 공고의 마감(F-32). 아니면 422, 마감이 지났으면 409다."""
+    opportunity = await repo.prepared_opportunity(user_id, opportunity_id)
     if opportunity is None:
         raise _invalid("준비 일정을 먼저 만들어 주세요.")
     if opportunity.deadline_at is None:
@@ -55,21 +103,28 @@ async def add_event(
     ends_at = opportunity.deadline_at.astimezone(KST)
     if ends_at <= now:
         raise ApiError(409, "DEADLINE_PASSED", "마감이 지난 공고예요. 캘린더에 넣을 수 없어요.")
-    token = await service.access_token(user.id, now)
-    title = event_title(opportunity.title)
-    # 자리를 먼저 잡고 그 행의 id로 Google 일정 번호를 정한다(다시 눌러도 일정은 하나다)
-    event = existing or await repo.reserve(
-        user.id,
-        provider=body.provider,
-        opportunity_id=opportunity.id,
-        title=title,
-        starts_at=ends_at - timedelta(minutes=EVENT_MINUTES),
+    return _Target(
+        title=event_title(opportunity.title), ends_at=ends_at, opportunity_id=opportunity.id
     )
-    external_id = await service.insert(
-        token, event_id=event_id_for(event.id), title=title, ends_at=ends_at
+
+
+async def _assignment_target(
+    repo: CalendarRepository, user_id: str, assignment_id: str, now: datetime
+) -> _Target:
+    """LMS 과제의 마감(F-51). 사라진 과제·수강 뺀 과목은 404다."""
+    assignment = await repo.assignment_deadline(user_id, assignment_id)
+    if assignment is None:
+        raise ApiError(404, "NOT_FOUND", "과제를 찾을 수 없어요.")
+    if assignment.due_at is None:
+        raise _invalid("마감이 없는 과제예요. 캘린더에 넣을 수 없어요.", field="lms_assignment_id")
+    ends_at = assignment.due_at.astimezone(KST)
+    if ends_at <= now:
+        raise ApiError(409, "DEADLINE_PASSED", "마감이 지난 과제예요. 캘린더에 넣을 수 없어요.")
+    return _Target(
+        title=assignment_title(assignment.course, assignment.title),
+        ends_at=ends_at,
+        lms_assignment_id=assignment.id,
     )
-    await repo.attach(user.id, event.id, external_id)
-    return event.model_copy(update={"external_event_id": external_id})
 
 
 @router.delete("/events/{event_id}", status_code=204, response_class=Response)
@@ -100,7 +155,7 @@ async def remove_event(
     return Response(status_code=204)
 
 
-def _invalid(reason: str) -> ApiError:
+def _invalid(reason: str, *, field: str = "opportunity_id") -> ApiError:
     return ApiError(
-        422, "VALIDATION_FAILED", "입력값을 확인해 주세요.", {"fields": {"opportunity_id": reason}}
+        422, "VALIDATION_FAILED", "입력값을 확인해 주세요.", {"fields": {field: reason}}
     )

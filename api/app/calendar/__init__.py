@@ -6,6 +6,7 @@ from app.calendar.google import (
     GoogleCalendarClient,
     GoogleCalendarError,
     GoogleEvent,
+    assignment_title,
     event_id_for,
     event_title,
 )
@@ -13,6 +14,7 @@ from app.calendar.google import (
 __all__ = [
     "CALENDAR_SCOPE",
     "EVENT_MINUTES",
+    "assignment_title",
     "GoogleCalendarClient",
     "GoogleCalendarError",
     "GoogleEvent",

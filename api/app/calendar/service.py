@@ -80,6 +80,16 @@ class CalendarService:
             raise _api_error(exc) from exc
         return event.id
 
+    async def move(self, token: str, *, event_id: str, title: str, ends_at: datetime) -> str | None:
+        """이미 넣은 일정의 시각을 고친다. 일정이 사라졌으면(404·410) None이고, 부른 쪽이 다시 넣는다."""
+        try:
+            event = await self.client.move(token, event_id=event_id, title=title, ends_at=ends_at)
+        except GoogleCalendarError as exc:
+            if exc.status in (404, 410):
+                return None
+            raise _api_error(exc) from exc
+        return event.id
+
     async def delete(self, token: str, external_event_id: str | None) -> None:
         if not external_event_id:  # 기록만 있고 Google에는 없다(ics 등)
             return

@@ -1,5 +1,6 @@
 """마감일 캘린더 등록 API(F-32). Google 호출은 respx로 가로챈다. SQL은 test_calendar_db.py가 본다."""
 
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -12,8 +13,10 @@ from fastapi.testclient import TestClient
 from app.clock import current_time
 from app.config import Settings, get_settings
 from app.crypto import decrypt, encrypt
+from app.eligibility import KST
 from app.main import create_app
 from app.repositories.calendar import (
+    AssignmentDeadline,
     GoogleTokens,
     OpportunityDeadline,
     get_calendar_repo,
@@ -25,6 +28,7 @@ EVENTS = "/api/v1/calendar/events"
 API_BASE = "https://calendar.test/v3"
 TOKEN_URL = "https://oauth.test/token"
 INSERT = f"{API_BASE}/calendars/primary/events"
+ASSIGNMENT_ID = "55555555-5555-4555-8555-555555555555"
 OPPORTUNITY_ID = "00000000-0000-4000-8000-0000000000e1"
 EVENT_ID = "00000000-0000-4000-8000-0000000000e2"
 GCAL_ID = EVENT_ID.replace("-", "")  # Google 일정 번호는 기록 행의 id에서 만든다
@@ -41,11 +45,15 @@ class FakeCalendarRepository:
         self.opportunity: OpportunityDeadline | None = OpportunityDeadline(
             OPPORTUNITY_ID, "한양브레인 장학금", DEADLINE
         )
+        self.assignment: AssignmentDeadline | None = AssignmentDeadline(
+            ASSIGNMENT_ID, "실습 2주차 결과 제출", "데이터베이스", DEADLINE
+        )
         self.events: dict[str, CalendarEventView] = {}
         self.saved: list[tuple[str, int]] = []
         self.added: list[dict[str, Any]] = []
         self.attached: list[tuple[str, str]] = []
         self.removed: list[str] = []
+        self.uncommitted: list[str] = []  # 아직 확정하지 않은 자리(rollback이 지운다)
 
     async def tokens(self, user_id: str) -> GoogleTokens | None:
         return self.tokens_row if user_id == USER_ID else None
@@ -60,10 +68,22 @@ class FakeCalendarRepository:
             return None
         return self.opportunity
 
+    async def assignment_deadline(
+        self, user_id: str, assignment_id: str
+    ) -> AssignmentDeadline | None:
+        if user_id != USER_ID or assignment_id != ASSIGNMENT_ID:
+            return None
+        return self.assignment
+
     async def event_for(
-        self, user_id: str, opportunity_id: str, provider: str
+        self,
+        user_id: str,
+        provider: str,
+        *,
+        opportunity_id: str | None = None,
+        lms_assignment_id: str | None = None,
     ) -> CalendarEventView | None:
-        return self.events.get(f"{opportunity_id}:{provider}")
+        return self.events.get(f"{opportunity_id or lms_assignment_id}:{provider}")
 
     async def one(self, user_id: str, event_id: str) -> CalendarEventView | None:
         if user_id != USER_ID:
@@ -71,9 +91,18 @@ class FakeCalendarRepository:
         return next((e for e in self.events.values() if e.id == event_id), None)
 
     async def reserve(self, user_id: str, **values: Any) -> CalendarEventView:
-        key = f"{values['opportunity_id']}:{values['provider']}"
-        if key in self.events:  # 그새 다른 요청이 잡았다
-            return self.events[key]
+        """실제 저장소처럼 `on conflict ... where external_event_id is null`을 흉내 낸다."""
+        target = values.get("opportunity_id") or values.get("lms_assignment_id")
+        key = f"{target}:{values['provider']}"
+        found = self.events.get(key)
+        if found is not None:  # 그새 다른 요청이 잡았거나, 넣다 만 자리가 남아 있다
+            if found.external_event_id is not None:
+                return found
+            fresh = found.model_copy(
+                update={"title": values["title"], "starts_at": values["starts_at"]}
+            )
+            self.events[key] = fresh
+            return fresh
         self.added.append(values)
         event = CalendarEventView(
             id=EVENT_ID,
@@ -84,7 +113,17 @@ class FakeCalendarRepository:
             all_day=False,
         )
         self.events[key] = event
+        self.uncommitted.append(key)
         return event
+
+    async def commit_reservation(self) -> None:
+        self.uncommitted.clear()
+
+    def rollback(self) -> None:
+        """요청이 예외로 끝나면 커넥션이 하는 일(확정하지 않은 자리는 사라진다)."""
+        for key in self.uncommitted:
+            self.events.pop(key, None)
+        self.uncommitted.clear()
 
     async def attach(self, user_id: str, event_id: str, external_event_id: str) -> None:
         self.attached.append((event_id, external_event_id))
@@ -226,7 +265,47 @@ def test_google_errors_become_502(
     assert "boom" not in res.json()["error"]["message"]  # 바깥 문구를 그대로 내보내지 않는다
     # 자리는 잡아 두되 번호는 붙지 않는다. 다시 누르면 같은 자리를 써서 캘린더에 하나만 들어간다
     assert calendar.attached == []
+    calendar.rollback()  # 예외로 끝난 요청의 커넥션이 하는 일. 확정했으면 자리는 남는다
     assert calendar.events[f"{OPPORTUNITY_ID}:google"].external_event_id is None
+
+
+def test_a_failed_google_call_keeps_the_place_so_the_retry_adds_one_event(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    """Google이 502일 때 자리가 사라지면, 다시 눌렀을 때 **다른 번호**로 들어가 일정이 두 개가 된다.
+
+    요청 커넥션은 예외가 나면 통째로 롤백되므로, 자리 잡기는 Google을 부르기 전에 확정해야 한다.
+    """
+    with respx.mock(assert_all_called=True) as router:
+        router.post(INSERT).mock(return_value=httpx.Response(500, json={"error": "boom"}))
+        client.post(EVENTS, json={"opportunity_id": OPPORTUNITY_ID}, headers=auth)
+    calendar.rollback()
+
+    with respx.mock(assert_all_called=True) as router:
+        insert = router.post(INSERT).mock(return_value=httpx.Response(200, json={"id": "gcal-1"}))
+        again = client.post(EVENTS, json={"opportunity_id": OPPORTUNITY_ID}, headers=auth)
+    assert again.status_code == 201
+    assert len(calendar.added) == 1  # 자리를 새로 만들지 않았다
+    assert json.loads(insert.calls[0].request.content)["id"] == EVENT_ID.replace("-", "")
+
+
+def test_a_place_left_over_from_a_changed_deadline_is_refreshed(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    """넣다 만 자리가 남아 있고 그새 마감이 바뀌었으면, 그 자리의 제목·시각을 새로 맞춰 넣는다."""
+    with respx.mock(assert_all_called=True) as router:
+        router.post(INSERT).mock(return_value=httpx.Response(500, json={"error": "boom"}))
+        client.post(EVENTS, json={"opportunity_id": OPPORTUNITY_ID}, headers=auth)
+    moved = DEADLINE + timedelta(days=1)
+    calendar.opportunity = OpportunityDeadline(OPPORTUNITY_ID, "한양브레인 장학금 (연장)", moved)
+
+    with respx.mock(assert_all_called=True) as router:
+        insert = router.post(INSERT).mock(return_value=httpx.Response(200, json={"id": "gcal-1"}))
+        body = client.post(EVENTS, json={"opportunity_id": OPPORTUNITY_ID}, headers=auth).json()
+    sent = json.loads(insert.calls[0].request.content)
+    assert sent["end"]["dateTime"] == moved.astimezone(KST).isoformat()
+    assert body["title"] == "[마감] 한양브레인 장학금 (연장)"
+    assert body["starts_at"] == (moved - timedelta(hours=1)).astimezone(KST).isoformat()
 
 
 def test_an_unprepared_or_undated_opportunity_is_refused(
@@ -416,3 +495,79 @@ def test_a_broken_token_asks_to_connect_again(
     calendar.tokens_row = GoogleTokens("못-푸는-값", "못-푸는-값", NOW + timedelta(minutes=30))
     res = client.post(EVENTS, json={"opportunity_id": OPPORTUNITY_ID}, headers=auth)
     assert (res.status_code, res.json()["error"]["details"]) == (409, {"reason": "expired"})
+
+
+# ── LMS 과제 마감 (F-51) ────────────────────────────────────────────────────
+
+
+def test_an_assignment_deadline_goes_in_with_the_course_in_the_title(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    """제목에 과목을 앞세운다 — 캘린더에서 어느 수업 과제인지 바로 보인다."""
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post(INSERT).mock(return_value=httpx.Response(200, json={"id": GCAL_ID}))
+        response = client.post(EVENTS, json={"lms_assignment_id": ASSIGNMENT_ID}, headers=auth)
+    assert response.status_code == 201
+    body = response.json()
+    assert body["title"] == "[과제] 데이터베이스 · 실습 2주차 결과 제출"
+    assert body["external_event_id"] == GCAL_ID
+    assert body["all_day"] is False
+    sent = json.loads(route.calls[0].request.content)
+    assert sent["summary"] == body["title"]
+    # 마감 시각으로 끝나는 1시간이다(공고와 같은 규칙)
+    assert sent["end"]["dateTime"].startswith(DEADLINE.astimezone(KST).isoformat()[:16])
+    assert calendar.added[0]["lms_assignment_id"] == ASSIGNMENT_ID
+
+
+def test_adding_the_same_assignment_twice_keeps_one_event(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    with respx.mock(assert_all_called=True) as router:
+        router.post(INSERT).mock(return_value=httpx.Response(200, json={"id": GCAL_ID}))
+        first = client.post(EVENTS, json={"lms_assignment_id": ASSIGNMENT_ID}, headers=auth)
+    with respx.mock(assert_all_called=False) as router:
+        route = router.post(INSERT).mock(return_value=httpx.Response(200, json={"id": "other"}))
+        again = client.post(EVENTS, json={"lms_assignment_id": ASSIGNMENT_ID}, headers=auth)
+    assert (first.status_code, again.status_code) == (201, 200)
+    assert not route.called
+    assert len(calendar.added) == 1
+
+
+def test_an_assignment_without_a_deadline_is_refused(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    assert calendar.assignment is not None
+    calendar.assignment = AssignmentDeadline(ASSIGNMENT_ID, "마감 없는 과제", "데이터베이스", None)
+    response = client.post(EVENTS, json={"lms_assignment_id": ASSIGNMENT_ID}, headers=auth)
+    assert response.status_code == 422
+    assert "lms_assignment_id" in response.json()["error"]["details"]["fields"]
+
+
+def test_an_assignment_past_its_deadline_is_refused(
+    client: TestClient, auth: dict[str, str], calendar: FakeCalendarRepository
+) -> None:
+    calendar.assignment = AssignmentDeadline(
+        ASSIGNMENT_ID, "지난 과제", "데이터베이스", NOW - timedelta(days=1)
+    )
+    response = client.post(EVENTS, json={"lms_assignment_id": ASSIGNMENT_ID}, headers=auth)
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "DEADLINE_PASSED"
+
+
+def test_an_assignment_that_is_not_mine_is_not_found(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    other = "66666666-6666-4666-8666-666666666666"
+    response = client.post(EVENTS, json={"lms_assignment_id": other}, headers=auth)
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_exactly_one_target_is_required(client: TestClient, auth: dict[str, str]) -> None:
+    both = {"opportunity_id": OPPORTUNITY_ID, "lms_assignment_id": ASSIGNMENT_ID}
+    assert client.post(EVENTS, json=both, headers=auth).status_code == 422
+    assert client.post(EVENTS, json={}, headers=auth).status_code == 422
+    assert client.post(EVENTS, json={"provider": "google"}, headers=auth).status_code == 422
+    # 강의계획서 일정은 F-14와 함께 연다(아직 모르는 칸이다)
+    syllabus = {"syllabus_item_id": "77777777-7777-4777-8777-777777777777"}
+    assert client.post(EVENTS, json=syllabus, headers=auth).status_code == 422
