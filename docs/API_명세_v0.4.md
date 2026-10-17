@@ -50,6 +50,8 @@
 >
 > v0.4 보강(10/16, LMS): LMS 응답 규칙 확정(10/16 녹화), 허용 경로 여섯 개
 >
+> v0.4 보강(10/17, LMS 과제 동기화): LMS 과제 동기화 규칙(F-51)
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -890,7 +892,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - 백엔드 LearningX 클라이언트는 GET 요청만 보낸다. 허용 경로 밖이면 요청을 보내기 전에 예외를 던진다
 - **10/16 녹화로 확정한 필드 규칙**(6과목·과제 17건·주차 항목 87건):
   - 과제 마감일은 `due_at ?? lock_at`이다. 녹화한 17건 중 5건은 `due_at`이 null이고 `lock_at`만 있었다
-  - 제출 여부는 `submission.workflow_state`가 `submitted`·`graded`인지로 본다. **`has_submitted_submissions`는 과목 전체 기준**이라 내가 안 낸 과제에도 true다(쓰지 않는다). 퀴즈는 자동 채점돼 바로 `graded`로 온다
+  - 제출 여부는 `submission.workflow_state`가 `submitted`·`graded`·`pending_review`인지로 본다. **`has_submitted_submissions`는 과목 전체 기준**이라 내가 안 낸 과제에도 true다(쓰지 않는다). 퀴즈는 자동 채점돼 바로 `graded`로 온다. `pending_review`는 녹화에서 못 봤지만 "냈고 손 채점만 남은" 상태라 제출로 센다 — 제출로 보지 않으면 할 일이 끝나지 않고 알림도 멈추지 않는다. 모르는 값이 오면 `unsubmitted`로 둔다(DB enum에 없는 값은 저장할 수 없다)
   - 주차 항목은 `canvas_item_id`로만 같은 항목인지 가린다. 제목이 같은 항목이 한 모듈에 둘씩 있다(녹화 87건 중 15쌍)
   - 항목 `type`은 `ExternalTool`(LearningX 출석·영상 LTI)·`Page`·`Quiz`·`Assignment`였고 **`File`은 한 건도 없었다**. 자료 파일은 Canvas에 없고 LearningX 안에서만 열린다(PRD 5-6). 바로가기는 `html_url`을 쓴다
   - `Assignment` 항목의 `content_id`는 과제 id, `Quiz` 항목의 `content_id`는 퀴즈 id(과제의 `quiz_id`)다 → 주차와 과제를 이어 "4주차 과제"로 보여줄 수 있다
@@ -938,7 +940,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 { "status": "active", "token_last4": "a9f2", "last_synced_at": "2026-10-01T10:30:00+09:00", "last_error": null }
 ```
 
-`status`는 DB에 있는 값을 그대로 준다(`active` · `error` · `disconnected`, `GET /me`의 `lms.status`와 같은 세 가지). `status = error`이면 `last_error`에 사용자용 메시지(예: "토큰이 만료되었거나 삭제되었어요"). 연결 안 됨은 `404 LMS_NOT_CONNECTED`.
+`status`는 DB에 있는 값을 그대로 준다(`active` · `error` · `disconnected`, `GET /me`의 `lms.status`와 같은 세 가지). `status = error`이면 `last_error`에 사용자용 메시지(예: "토큰이 만료되었거나 삭제되었어요"). 연결 안 됨은 `404 LMS_NOT_CONNECTED`. `last_synced_at`은 마지막으로 동기화를 **시작한** 시각이다(`POST /lms/sync`).
 
 ### `DELETE /lms/connection`
 
@@ -946,7 +948,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 
 ### `POST /lms/sync`
 
-대시보드 접속 시 프론트가 호출한다.
+대시보드 접속 시 프론트가 호출한다. 연결이 없으면 `404 LMS_NOT_CONNECTED`다.
 
 ```json
 // Response 202
@@ -955,6 +957,10 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 // Response 200 (마지막 동기화 5분 이내면 건너뜀)
 { "skipped": true, "last_synced_at": "2026-10-01T10:30:00+09:00" }
 ```
+
+- `last_synced_at`은 마지막으로 동기화를 **시작한** 시각이다. 시작할 때 한 문장으로 찍어 두기 때문에, 대시보드를 두 탭에서 열어도 한 번만 받고(둘째는 200), 늘 실패하는 사용자가 30분 배치의 앞자리를 영구히 차지하지도 않는다. 잘 받았는지는 `status`·`last_error`로 본다
+- 과목 목록을 읽지 못하면 실행이 `502 LMS_API_ERROR`로 끝난다(토큰이 막힌 경우는 `422 LMS_TOKEN_INVALID`이고 연결 상태가 `error`가 된다). **과목 하나의 과제 목록만 실패하면 그 과목은 두고 나머지를 저장한다** — 부분 목록으로 저장하면 못 받은 과제가 "사라진 과제"가 된다. 한 과목도 받지 못하면 동기화 전체가 502다
+- 202는 "시작했다"는 뜻이다. 결과와 실패 이유는 `GET /runs/{run_id}`로 본다
 
 완료 시 `result`:
 
@@ -967,6 +973,11 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   "new_announcements": 2
 }
 ```
+
+- `courses`는 이번에 과제까지 받은 과목 수다. `new`는 처음 저장한 과제, `due_changed`는 마감이 바뀐 과제, `submitted`는 이번에 제출로 바뀐 과제 수다
+- **처음 저장한 과제가 이미 제출된 상태면 할 일도 알림도 만들지 않는다**(`new`에는 센다). 연결하고 처음 받을 때 지난 학기 과제까지 한꺼번에 들어오기 때문이다(녹화 17건 중 13건이 제출·채점 완료였다)
+- 새 과제는 플래너 할 일이 되고 `new_assignment` 알림이 생긴다(마감이 있는 미제출 과제만). 마감이 바뀌면 아직 끝내지 않은 할 일의 날짜만 고친다. 제출하면 할 일이 자동 완료되고 아직 보내지 않은 알림은 지워진다(10장)
+- 마감 날짜를 캘린더에 넣는 일은 이 동기화에서 하지 않는다(사용자 캘린더에 쓰는 일이라 따로 정한다). `new_module_items`·`new_announcements`는 F-52·F-53이 채운다
 
 ### `GET /lms/courses`
 
@@ -1014,6 +1025,11 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 ### `GET /lms/assignments`
 
 `?state=open|submitted|all&lms_course_id=uuid`
+
+- `state`를 주지 않으면 `open`(아직 내지 않은 과제)이다. `submitted`는 낸 과제(`submitted`·`graded`·`pending_review`), `all`은 둘 다다
+- **LMS에서 사라진 과제와 수강을 뺀 과목의 과제는 어느 `state`에도 넣지 않는다**
+- 마감이 가까운 순이고, 마감이 없는 과제는 뒤에 온다. 순서는 서버가 정하고 DB의 정렬 규칙에 맡기지 않는다(`GET /lms/courses`와 같은 이유)
+- `planner_task_id`는 이 과제의 플래너 할 일(없으면 null), `calendar_registered`는 캘린더에 실제로 등록된 일정이 있는지다
 
 ```json
 {
@@ -1183,7 +1199,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 }
 ```
 
-`result`는 `kind`로 가린다: 준비하기는 `prepare`(7장), 포스터 추출은 `poster_extract`(6장)다. 아직 돌고 있거나 실패한 실행은 null이다.
+`result`는 `kind`로 가린다: 준비하기는 `prepare`(7장), 포스터 추출은 `poster_extract`(6장), LMS 동기화는 `lms_sync`(9장)다. 아직 돌고 있거나 실패한 실행은 null이다. 코드를 남기지 못한 실패는 `error.code`가 `INTERNAL_ERROR`이고 문구는 작업마다 다르다(동기화는 "LMS 자료를 가져오지 못했어요").
 
 단계마다 모델이 고른 도구를 구분해 보여준다. 공고 상세의 `process.extraction`도 같은 형식이다.
 
@@ -1212,7 +1228,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `POST /internal/jobs/crawl-notices` | 스케줄러 | 학교 공지 수집 → 요건 추출 → 전체 판정 |
 | `POST /internal/jobs/fetch-policies` | 스케줄러 | 온통청년 정책 수집 (담당 Dev 2). 지금은 사람이 `python -m app.youth.cli fetch`로 돌린다. 배포 때 같은 수집 함수(`app/youth/importer.collect`)를 부른다 |
 | `POST /internal/jobs/crawl-contests` | 스케줄러 | 공모전 수집 (P1) |
-| `POST /internal/jobs/lms-sync` | 스케줄러(30분) | LMS 연결된 전체 사용자 동기화 |
+| `POST /internal/jobs/lms-sync` | 스케줄러(30분) | LMS 연결된 사용자의 과목·과제 동기화(F-51). 오래 안 한 사람부터 한 번에 50명까지 보고, 최근 5분 안에 동기화를 시작한 사람은 건너뛴다. 한 사람이 실패해도 다음 사람을 계속하고(실패는 그 사람의 실행 기록에 남는다), 토큰이 막힌 사람만 연결을 `error`로 바꾼다. 응답은 `{users, synced, failed, skipped, new_assignments, due_changed, submitted}`이고 `skipped`는 그새 대시보드가 동기화를 시작했거나 연결이 사라진 사람 수다 |
 | `POST /internal/jobs/schedule-notifications` | 스케줄러(매일) | 공고 알림 예약(새 적격·마감 임박 D-3·D-1·정보 필요). 사용자당 `dedupe_key` 1행으로 upsert하고, 마감이 바뀌면 아직 보내지 않은 행의 시각만 고치며, 보낼 이유가 없어진 pending 행은 지운다. 응답은 `{created, rescheduled, removed, by_type}` |
 | `POST /internal/jobs/send-notifications` | 스케줄러(5분) | 예약된 알림 발송. 보내기 전에 숨김을 다시 보고, `profile_needed`는 사용자당 KST 하루 1건까지만 보낸다. 푸시 구독이 없거나 푸시를 끈 사용자는 푸시만 건너뛰고 행은 알림함에 남는다. 응답은 `{due, sent, pushable, skipped}`이고 `pushable`은 푸시를 보낼 수 있었던 알림 수다 |
 | `POST /internal/jobs/expire-opportunities` | 스케줄러(매일) | 마감 지난 공고 `expired` 처리 |

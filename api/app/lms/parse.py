@@ -9,6 +9,15 @@ LearningX 과목명은 `202620HY23525_데이터베이스` 꼴이다(2026-10-16 �
 
 import re
 from dataclasses import dataclass
+from typing import Any
+
+BIGINT_MAX = 2**63 - 1  # Canvas 번호는 bigint 칸에 들어가야 한다
+
+
+def is_canvas_id(value: Any) -> bool:
+    """Canvas 번호로 쓸 수 있는 값인지. bool과 bigint를 넘는 수는 거른다(그대로 넣으면 DB가 터진다)."""
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= BIGINT_MAX
+
 
 # 명세 8장의 링크 그대로. 사용자 브라우저에서 열면 그 과목 계획서 팝업이 뜬다
 PORTAL_SYLLABUS_URL = (

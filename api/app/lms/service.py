@@ -1,6 +1,6 @@
 """LearningX 연결 (F-50). 토큰을 확인하고 암호화해 저장한 뒤 수강 과목을 받아 둔다.
 
-순서(명세 8장): `GET /api/v1/users/self`로 확인 → 과목 목록 → 저장. 두 호출 모두 실행 하나(`lms_sync`)
+순서(명세 9장): `GET /api/v1/users/self`로 확인 → 과목 목록 → 저장. 두 호출 모두 실행 하나(`lms_sync`)
 안에서 도구로 기록한다(외부 호출은 agent_run 안에서만). 확인에 실패하면 아무것도 저장하지
 않고 422 `LMS_TOKEN_INVALID`다(실행은 실패로 남는다). 과목 목록을 읽지 못하면 502 `LMS_API_ERROR`이고 역시 저장하지 않는다
 (과목을 못 읽으면 과제·자료도 못 읽어서 연결해 둘 뜻이 없다).
@@ -21,23 +21,21 @@ from app.crypto import encrypt
 from app.db import get_log_connect
 from app.errors import ApiError
 from app.lms.client import LearningXClient, LearningXError
+from app.lms.parse import is_canvas_id
 from app.repositories.lms import LmsRepoDep, LmsRepository
 from app.schemas.lms import ConnectResult
 
 logger = logging.getLogger(__name__)
 
+NOT_CONNECTED = (
+    "LearningX를 연결해 주세요."  # 404 LMS_NOT_CONNECTED의 문구(라우터·동기화가 함께 쓴다)
+)
 TOKEN_INVALID = "토큰을 확인할 수 없어요. 복사할 때 앞뒤 공백이 들어갔는지 확인해 주세요."
 TOKEN_EXPIRED = "토큰이 만료되었거나 삭제되었어요."
 API_ERROR = "LearningX가 응답하지 않아요. 잠시 후 다시 시도해 주세요."
 # 학생 등록인 과목만 본다(청강·조교 과목은 과제가 내 것이 아니다)
 STUDENT = "student"
 OPEN_STATES = ("available", "completed")  # 그 밖(unpublished 등)은 아직 열지 않은 과목이다
-BIGINT_MAX = 2**63 - 1  # Canvas 번호는 bigint 칸에 들어가야 한다
-
-
-def _canvas_id(value: Any) -> bool:
-    """과목 번호로 쓸 수 있는 값인지. bool과 bigint를 넘는 수는 거른다(그대로 넣으면 DB가 터진다)."""
-    return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= BIGINT_MAX
 
 
 def student_courses(courses: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -51,7 +49,7 @@ def student_courses(courses: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if (
             is_student
             and course.get("workflow_state") in OPEN_STATES
-            and _canvas_id(course.get("id"))
+            and is_canvas_id(course.get("id"))
         ):
             mine.append(course)
     return mine
