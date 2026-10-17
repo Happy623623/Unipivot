@@ -58,6 +58,8 @@
 >
 > v0.4 보강(10/17, 과제 캘린더): `POST /calendar/events`가 `lms_assignment_id`를 받는다, 동기화가 새 과제 마감을 설정 켠 사람만 자동 등록하고 마감 변경은 기존 일정만 고친다, result에 `calendar_events`·`calendar_moved`
 >
+> v0.4 보강(10/17, 계획서 추출): `kind = syllabus` 업로드(글자 있는 PDF 10쪽), `POST /syllabi/extract`의 과목 연결·학기 기준·근거 검사·`is_confirmed` false, 에러 `SYLLABUS_READ_FAILED`
+>
 > v0.4 보강(10/17, 연 소득·취업 상태): 프로필에 `annual_income`(본인 연 소득, 만 원, 0~30000)·`job_status` 추가, `profile_completion.total` 19, 소득 선택 동의 항목 4개
 >
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
@@ -593,10 +595,11 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 - 같은 사용자가 같은 파일(sha256)을 같은 kind로 다시 올리면 새로 저장하지 않고 `200`과 기존 `file_id`를 준다. 다섯 필드는 두 경우 모두 있다
 - 에러: `FILE_TOO_LARGE`(413), `PAGE_LIMIT_EXCEEDED`(413), `UNSUPPORTED_FILE_TYPE`(400), `DAILY_UPLOAD_LIMIT`(429, `details.reset_at`은 한도가 풀리는 KST 내일 0시), `STORAGE_API_ERROR`(502)
-- 허용 형식: poster는 jpg·png·webp와 **2쪽 이하 PDF**, syllabus·lecture_material은 pdf. 포스터 PDF가 3쪽 이상이면 `413 PAGE_LIMIT_EXCEEDED`. 크기는 20MB까지다
+- 허용 형식: poster는 jpg·png·webp와 **2쪽 이하 PDF**, syllabus는 **글자가 있는 10쪽 이하 PDF**, lecture_material은 pdf다. 쪽수를 넘기면 `413 PAGE_LIMIT_EXCEEDED`. 크기는 20MB까지다
+- 계획서(syllabus)는 **PDF에서 글자를 뽑을 수 있어야** 받는다. 사진을 PDF로 감싼 파일은 `400 UNSUPPORTED_FILE_TYPE`이고, 포털 계획서를 브라우저에서 PDF로 저장해 올리라고 안내한다
 - 형식은 파일 이름·Content-Type이 아니라 **앞부분 바이트**로 가린다. 이름만 `.jpg`로 바꾼 파일은 `400 UNSUPPORTED_FILE_TYPE`이다
 - HEIC(아이폰 기본 사진 형식)는 **아직 받지 않는다**. `400 UNSUPPORTED_FILE_TYPE`과 함께 JPG로 바꿔 올리라고 안내한다(W6 2차 이후에 연다)
-- 지금은 `kind = poster`만 받는다. `syllabus`·`lecture_material`은 그 기능(F-14·F-15)과 함께 열고, 그때까지는 `422 VALIDATION_FAILED`(`details.fields.kind`)다. `lms_course_id`·`lms_module_item_id`도 그때 받는다
+- 지금은 `kind = poster`와 `syllabus`를 받는다. `lecture_material`은 그 기능(F-15)과 함께 열고, 그때까지는 `422 VALIDATION_FAILED`(`details.fields.kind`)다. 과목 연결은 업로드가 아니라 `POST /syllabi/extract`의 `lms_course_id`로 한다(`lms_module_item_id`는 F-15와 함께 받는다)
 - 하루 한도는 사용자당 **20개**다(KST 하루, 저장한 파일만 센다). 이미 올린 파일을 다시 올리는 것은 저장하지 않으므로 한도를 다 썼어도 `200`이다
 - 업로드한 파일 이름은 경로를 떼고 `files.original_name`에 저장한다
 - 파일은 비공개 Storage 버킷의 `<user_id>/<kind>/<file_id>.<확장자>`에 둔다. 저장소에 먼저 올리고 그다음에 기록을 남긴다(거꾸로 하면 끊겼을 때 없는 파일을 "이미 있어요"라고 가리킨다)
@@ -813,13 +816,20 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
   "syllabus_id": "uuid",
   "course_name": "데이터베이스",
   "items": [
-    { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-21T10:30:00+09:00" },
-    { "id": "uuid", "item_type": "presentation", "title": "팀 프로젝트 발표", "starts_at": "2026-12-09T10:30:00+09:00" }
+    { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-21T10:30:00+09:00", "is_confirmed": false },
+    { "id": "uuid", "item_type": "presentation", "title": "팀 프로젝트 발표", "starts_at": "2026-12-09T10:30:00+09:00", "is_confirmed": false }
   ]
 }
 ```
 
-- 이미 계획서가 있는 과목이면 `409 SYLLABUS_EXISTS`(교체하려면 `{"replace": true}`)
+- 이미 계획서가 있는 과목이면 `409 SYLLABUS_EXISTS`(교체하려면 `{"replace": true}`). 교체하면 옛 일정과 그것으로 만든 할 일·캘린더 기록도 함께 지워진다
+- `file_id`는 `POST /files`로 올린 **내 계획서**다(`kind = syllabus`). 남의 파일·다른 종류는 `404 NOT_FOUND`다
+- `lms_course_id`는 **비워도 된다**(LMS를 연결하지 않은 학생). 그때는 과목 연결 없이 저장하고, 과목당 하나 제한도 걸리지 않는다. 남의 과목·수강을 뺀 과목은 `404 NOT_FOUND`다
+- 연도 없는 날짜("8주차 10/20")는 **그 과목의 학기** 안에서 읽는다(과목명 `202620HY…` → 2026-2 → 9월 1일 시작). 과목을 붙이지 않았으면 올린 날이 든 학기로 본다. 학기 범위를 벗어난 날짜는 버린다
+- 모델이 낸 일정은 **계획서 글자에 근거 줄이 있는 것만** 저장한다(지어낸 일정을 막는다). 시각이 없으면 그날 09:00(KST)으로 두고 학생이 확인 화면에서 고친다. 한 계획서에서 30개까지 받는다
+- 저장한 일정은 모두 `is_confirmed` false다. 플래너·캘린더로 가는 것은 `POST /syllabi/{id}/confirm`에서 고른 것뿐이다
+- 글자를 뽑지 못하면 실행이 `422 SYLLABUS_READ_FAILED`로 실패한다(실행의 `error`로 전달). 모델이 멈추면 `502 LLM_TIMEOUT`, 저장소에서 파일을 받지 못하면 `502 STORAGE_API_ERROR`다
+- 처리 과정(`GET /runs/{id}`의 `steps`)은 "계획서 글자 읽기" → "시험·발표 일정 저장" 두 단계다
 
 ### `POST /syllabi/{id}/confirm`
 
@@ -1274,10 +1284,11 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `NOT_FOUND` | 404 | 대상 없음(숨김·과목 비공개 포함) | 에러 화면 |
 | `VALIDATION_FAILED` | 422 | 입력값 검증 실패, `details.fields`에 필드별 사유 | 필드 아래 표시 |
 | `FILE_TOO_LARGE` | 413 | 파일 크기 초과(20MB) | 안내 문구 |
-| `PAGE_LIMIT_EXCEEDED` | 413 | 포스터 PDF 쪽수 초과(2쪽까지) | 안내 문구 |
+| `PAGE_LIMIT_EXCEEDED` | 413 | PDF 쪽수 초과(포스터 2쪽·계획서 10쪽까지) | 안내 문구 |
 | `MATERIAL_TOO_LONG` | 413 | 강의자료 토큰 상한 초과, `details.suggested_ranges` 제공 | 쪽 범위 선택 화면 |
 | `UNSUPPORTED_FILE_TYPE` | 400 | 허용되지 않은 형식 | 안내 문구 |
 | `POSTER_READ_FAILED` | 422 | 포스터에서 글자·공고 이름을 읽지 못함(실행 결과의 error로 전달) | 다시 찍어 올리기 안내 |
+| `SYLLABUS_READ_FAILED` | 422 | 계획서에서 글자·일정을 읽지 못함(실행 결과의 error로 전달) | 다시 올리기 안내 |
 | `DAILY_UPLOAD_LIMIT` | 429 | 하루 업로드 한도 초과, `details.reset_at` | 안내 문구 |
 | `REPORT_NOT_ALLOWED` · `ALREADY_REPORTED` | 400 · 409 | 신고 불가·중복 신고 (P1, 신고와 함께) | 토스트 |
 | `NOT_ELIGIBLE` | 409 | 부적격 공고 준비하기 | "그래도 준비하기" 확인 |

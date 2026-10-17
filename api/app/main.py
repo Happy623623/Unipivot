@@ -26,6 +26,7 @@ from app.routers import (
     planner,
     posters,
     runs,
+    syllabi,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         planner.router,
         posters.router,
         runs.router,
+        syllabi.router,
     ):
         app.include_router(router, prefix=settings.api_prefix)
     return app
