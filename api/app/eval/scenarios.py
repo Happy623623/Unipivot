@@ -3,21 +3,23 @@
 시나리오는 세계를 만들고(사용자·공고) 실제 엔드포인트를 부르며, `world.check`로 기대 결과에 닿았는지
 본다. 다르면 그 자리에서 멈추고 실패로 남는다 — 뒤 단계가 앞 단계의 결과를 쓰기 때문이다.
 
-판정·요건이 S01–S08, 포스터·준비하기·캘린더·알림이 S11–S14다. PRD 8장의 P0는 S01–S18 열여덟 개이고,
-여기 있는 것은 그중 열한 개다. 없는 것과 이유:
+판정·요건이 S01–S08, 포스터·준비하기·캘린더·알림이 S11–S14, LMS 과제가 S16–S18이다. PRD 8장의
+P0는 S01–S18 열여덟 개이고, 여기 있는 것은 그중 **열다섯 개**다. 없는 것과 이유:
 
 - S09(요건이 첨부에만 있는 공고)·S10(공지 수정 재수집): 입력이 실제 HWP·PDF 파일과 저장한 공지
   폴더다. 그 파일을 레포에 둔 뒤에 붙인다
-- S15–S18(LMS 과제·자료): 그 기능(F-14·F-50대)을 아직 만들지 않았다
+- S15(강의계획서 가져오기): `POST /syllabi/extract`(F-14)를 아직 만들지 않았다
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 import httpx
 
+from app.eligibility import KST
 from app.eval.fakes import (
+    DB_COURSE_ID,
     poster_bytes,
     poster_deadline,
     poster_submit,
@@ -579,6 +581,207 @@ async def s14(world: EvalWorld) -> None:
     await world.check("읽음 처리", expected=0, actual=read.json()["unread_count"])
 
 
+# ── S16–S18: LMS 과제 (녹화 응답) ───────────────────────────────────────────
+# 전/후 두 벌을 두는 대신 녹화한 응답을 시나리오가 고친다(app/eval/fakes.py의 RecordedLearningX).
+
+LMS_TOKEN = "18742~evalRecordedTokenValue00000000"  # 녹화한 토큰 **모양**(값은 가짜다)
+NEW_ASSIGNMENT = 9_901_900  # 시나리오 전용 번호대(fakes.py 머리말)
+NEW_TITLE = "실습 4주차 결과 제출"
+OPEN_ASSIGNMENT = 9_901_242  # 연결할 때 이미 있던 미제출 과제(실습 2주차)
+OPEN_TITLE = "실습 2주차 결과 제출"
+OPEN_DUE_DAYS = 8  # 그 과제의 마감(녹화 기준 시계에서 며칠 뒤)
+NEW_DUE_DAYS = 12  # 새로 올라온 과제의 마감
+MOVED_DUE_DAYS = 15  # 마감이 밀린 뒤
+
+
+async def s16(world: EvalWorld) -> None:
+    """LearningX 연결 → 새 과제가 올라옴 → 다음 동기화에서 캘린더·플래너에 1건 + 알림.
+
+    연결은 과목 목록까지만 받는다(명세 8장). 과제는 바로 뒤에 부르는 첫 동기화가 받는다.
+    """
+    student = await world.user(grade=3)
+    client, jobs = world.client(student), world.internal()
+    await _connect_calendar(world, client)
+    first = await _connect_lms(world, client)
+    await world.check("과목 둘을 받음", expected=2, actual=first["courses"])
+    # 처음 저장한 과제는 셋이다(미제출 1 · 이미 낸 것 1 · 채점까지 끝난 퀴즈 1)
+    await world.check("과제 셋을 저장", expected=3, actual=first["assignments"]["new"])
+    # 그중 캘린더·플래너·알림은 **마감이 있고 아직 내지 않은** 하나만(명세 9장)
+    await world.check("캘린더에 1건", expected=1, actual=first["calendar_events"])
+    # 주차 항목도 처음 받는다. 이 숫자가 0이면 앞 실행이 남긴 행이 있는 것이다(항목은 과목 공통 표다)
+    await world.check("주차 항목 1건을 처음 봄", expected=1, actual=first["new_module_items"])
+
+    # 다음 주, 교수가 새 과제를 올렸다
+    world.lms.add_assignment(DB_COURSE_ID, NEW_ASSIGNMENT, NEW_TITLE, in_days=NEW_DUE_DAYS)
+    world.travel(minutes=6)  # 5분 안에 또 부르면 서버가 건너뛴다(명세 9장)
+    result = await _sync(world, client)
+
+    await world.check("새 과제 1건", expected=1, actual=result["assignments"]["new"])
+    await world.check("캘린더에 1건 더", expected=1, actual=result["calendar_events"])
+    await world.check("시각 고친 일정 없음", expected=0, actual=result["calendar_moved"])
+    await world.check(
+        "캘린더 일정 두 개(제목에 과목)",
+        expected=[
+            "[과제] 데이터베이스 · 실습 2주차 결과 제출",
+            f"[과제] 데이터베이스 · {NEW_TITLE}",
+        ],
+        actual=sorted(world.calendar.titles.values()),
+    )
+
+    tasks = await _tasks(world, client)
+    await world.check(
+        "플래너에 할 일 두 개", expected=[OPEN_TITLE, NEW_TITLE], actual=sorted(tasks)
+    )
+
+    # 발송 작업은 DB 전체의 보낼 알림을 본다(남의 것도 센다). 그래서 "두 건 이상"만 보고,
+    # 정확한 확인은 내 알림함으로 한다
+    sent = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
+    await world.check("보낼 알림이 있었다", expected=True, actual=sent["sent"] >= 2)
+    await world.check(
+        "알림함에 새 과제 두 건",
+        expected=[OPEN_TITLE, NEW_TITLE],
+        actual=sorted(await _assignment_notices(world, client)),
+    )
+
+
+async def s17(world: EvalWorld) -> None:
+    """LMS 과제 마감 변경 → 기존 캘린더 일정의 시각만 고친다(새 일정 없음)."""
+    student = await world.user(grade=3)
+    client = world.client(student)
+    await _connect_calendar(world, client)
+    await _connect_lms(world, client)
+    inserted, event_id = world.calendar.inserts, next(iter(world.calendar.events))
+    before = len(await _tasks(world, client, done=None))
+    await world.check("할 일 하나로 시작", expected=1, actual=before)
+
+    world.lms.change_due(OPEN_ASSIGNMENT, in_days=MOVED_DUE_DAYS)  # 마감이 한 주 밀렸다
+    world.travel(minutes=6)
+    result = await _sync(world, client)
+
+    await world.check("마감 바뀐 과제 1건", expected=1, actual=result["assignments"]["due_changed"])
+    await world.check("새로 넣은 일정 없음", expected=0, actual=result["calendar_events"])
+    await world.check("시각 고친 일정 1건", expected=1, actual=result["calendar_moved"])
+    await world.check("Google에 새로 넣지 않음", expected=inserted, actual=world.calendar.inserts)
+    await world.check("일정은 그대로 하나", expected=[event_id], actual=list(world.calendar.events))
+    # 기준은 **녹화가 센 시각**(시나리오 시작 시각)이다. travel 뒤의 today로 세면 자정 근처에서
+    # 하루가 밀려, 기능과 무관하게 깨진다
+    moved_day = (world.lms.now.astimezone(KST) + timedelta(days=MOVED_DUE_DAYS)).date()
+    await world.check(
+        "끝 시각이 새 마감",
+        expected=datetime.combine(moved_day, time(23, 59, 59), tzinfo=KST),
+        actual=world.calendar.events[event_id].ends_at.astimezone(KST),
+    )
+    await world.check(
+        "할 일 날짜도 옮겨짐",
+        expected=[moved_day.isoformat()],
+        actual=[task for title, task in await _task_dates(world, client) if title == OPEN_TITLE],
+    )
+    after = len(await _tasks(world, client, done=None))
+    await world.check("할 일이 늘지 않음", expected=1, actual=after)
+
+
+async def s18(world: EvalWorld) -> None:
+    """LMS 과제 제출 → 플래너 할 일 자동 완료, 아직 보내지 않은 알림 취소."""
+    student = await world.user(grade=3)
+    client, jobs = world.client(student), world.internal()
+    await _connect_calendar(world, client)
+    await _connect_lms(world, client)
+    await world.check(
+        "할 일 하나", expected=[OPEN_TITLE], actual=sorted(await _tasks(world, client))
+    )
+    pending = await world.rows(
+        "select count(*) as count from notifications where user_id = %s and sent_at is null",
+        student,
+    )
+    await world.check("보내기 전 알림 하나", expected=1, actual=pending[0]["count"])
+
+    world.lms.submit(OPEN_ASSIGNMENT)  # 학생이 냈다
+    world.travel(minutes=6)
+    result = await _sync(world, client)
+
+    await world.check("제출로 바뀐 과제 1건", expected=1, actual=result["assignments"]["submitted"])
+    await world.check("남은 할 일 없음", expected=[], actual=await _tasks(world, client))
+    await world.check(
+        "자동 완료된 할 일 하나",
+        expected=[OPEN_TITLE],
+        actual=await _tasks(world, client, done=True),
+    )
+    left = await world.rows(
+        "select count(*) as count from notifications where user_id = %s and sent_at is null",
+        student,
+    )
+    await world.check("보내지 않은 알림은 지워짐", expected=0, actual=left[0]["count"])
+    # 발송 작업을 돌려도 내 알림함에는 아무것도 들어오지 않는다(지워졌으니까).
+    # `due`는 DB 전체 기준이라 남의 알림이 섞일 수 있어 내 행으로 센다
+    await jobs.post(world.path("/internal/jobs/send-notifications"))
+    mine = await world.rows(
+        "select count(*) as count from notifications where user_id = %s", student
+    )
+    await world.check("내 알림함에 남은 것 없음", expected=0, actual=mine[0]["count"])
+
+
+async def _connect_calendar(world: EvalWorld, client: httpx.AsyncClient) -> None:
+    """Google 캘린더를 먼저 연결한다(설정은 기본 켬이라 과제 마감이 자동으로 들어간다)."""
+    connected = await client.post(
+        world.path("/auth/google/tokens"),
+        json={"provider_token": "eval-access", "provider_refresh_token": "eval-refresh"},
+    )
+    await world.check("캘린더 연결", expected=200, actual=connected.status_code)
+
+
+async def _connect_lms(world: EvalWorld, client: httpx.AsyncClient) -> dict:
+    """LearningX를 연결하고(과목까지) 첫 동기화로 과제를 받는다. 그 결과를 돌려준다."""
+    connected = await client.post(world.path("/lms/connection"), json={"access_token": LMS_TOKEN})
+    await world.check("LearningX 연결", expected=201, actual=connected.status_code)
+    body = connected.json()
+    await world.check("수강 과목 둘", expected=2, actual=body["courses"])
+    run = await world.wait_run(client, body["first_sync_run_id"])
+    await world.check("연결 실행", expected="succeeded", actual=run["status"])
+    # 연결은 과목까지다. 과제는 바로 뒤 동기화가 받는다(건너뛰지 않아야 한다)
+    return await _sync(world, client)
+
+
+async def _sync(world: EvalWorld, client: httpx.AsyncClient) -> dict:
+    started = await client.post(world.path("/lms/sync"))
+    await world.check("동기화 시작", expected=202, actual=started.status_code)
+    run = await world.wait_run(client, started.json()["run_id"])
+    await world.check("동기화 실행", expected="succeeded", actual=run["status"])
+    result: dict = run["result"]
+    return result
+
+
+async def _tasks(world: EvalWorld, client: httpx.AsyncClient, done: bool | None = False) -> list:
+    """플래너에 보이는 LMS 과제 할 일 제목(기본은 아직 안 끝낸 것)."""
+    return [title for title, _ in await _task_dates(world, client, done)]
+
+
+async def _task_dates(
+    world: EvalWorld, client: httpx.AsyncClient, done: bool | None = False
+) -> list:
+    planner = await client.get(
+        world.path("/planner/tasks"),
+        params={
+            "from": world.today.isoformat(),
+            "to": (world.today + timedelta(days=30)).isoformat(),
+        },
+    )
+    return [
+        (task["title"], task["due_date"])
+        for task in planner.json()["items"]
+        if task["source"] == "lms_assignment" and (done is None or task["is_done"] == done)
+    ]
+
+
+async def _assignment_notices(world: EvalWorld, client: httpx.AsyncClient) -> list[str]:
+    """알림함에 보이는 새 과제 알림의 과제 제목(제목은 과목, 본문이 "과제 · 마감 …"이다)."""
+    box = (await client.get(world.path("/notifications"))).json()
+    return [
+        item["body"].split(" · 마감", 1)[0]
+        for item in box["items"]
+        if item["type"] == "new_assignment"
+    ]
+
+
 async def _deadlines(world: EvalWorld, client: httpx.AsyncClient) -> list[str]:
     """알림함에 보이는 마감 임박 알림의 D-day."""
     box = (await client.get(world.path("/notifications"))).json()
@@ -624,6 +827,9 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("S12", "흐릿한 포스터 → 저신뢰도 배지, 수정 가능", "P0", s12),
     Scenario("S13", "준비하기 → 캘린더 연결 → 등록 → 다시 눌러도 하나", "P0", s13),
     Scenario("S14", "마감 D-3·D-1 → 알림함에 한 번씩, 중복 없음", "P0", s14),
+    Scenario("S16", "LMS 새 과제(녹화 응답) → 캘린더·플래너 1건 + 알림", "P0", s16),
+    Scenario("S17", "LMS 과제 마감 변경 → 기존 캘린더 일정 수정, 새 이벤트 없음", "P0", s17),
+    Scenario("S18", "LMS 과제 제출 → 플래너 자동 완료, 보내지 않은 알림 취소", "P0", s18),
 )
 
 BY_CODE = {scenario.code: scenario for scenario in SCENARIOS}

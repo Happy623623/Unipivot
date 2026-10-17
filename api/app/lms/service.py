@@ -83,7 +83,6 @@ class LmsService:
                 token=encrypt(token, self.key),
                 last4=token[-4:],
                 canvas_user_id=me.get("id") if isinstance(me.get("id"), int) else None,
-                now=now,
             )
             run_id = run.id
         return ConnectResult(

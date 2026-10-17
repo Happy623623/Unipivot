@@ -60,15 +60,19 @@ async def test_it_saves_the_token_and_swaps_it_on_reconnect(world: dict[str, Any
     repo, me, now = world["repo"], world["me"], world["now"]
     assert await repo.connection(me) is None
 
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=77001, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=77001)
     first = await repo.connection(me)
     assert first is not None
     assert (first.status, first.token_last4, first.access_token) == ("active", "a9f2", "enc-1")
     assert first.canvas_user_id == 77001
-    assert first.last_synced_at == now
+    # 연결은 과목 목록까지만 받는다. 과제는 첫 동기화가 받으므로 "받은 적 없음"이 맞다
+    assert first.last_synced_at is None
 
-    later = now + timedelta(minutes=5)
-    await repo.save_connection(me, token="enc-2", last4="b8e1", canvas_user_id=77001, now=later)
+    await repo.touch_synced(me, now=now)  # 한 번 받아 뒀다
+    await repo.save_connection(me, token="enc-2", last4="b8e1", canvas_user_id=77001)
+    # 토큰을 갈아 끼우면 다시 비운다 — 방금 고친 토큰으로 곧바로 다시 받아야 한다
+    swapped = await repo.connection(me)
+    assert swapped is not None and swapped.last_synced_at is None
     second = await repo.connection(me)
     assert second is not None
     assert (second.access_token, second.token_last4) == ("enc-2", "b8e1")
@@ -81,22 +85,22 @@ async def test_it_saves_the_token_and_swaps_it_on_reconnect(world: dict[str, Any
 
 
 async def test_an_error_mark_is_cleared_when_the_token_is_replaced(world: dict[str, Any]) -> None:
-    repo, me, now = world["repo"], world["me"], world["now"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    repo, me = world["repo"], world["me"]
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     await repo.mark_error(me, "토큰이 만료되었거나 삭제되었어요.")
     broken = await repo.connection(me)
     assert broken is not None and broken.status == "error"
     assert broken.view().status == "error" and broken.view().last_error is not None
 
-    await repo.save_connection(me, token="enc-2", last4="b8e1", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-2", last4="b8e1", canvas_user_id=1)
     fixed = await repo.connection(me)
     assert fixed is not None and (fixed.status, fixed.last_error) == ("active", None)
 
 
 async def test_the_connection_status_goes_out_as_the_db_has_it(world: dict[str, Any]) -> None:
     """DB enum은 active·error·disconnected 셋이다. GET /me도 그 값을 그대로 쓰므로 뭉개지 않는다."""
-    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    repo, me, conn = world["repo"], world["me"], world["conn"]
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     for status in ("active", "error", "disconnected"):
         await conn.execute(
             "update lms_connections set status = %s where user_id = %s", (status, me)
@@ -106,15 +110,15 @@ async def test_the_connection_status_goes_out_as_the_db_has_it(world: dict[str, 
 
 
 async def test_the_connection_repr_does_not_show_the_token(world: dict[str, Any]) -> None:
-    repo, me, now = world["repo"], world["me"], world["now"]
-    await repo.save_connection(me, token="enc-secret-1", last4="a9f2", canvas_user_id=1, now=now)
+    repo, me = world["repo"], world["me"]
+    await repo.save_connection(me, token="enc-secret-1", last4="a9f2", canvas_user_id=1)
     found = await repo.connection(me)
     assert found is not None and "enc-secret-1" not in repr(found)
 
 
 async def test_disconnecting_removes_the_token_but_keeps_the_courses(world: dict[str, Any]) -> None:
     repo, me, now = world["repo"], world["me"], world["now"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     await repo.save_courses(me, MINE, now=now)
 
     assert await repo.delete_connection(me) is True
@@ -306,7 +310,7 @@ async def test_a_module_item_counts_for_everyone_taking_that_course(world: dict[
 
 async def test_my_courses_and_connection_are_not_someone_elses(world: dict[str, Any]) -> None:
     repo, me, other, now = world["repo"], world["me"], world["other"], world["now"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     await repo.save_courses(me, MINE, now=now)
 
     assert await repo.connection(other) is None
@@ -877,7 +881,7 @@ async def test_dropping_nothing_is_fine(world: dict[str, Any]) -> None:
 
 async def test_touching_the_sync_time_clears_the_error(world: dict[str, Any]) -> None:
     repo, me, now = world["repo"], world["me"], world["now"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     await repo.mark_error(me, "토큰이 만료되었거나 삭제되었어요.")
 
     later = now + timedelta(hours=1)
@@ -891,11 +895,12 @@ async def test_touching_the_sync_time_clears_the_error(world: dict[str, Any]) ->
 async def test_a_sync_can_be_claimed_only_once_in_the_window(world: dict[str, Any]) -> None:
     """같은 사용자를 두 번 동시에 동기화하지 않는다. 한 문장으로 자리를 잡는다."""
     repo, me, now = world["repo"], world["me"], world["now"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     window = timedelta(minutes=5)
 
-    # 방금 연결해서 last_synced_at이 now다 → 5분 안에는 못 가져간다
-    assert await repo.claim_sync(me, now=now, before=now - window) is False
+    # 방금 연결했으면 받은 적이 없으니 바로 가져갈 수 있다(연결은 과목까지만 받는다)
+    assert await repo.claim_sync(me, now=now, before=now - window) is True
+    assert await repo.claim_sync(me, now=now, before=now - window) is False  # 5분 안에는 한 번
 
     later = now + timedelta(minutes=6)
     assert await repo.claim_sync(me, now=later, before=later - window) is True
@@ -909,7 +914,7 @@ async def test_a_claim_is_refused_when_there_is_no_connection(world: dict[str, A
     repo, me, now = world["repo"], world["me"], world["now"]
     assert await repo.claim_sync(me, now=now, before=now) is False
 
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     await world["conn"].execute(
         "update lms_connections set status = 'disconnected' where user_id = %s", (me,)
     )
@@ -919,7 +924,7 @@ async def test_a_claim_is_refused_when_there_is_no_connection(world: dict[str, A
 async def test_a_claim_does_not_touch_the_error_message(world: dict[str, Any]) -> None:
     """가져가는 것만으로 "잘 됐다"고 적지 않는다. 성공은 touch_synced가 적는다."""
     repo, me, now = world["repo"], world["me"], world["now"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     await repo.mark_error(me, "토큰이 만료되었거나 삭제되었어요.")
     later = now + timedelta(hours=1)
 
@@ -934,12 +939,10 @@ async def test_a_user_whose_sync_keeps_failing_does_not_block_the_queue(
 ) -> None:
     """실패해도 claim이 시각을 밀어 둔다. 안 그러면 그 사람이 영원히 배치 앞자리를 차지한다."""
     repo, me, other, now = world["repo"], world["me"], world["other"], world["now"]
-    await repo.save_connection(
-        me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now - timedelta(hours=3)
-    )
-    await repo.save_connection(
-        other, token="enc-2", last4="b8e1", canvas_user_id=2, now=now - timedelta(hours=2)
-    )
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
+    await repo.touch_synced(me, now=now - timedelta(hours=3))
+    await repo.save_connection(other, token="enc-2", last4="b8e1", canvas_user_id=2)
+    await repo.touch_synced(other, now=now - timedelta(hours=2))
     before = now - timedelta(minutes=5)
     assert await repo.connected_users(before=before, limit=10) == [me, other]
 
@@ -951,7 +954,7 @@ async def test_a_user_whose_sync_keeps_failing_does_not_block_the_queue(
 async def test_a_slow_sync_does_not_turn_the_clock_back(world: dict[str, Any]) -> None:
     """느린 동기화가 뒤에 시작한 동기화의 자리를 지워 버리면, 같은 사용자를 또 동기화하게 된다."""
     repo, me, now = world["repo"], world["me"], world["now"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     started = now + timedelta(minutes=10)  # 느린 동기화가 시작한 시각
     later = started + timedelta(minutes=6)  # 그 사이 배치가 가져갔다
     assert await repo.claim_sync(me, now=later, before=later - timedelta(minutes=5)) is True
@@ -964,7 +967,7 @@ async def test_a_slow_sync_does_not_turn_the_clock_back(world: dict[str, Any]) -
 async def test_finishing_a_sync_does_not_revive_a_disconnected_one(world: dict[str, Any]) -> None:
     """해제한 뒤에 끝난 동기화가 연결을 되살리면 안 된다."""
     repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     await conn.execute(
         "update lms_connections set status = 'disconnected' where user_id = %s", (me,)
     )
@@ -997,10 +1000,10 @@ async def test_an_already_finished_task_keeps_its_done_time(world: dict[str, Any
 
 async def test_the_batch_takes_the_ones_waiting_longest(world: dict[str, Any]) -> None:
     repo, me, other, now = world["repo"], world["me"], world["other"], world["now"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
-    await repo.save_connection(
-        other, token="enc-2", last4="b8e1", canvas_user_id=2, now=now - timedelta(hours=2)
-    )
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
+    await repo.touch_synced(me, now=now)  # 방금 받았다
+    await repo.save_connection(other, token="enc-2", last4="b8e1", canvas_user_id=2)
+    await repo.touch_synced(other, now=now - timedelta(hours=2))
 
     waiting = await repo.connected_users(before=now - timedelta(minutes=5), limit=10)
     assert waiting == [other]  # 방금 받은 me는 건너뛴다
@@ -1011,7 +1014,7 @@ async def test_the_batch_takes_the_ones_waiting_longest(world: dict[str, Any]) -
 
 async def test_a_disconnected_user_is_not_synced(world: dict[str, Any]) -> None:
     repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     await conn.execute(
         "update lms_connections set status = 'disconnected' where user_id = %s", (me,)
     )
@@ -1021,7 +1024,7 @@ async def test_a_disconnected_user_is_not_synced(world: dict[str, Any]) -> None:
 async def test_a_broken_token_is_still_tried_again(world: dict[str, Any]) -> None:
     """error 상태도 배치에 넣는다. 사용자가 LMS에서 토큰을 되살리면 거기서 풀린다."""
     repo, me, now = world["repo"], world["me"], world["now"]
-    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
     await repo.mark_error(me, "토큰이 만료되었거나 삭제되었어요.")
     assert await repo.connected_users(before=now + timedelta(minutes=1), limit=10) == [me]
 
@@ -1225,7 +1228,7 @@ async def test_a_new_item_notifies_everyone_taking_the_course(world: dict[str, A
     )
     notes = NotificationRepository(conn)
     for user in (me, other):
-        await repo.save_connection(user, token="enc", last4="a9f2", canvas_user_id=1, now=now)
+        await repo.save_connection(user, token="enc", last4="a9f2", canvas_user_id=1)
         await repo.save_courses(user, [DATABASE], now=now)
     await repo.save_module_items(me, DATABASE["id"], module_items(DB_MODULES), now=now)
     fresh = await repo.save_module_items(
@@ -1266,7 +1269,7 @@ async def test_a_muted_student_gets_no_material_notice(world: dict[str, Any]) ->
     )
     notes = NotificationRepository(conn)
     for user in (me, other):
-        await repo.save_connection(user, token="enc", last4="a9f2", canvas_user_id=1, now=now)
+        await repo.save_connection(user, token="enc", last4="a9f2", canvas_user_id=1)
         await repo.save_courses(user, [DATABASE], now=now)
     saved = await repo.save_module_items(
         me, DATABASE["id"], [CanvasModuleItem(8569302, "3주차", "강의", "Page", None)], now=now
@@ -1294,7 +1297,7 @@ async def test_a_student_who_disconnected_gets_no_material_notice(world: dict[st
     )
     notes = NotificationRepository(conn)
     for user in (me, other):
-        await repo.save_connection(user, token="enc", last4="a9f2", canvas_user_id=1, now=now)
+        await repo.save_connection(user, token="enc", last4="a9f2", canvas_user_id=1)
         await repo.save_courses(user, [DATABASE], now=now)
     saved = await repo.save_module_items(
         me, DATABASE["id"], [CanvasModuleItem(8569302, "3주차", "강의", "Page", None)], now=now
@@ -1348,7 +1351,7 @@ async def test_a_dropped_course_gets_no_material_notice(world: dict[str, Any]) -
     """수강을 뺀 과목의 새 자료는 알리지 않는다."""
     repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
     notes = NotificationRepository(conn)
-    await repo.save_connection(me, token="enc", last4="a9f2", canvas_user_id=1, now=now)
+    await repo.save_connection(me, token="enc", last4="a9f2", canvas_user_id=1)
     await repo.save_courses(me, [DATABASE], now=now)
     saved = await repo.save_module_items(
         me, DATABASE["id"], [CanvasModuleItem(8569302, "3주차", "강의", "Page", None)], now=now
