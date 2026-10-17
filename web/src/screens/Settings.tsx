@@ -10,7 +10,6 @@ import {
   getMe,
   getProfile,
   getSettings,
-  NOTIFICATION_SETTINGS_READY,
   saveProfile,
   saveSettings,
 } from "@/api/client";
@@ -99,8 +98,17 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
     setToast(message);
     setTimeout(() => setToast(""), 2400);
   };
+  // 토글은 누르는 즉시 움직이고(낙관), 저장에 실패하면 되돌리고 알려 준다. 서버 응답으로
+  // 다시 덮어쓰지 않는다 — 연달아 누르면 늦게 온 응답이 마지막 클릭을 덮어쓴다
   const updateSettings = async (next: SettingsData) => {
-    setSettingsOverride(await saveSettings(next));
+    const before = settings;
+    setSettingsOverride(next);
+    try {
+      await saveSettings(next);
+    } catch (caught) {
+      setSettingsOverride(before);
+      showToast(errorMessage(caught, "설정을 저장하지 못했어요. 잠시 후 다시 눌러 주세요."));
+    }
   };
   const openProfile = (open: boolean) => {
     setProfileError(null);
@@ -169,7 +177,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
         calendarResult={calendarResult}
         onMeChange={setMeOverride}
       />
-      {NOTIFICATION_SETTINGS_READY && <NotificationSettings settings={settings} onChange={updateSettings} />}
+      <NotificationSettings settings={settings} onChange={updateSettings} />
       <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
         <h2 className="text-[18px] font-semibold">계정</h2>
         <IncomeConsentSetting consented={me.income_info_consented} onChanged={async () => {

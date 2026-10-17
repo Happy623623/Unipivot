@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getCourses,
   getLmsConnection,
   getLmsUpdates,
   nowIso,
+  syncLmsNow,
   todayKst,
 } from "@/api/client";
 import Badge from "@/components/Badge";
@@ -88,13 +89,36 @@ function UpdateItem({
 }
 
 export default function Academics({ navigate }: AcademicsProps) {
+  const [syncedAt, setSyncedAt] = useState(0); // 동기화가 끝나면 올려서 목록을 다시 받는다
   const request = useAsyncData(
     () => Promise.all([getLmsConnection(), getCourses(), getLmsUpdates()]),
-    [],
+    [syncedAt],
   );
   const [connectionOverride, setConnectionOverride] =
     useState<LmsConnection | null>(null);
   const [connectOpen, setConnectOpen] = useState(false);
+  // 연결하면 서버가 이미 과목을 받아 뒀다(첫 동기화도 끝났다). 목록을 다시 받아야 화면이 채워진다
+  const connected = (next: LmsConnection) => {
+    setConnectionOverride(next);
+    setSyncedAt(Date.now());
+  };
+  const status = (connectionOverride ?? request.data?.[0])?.status ?? null;
+
+  // 화면을 열면 LMS를 한 번 받아 온다(명세 9장). 마지막 동기화가 5분 안이면 서버가 건너뛴다.
+  // 받는 동안에도 저장해 둔 과제·자료를 그대로 보여 주고, 새로 받으면 그때 다시 그린다.
+  // 다시 받는 동안에는 status가 잠깐 비므로, 화면을 열어 둔 동안 한 번만 부르게 막아 둔다
+  const asked = useRef(false);
+  useEffect(() => {
+    if (status !== "active" || asked.current) return;
+    asked.current = true;
+    let alive = true;
+    syncLmsNow().then((fresh) => {
+      if (alive && fresh) setSyncedAt(Date.now());
+    });
+    return () => {
+      alive = false;
+    };
+  }, [status]);
 
   if (request.loading) return <AcademicsSkeleton />;
   if (request.error || !request.data) {
@@ -120,10 +144,13 @@ export default function Academics({ navigate }: AcademicsProps) {
           </p>
           <div className="mt-6"><Button onClick={() => setConnectOpen(true)}>LearningX 연결하기</Button></div>
         </section>
+        {/* 연결 창은 연결 전·후 트리에서 **같은 자리(세 번째)**에 둔다. 자리가 바뀌면 React가 창을
+            새로 만들어 "연결했어요" 대신 1단계가 다시 뜬다 */}
         <LmsConnectModal
+          key="lms-connect"
           open={connectOpen}
           onClose={() => setConnectOpen(false)}
-          onConnected={setConnectionOverride}
+          onConnected={connected}
         />
       </>
     );
@@ -135,7 +162,7 @@ export default function Academics({ navigate }: AcademicsProps) {
       {connection.status === "error" ? (
         <section className="flex items-center justify-between gap-4 rounded-[14px] bg-[#fef2f2] p-[18px]">
           <p className="text-[13px] font-semibold text-[#c53030]">
-            LearningX 연결이 끊겼어요. 토큰이 만료됐거나 삭제됐어요
+            {connection.last_error ?? "LearningX 연결이 끊겼어요. 토큰이 만료됐거나 삭제됐어요"}
           </p>
           <Button secondary onClick={() => setConnectOpen(true)}>다시 연결</Button>
         </section>
@@ -172,8 +199,24 @@ export default function Academics({ navigate }: AcademicsProps) {
           </button>
         ))}
       </section>
+      {courses.length === 0 && (
+        <section className="rounded-2xl border border-[#e5e7eb] bg-white p-8 text-center">
+          <p className="text-[14px] font-semibold">아직 받아온 과목이 없어요</p>
+          <p className="mt-2 text-[13px] text-[#667085]">
+            이번 학기 수강 과목이 LearningX에 올라와 있는지 확인하고 다시 받아와 주세요.
+          </p>
+          <div className="mt-5">
+            <Button secondary onClick={() => setSyncedAt(Date.now())}>다시 받아오기</Button>
+          </div>
+        </section>
+      )}
       <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
         <h2 className="text-[18px] font-semibold">새로 들어온 학업 정보</h2>
+        {updates.length === 0 && (
+          <p className="mt-3 text-[13px] text-[#667085]">
+            최근 2주 동안 새로 올라온 자료나 과제가 없어요. 과목을 누르면 지난 자료도 볼 수 있어요.
+          </p>
+        )}
         <div className="mt-3 flex flex-col gap-3">
           {updates.map((update) => (
             <UpdateItem
@@ -185,9 +228,10 @@ export default function Academics({ navigate }: AcademicsProps) {
         </div>
       </section>
       <LmsConnectModal
+        key="lms-connect"
         open={connectOpen}
         onClose={() => setConnectOpen(false)}
-        onConnected={setConnectionOverride}
+        onConnected={connected}
       />
     </>
   );

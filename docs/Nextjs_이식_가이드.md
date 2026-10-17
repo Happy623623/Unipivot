@@ -532,7 +532,7 @@ npm run build      # 타입 검사 포함
 | `getMe` | `GET /me` | `consented`, `unread_notifications` 포함 · 실제 API 연결(10/11) |
 | `getProfile` · `saveProfile` | `GET` · `PATCH /me/profile` | 저장하면 서버가 재판정 · 실제 API 연결(10/11) |
 | `saveConsents` | `POST /me/consents` | 온보딩 동의 · 실제 API 연결(10/11) |
-| `getSettings` · `saveSettings` | `GET` · `PATCH /me/settings` | P1. API 전까지 실제 모드는 설정에서 알림 구역을 숨긴다 |
+| `getSettings` · `saveSettings` | `GET` · `PATCH /me/settings` | 실제 API 연결(10/17) · 화면은 설정 전체를 보내고 서버는 받은 항목만 바꾼다 |
 | `getFeed` | `GET /opportunities` | 판정 결과를 eligibility 없이 50개씩 끝까지 받아 화면에서 묶는다(칩은 category, 기타 = research·exam·etc). 정렬 `deadline`·`recent`. 실제 API 연결(10/12) |
 | `getOpportunity` | `GET /opportunities/{id}` | 서버가 다시 판정하고 조회 기록을 남긴다. 형식이 틀린 id(422)는 없는 공고로 안내. 실제 API 연결(10/12) |
 | `reportOpportunity` | `POST /opportunities/{id}/reports` | |
@@ -542,10 +542,11 @@ npm run build      # 타입 검사 포함
 | `uploadPosterFile` | `POST /files` | 실제 API 연결(10/15) · multipart, 같은 파일이면 200 `reused` |
 | `extractPoster` | `POST /posters/extract` → `waitForRun` | 실제 API 연결(10/15) · 처리 과정은 실행의 steps를 그대로 보여 준다. run_id도 함께 돌려준다(등록에 쓴다) |
 | `registerPosterOpportunity` | `POST /posters/confirm` | 실제 API 연결(10/15) · run_id와 고친 draft를 보낸다. 중복이면 `merged: true`와 기존 공고 |
-| `getLmsConnection` · `connectLms` · `disconnectLms` | `GET` · `POST` · `DELETE /lms/connection` | API 전까지 실제 모드는 '연결되지 않음', 연결 창은 준비 중 안내 |
-| `getCourses` · `getCourse` | `GET /lms/courses` · `GET /lms/courses/{id}` | |
-| `getLmsUpdates` | `GET /lms/updates` | |
-| `getMaterial` | `GET /materials/{file_id}` | 8장 필드 이름 대조 필요 |
+| `getLmsConnection` · `connectLms` · `disconnectLms` | `GET` · `POST` · `DELETE /lms/connection` | 실제 API 연결(10/17) · 연결이 없으면 404라 '연결 안 됨'으로 바꿔 준다. `connectLms`는 연결 결과(`LmsConnectResult`)를 주고 첫 동기화까지 기다린다 |
+| `syncLmsNow` (새로) | `POST /lms/sync` → `waitForRun` | 실제 API 연결(10/17) · 학업 화면을 열 때 한 번. 5분 안에 받았으면 서버가 건너뛰고 false다 |
+| `getCourses` · `getCourse` | `GET /lms/courses` · `GET /lms/courses/{id}` | 실제 API 연결(10/17) · 상세를 열면 서버가 '봤다'고 적어 새 자료 수가 줄어든다 |
+| `getLmsUpdates` | `GET /lms/updates` | 실제 API 연결(10/17) · 최근 14일 한 쪽(50개). 공지는 F-53이 채운다 |
+| `getMaterial` | `GET /materials/{file_id}` | 8장 필드 이름 대조 필요 · API 전까지 실제 모드는 준비 중 안내 |
 | `getNotifications` · `markNotificationRead` · `markAllNotificationsRead` | `GET /notifications` · `POST /notifications/read` | 실제 API 연결(10/16) · 목록은 `{items, unread_count, next_cursor}`이고 읽음 처리는 새 안 읽은 수를 돌려준다. 헤더 패널과 알림함 화면이 `useNotifications`로 받는다 |
 | `reconnectCalendar` | Google 화면으로 이동(증분 승인, `connectGoogleCalendar("/settings")`) → 콜백이 `POST /auth/google/tokens` | 돌아오면 `/settings?calendar=connected`·`error`. 실제 API 연결(10/11) |
 | `deleteAccount` | `DELETE /me` | API 전까지 실제 모드는 탈퇴 창에서 준비 중 안내 |

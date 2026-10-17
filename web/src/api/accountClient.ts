@@ -97,16 +97,18 @@ export function recordEvent(event: ClientEvent, opportunityId?: string): void {
   }).catch(() => undefined);
 }
 
-// 알림 설정(P1)을 보여 줄지. TODO(api): GET·PATCH /me/settings가 생기면 아래 두 함수를 바꾸고 지운다.
-// 그 전까지 실제 모드는 설정 화면에서 알림 구역을 숨긴다(목 값이 저장되는 것처럼 보이지 않게)
-export const NOTIFICATION_SETTINGS_READY = USE_MOCKS;
-
+// GET /me/settings. 바꾼 적이 없으면 서버가 기본값을 준다(푸시 켬·끈 종류 없음·자동 등록 켬)
 export function getSettings(): Promise<Settings> {
-  return mock.getSettings();
+  return USE_MOCKS ? mock.getSettings() : apiFetch<Settings>("/me/settings");
 }
 
+// PATCH /me/settings. 화면은 설정 전체를 보내고 서버는 받은 항목만 바꾼다
 export function saveSettings(settings: Settings): Promise<Settings> {
-  return mock.saveSettings(settings);
+  if (USE_MOCKS) return mock.saveSettings(settings);
+  return apiFetch<Settings>("/me/settings", {
+    method: "PATCH",
+    body: JSON.stringify(settings),
+  });
 }
 
 // 알림함 한 쪽에 담는 알림 수. 서버 최대값은 50이다(API 명세 10장)
