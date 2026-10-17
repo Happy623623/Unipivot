@@ -54,6 +54,8 @@
 >
 > v0.4 보강(10/17, LMS 새 자료): 주차 항목 첫 수집 표시(F-52)
 >
+> v0.4 보강(10/17, 과목 상세): 과목 상세 규칙(F-14)
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1015,16 +1017,20 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 {
   "course": { "id": "uuid", "short_name": "선형대수", "has_syllabus": true, "portal_syllabus_url": "https://portal.hanyang.ac.kr/...", "html_url": "https://learning.hanyang.ac.kr/courses/..." },
   "assignments": [ { "id": "uuid", "title": "Homework 4", "due_at": "2026-10-13T23:59:00+09:00", "submission_state": "unsubmitted", "html_url": "https://learning.hanyang.ac.kr/..." } ],
-  "module_items": [ { "id": "uuid", "module_name": "8주차", "title": "08 - Eigenvalues", "html_url": "https://learning.hanyang.ac.kr/...", "is_new": true, "uploaded_file_id": null } ],
+  "module_items": [ { "id": "uuid", "module_name": "8주차", "title": "08 - Eigenvalues", "item_type": "ExternalTool", "html_url": "https://learning.hanyang.ac.kr/...", "is_new": true, "uploaded_file_id": null } ],
   "announcements": [ { "id": "uuid", "title": "강의실 변경 안내", "summary": "다음 주 수업은 다른 강의실에서 한다", "category": "schedule_change", "posted_at": "2026-10-04T14:00:00+09:00", "opportunity_id": null } ],
   "syllabus_items": [ { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-20T10:30:00+09:00", "is_confirmed": true } ],
   "materials": [ { "file_id": "uuid", "original_name": "08_eigen.pdf", "status": "succeeded" } ]
 }
 ```
 
-- 부르면 그 과목의 `last_viewed_at`을 지금으로 바꾼다. `is_new`는 바꾸기 전 값으로 계산한다
+- 부르면 그 과목의 `last_viewed_at`을 지금으로 바꾼다. `is_new`는 바꾸기 전 값으로 계산한다(시각을 뒤로 돌리지는 않는다 — 주차 항목 첫 수집이 밀어 둔 값을 지우면 지난 자료가 다시 "새 자료"가 된다)
 - 분반 한정 공지(`is_section_specific`)는 내려주지 않는다
-- `course.html_url`은 "LMS에서 열기" 링크다
+- `course.html_url`은 "LMS에서 열기" 링크다. 과목 주소는 저장하지 않고 LMS 주소 + 과목 번호로 만든다
+- **남의 과목과 수강을 뺀 과목(`is_active` false)은 404 `NOT_FOUND`다**
+- 순서는 서버가 정한다(DB 정렬 규칙에 맡기지 않는다): 과제는 마감이 가까운 순(마감 없는 것은 뒤), 주차 항목은 **새 항목 먼저** 다음 주차·제목 순, 공지는 올린 순(최신 먼저), 계획서 일정은 날짜 순, 내 자료는 올린 순(최신 먼저). 값이 같으면 id로 가른다
+- `module_items[].item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`다(녹화에 `File`은 없었다). `module_name`·`html_url`·`item_type`은 null일 수 있다
+- `materials[].status`는 요약 상태다. 파일만 올리고 아직 요약하지 않았으면 `pending`이다
 
 ### `GET /lms/assignments`
 

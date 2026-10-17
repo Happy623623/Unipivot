@@ -44,14 +44,16 @@ export default function CourseAssignments({
             </div>
             <div className="flex items-center gap-3">
               <Badge tone={status.tone}>{status.label}</Badge>
-              <a
-                href={assignment.html_url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-[12px] font-semibold text-[#4f6ef7]"
-              >
-                LMS에서 제출
-              </a>
+              {assignment.html_url && (
+                <a
+                  href={assignment.html_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[12px] font-semibold text-[#4f6ef7]"
+                >
+                  LMS에서 제출
+                </a>
+              )}
             </div>
           </article>
         );
