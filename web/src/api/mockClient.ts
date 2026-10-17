@@ -33,6 +33,7 @@ import type {
   Department,
   FeedResponse,
   IncomeConsentResult,
+  LmsConnectResult,
   LmsConnection,
   LmsUpdate,
   MaterialDetail,
@@ -42,6 +43,7 @@ import type {
   OpportunityMark,
   Profile,
   Settings,
+  SyncResponse,
 } from "@/types/api";
 
 // 목 모드(NEXT_PUBLIC_USE_MOCKS=true)에서 쓰는 구현.
@@ -194,12 +196,18 @@ export function getLmsConnection(): Promise<LmsConnection> {
   return respond(result);
 }
 
-export function connectLms(token: string): Promise<LmsConnection> {
+export function connectLms(token: string): Promise<LmsConnectResult> {
   const normalized = token.trim();
   if (token !== normalized || normalized.length < 8) {
     return rejectAfter(new MockApiError("lms_invalid", "LearningX 토큰을 확인할 수 없어요."));
   }
-  return respond(connectStoredLms(normalized.slice(-4)));
+  const connection = connectStoredLms(normalized.slice(-4));
+  return respond({
+    status: "active",
+    token_last4: connection.token_last4 ?? normalized.slice(-4),
+    courses: courses.length,
+    first_sync_run_id: null, // 목 모드는 받아 둔 목데이터가 곧 결과다
+  });
 }
 
 export function disconnectLms(): Promise<LmsConnection> {
@@ -214,6 +222,21 @@ export function getCourse(id: string): Promise<CourseDetail> {
   const course = courseDetails[id];
   if (!course) return Promise.reject(new Error("과목을 찾을 수 없어요."));
   return respond(course);
+}
+
+// 목 모드는 받아 둔 목데이터가 곧 최신이다. 실제 모드와 같은 두 모양을 번갈아 준다 —
+// 첫 번째는 "받았다"(화면이 목록을 다시 받는 경로를 목에서도 한 번 돈다), 그 뒤는 "건너뜀"
+let syncedOnce = false;
+
+export function syncLms(): Promise<SyncResponse> {
+  if (syncedOnce) return respond({ skipped: true, last_synced_at: mockNow });
+  syncedOnce = true;
+  return respond({ run_id: "mock-sync-run", status: "running" });
+}
+
+// 목 모드는 /runs를 부르지 않고 바로 끝난 것으로 친다(목 자료는 이미 최신이다)
+export function syncLmsNow(): Promise<boolean> {
+  return syncLms().then((started) => "run_id" in started);
 }
 
 export function getLmsUpdates(): Promise<LmsUpdate[]> {
