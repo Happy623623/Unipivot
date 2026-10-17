@@ -188,6 +188,9 @@ class CourseHeader(BaseModel):
     id: str
     short_name: str
     has_syllabus: bool
+    # 그 과목 계획서의 번호(없으면 null). 확인 전 일정이 남았을 때 다시 올리지 않고
+    # `POST /syllabi/{id}/confirm`을 부르려면 이 번호가 필요하다(F-14)
+    syllabus_id: str | None = None
     portal_syllabus_url: str | None  # 과목명 꼴이 다르면 null
     html_url: str  # "LMS에서 열기". 과목 주소는 저장하지 않고 LMS 주소 + 과목 번호로 만든다
 

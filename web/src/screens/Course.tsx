@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getCourse } from "@/api/client";
+import { connectCalendar, getCourse } from "@/api/client";
 import CourseAnnouncements from "@/components/CourseAnnouncements";
 import CourseAssignments from "@/components/CourseAssignments";
 import CourseMaterials from "@/components/CourseMaterials";
@@ -7,14 +7,24 @@ import CourseSyllabus from "@/components/CourseSyllabus";
 import Header from "@/components/Header";
 import MaterialSummaryPanel from "@/components/MaterialSummaryPanel";
 import Skeleton from "@/components/Skeleton";
+import Toast from "@/components/Toast";
+import { routeToHref } from "@/lib/routes";
 import useAsyncData from "@/lib/useAsyncData";
+import useToast from "@/lib/useToast";
 import type { Route } from "@/types/route";
 
 type CourseTab = NonNullable<Extract<Route, { name: "course" }>["tab"]>;
 
+// 캘린더 연결에서 돌아올 곳(계획서 탭). 연결하면 ?calendar=connected로 여기로 온다
+function courseHref(id: string): string {
+  return `${routeToHref({ name: "course", id })}?tab=syllabus`;
+}
+
 interface CourseProps {
   id: string;
   initialTab?: CourseTab;
+  calendarConnected: boolean;
+  calendarResult?: "connected" | "error" | null; // 캘린더 연결에서 돌아온 결과
   navigate: (route: Route) => void;
 }
 
@@ -28,18 +38,24 @@ const tabs: { id: CourseTab; label: string }[] = [
 export default function Course({
   id,
   initialTab = "assignments",
+  calendarConnected,
+  calendarResult = null,
   navigate,
 }: CourseProps) {
   const [tab, setTab] = useState<CourseTab>(initialTab);
   const [summaryFileId, setSummaryFileId] = useState<string | null>(null);
-  const request = useAsyncData(() => getCourse(id), [id]);
+  // 계획서를 확정하면 과목 상세를 다시 받아 확정 표시와 새 일정을 보여 준다
+  const [reloads, setReloads] = useState(0);
+  const request = useAsyncData(() => getCourse(id), [id, reloads]);
+  const [toast, showToast] = useToast();
 
   useEffect(() => {
     setTab(initialTab);
     setSummaryFileId(null);
   }, [id, initialTab]);
 
-  if (request.loading) {
+  // 계획서를 확정해 다시 받는 동안에는 뼈대로 갈아 치우지 않는다 — 화면이 번쩍이고 안내가 사라진다
+  if (request.loading && !request.data) {
     return (
       <>
         <Skeleton className="h-[70px] w-[360px]" />
@@ -117,7 +133,16 @@ export default function Course({
               navigate={navigate}
             />
           )}
-          {tab === "syllabus" && <CourseSyllabus course={course} />}
+          {tab === "syllabus" && (
+            <CourseSyllabus
+              course={course}
+              calendarConnected={calendarConnected}
+              calendarResult={calendarResult}
+              onRefresh={() => setReloads((count) => count + 1)}
+              onConnectCalendar={() => connectCalendar(courseHref(id))}
+              onToast={showToast}
+            />
+          )}
         </section>
         {tab === "materials" && summaryFileId && (
           <MaterialSummaryPanel
@@ -126,6 +151,7 @@ export default function Course({
           />
         )}
       </div>
+      <Toast toast={toast} />
     </>
   );
 }

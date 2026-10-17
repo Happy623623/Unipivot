@@ -16,6 +16,7 @@ from app.uploads import (
     day_reset,
     day_start,
     inspect_poster,
+    inspect_syllabus,
     read_upload,
     sniff,
     storage_path,
@@ -107,6 +108,16 @@ def test_a_broken_pdf_is_turned_away_rather_than_counted_as_one_page() -> None:
         inspect_poster(b"%PDF-1.7\n" + "여기부터 깨졌다".encode())
     assert caught.value.status == 400
     assert caught.value.code == "UNSUPPORTED_FILE_TYPE"
+    assert "사진으로 찍어서" in caught.value.message  # 포스터는 사진으로 다시 찍으면 된다
+
+
+def test_a_broken_syllabus_pdf_is_not_told_to_take_a_photo() -> None:
+    """계획서는 사진을 받지 않는다. 깨진 PDF에 "사진으로 찍어서"라고 하면 막힌 길을 알려 주는 셈이다."""
+    with pytest.raises(ApiError) as caught:
+        inspect_syllabus(b"%PDF-1.7\n" + "여기부터 깨졌다".encode())
+    assert (caught.value.status, caught.value.code) == (400, "UNSUPPORTED_FILE_TYPE")
+    assert "PDF로 저장" in caught.value.message
+    assert "사진" not in caught.value.message
 
 
 def test_the_stored_name_drops_the_folder_and_the_control_characters() -> None:
