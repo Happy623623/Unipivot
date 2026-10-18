@@ -38,6 +38,8 @@ PAIRS = [
     ("SyllabusItemView", "SyllabusItemView"),
     ("SyllabusExtractResult", "SyllabusExtractResult"),
     ("SyllabusConfirmResult", "SyllabusConfirmResult"),
+    # 보내는 몸통이지만 어긋나면 똑같이 깨진다(구독이 저장되지 않아 푸시가 통째로 안 온다)
+    ("PushSubscriptionRequest", "PushSubscriptionRequest"),
 ]
 # `GET /lms/updates`는 종류별로 모양이 다르다(web은 합집합 하나로 적는다)
 UPDATE_PAIRS = [

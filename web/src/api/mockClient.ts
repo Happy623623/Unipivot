@@ -43,6 +43,7 @@ import type {
   OpportunityDetail,
   OpportunityMark,
   Profile,
+  PushSubscriptionRequest,
   Settings,
   SyncResponse,
 } from "@/types/api";
@@ -130,6 +131,16 @@ export function saveSettings(settings: Settings): Promise<Settings> {
 
 export function deleteAccount(): Promise<void> {
   deleteStoredAccount();
+  return new Promise((resolve) => setTimeout(resolve, WAIT_MS));
+}
+
+// 푸시 구독은 목 모드에서 서버에 올릴 곳이 없다. 받은 척만 하고 버린다
+// (브라우저 쪽 가짜 구독은 `lib/push.ts`가 메모리에 들고 있다)
+export function savePushSubscription(_subscription: PushSubscriptionRequest): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, WAIT_MS));
+}
+
+export function removePushSubscription(_endpoint: string): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, WAIT_MS));
 }
 

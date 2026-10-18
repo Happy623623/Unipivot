@@ -37,6 +37,7 @@ import type {
 export * from "@/api/accountClient";
 export * from "@/api/lmsClient";
 export * from "@/api/posterClient";
+export * from "@/api/pushClient";
 export * from "@/api/syllabusClient";
 export { ApiError, consentRequired, errorMessage, fieldErrors } from "@/api/http";
 export { MockApiError };

@@ -342,3 +342,14 @@ export interface NotificationList {
 export interface NotificationReadResult {
   unread_count: number;
 }
+
+// POST /push/subscriptions — 브라우저 PushManager.subscribe() 결과를 그대로 올린다 (명세 10장).
+// DELETE는 endpoint 하나만 보낸다
+export interface PushSubscriptionRequest {
+  endpoint: string;                      // https만 (422)
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  user_agent?: string;                   // 기기를 알아보게 적는 값 (최대 200자)
+}

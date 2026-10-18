@@ -6,6 +6,7 @@ import { getMe, recordEvent } from "@/api/client";
 import AppShell from "@/components/AppShell";
 import StatusPreview from "@/dev/StatusPreview";
 import { pathnameToRoute, useAppNavigate } from "@/lib/routes";
+import { syncPushSubscription } from "@/lib/usePushSubscription";
 import useAsyncData from "@/lib/useAsyncData";
 import type { Me } from "@/types/api";
 
@@ -25,6 +26,7 @@ export default function AppFrame({ children }: { children: ReactNode }) {
   const [unread, setUnread] = useState<number | null>(null);
   const meRequest = useAsyncData(getMe, [revision]);
   const openRecorded = useRef(false);
+  const pushSynced = useRef(false);
 
   useEffect(() => {
     setUnread(null);
@@ -38,6 +40,14 @@ export default function AppFrame({ children }: { children: ReactNode }) {
     if (!meRequest.data?.consented || openRecorded.current) return;
     openRecorded.current = true;
     recordEvent("app_open");
+  }, [meRequest.data]);
+
+  // 서비스 워커를 등록하고, 이 브라우저가 이미 들고 있는 푸시 구독을 서버에 다시 올린다(F-33).
+  // 브라우저가 구독 주소를 바꾸거나 같은 브라우저로 다른 사람이 로그인하면 여기서 맞춰진다
+  useEffect(() => {
+    if (!meRequest.data?.consented || pushSynced.current) return;
+    pushSynced.current = true;
+    void syncPushSubscription();
   }, [meRequest.data]);
 
   return (

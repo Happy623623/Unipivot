@@ -5,6 +5,7 @@ import Button from "@/components/Button";
 import Header from "@/components/Header";
 import { EmptyBox } from "@/components/HomeStates";
 import NotificationRow from "@/components/NotificationRow";
+import PushEnableBanner from "@/components/PushEnableBanner";
 import Skeleton from "@/components/Skeleton";
 import Toast from "@/components/Toast";
 import { formatKstLongDate, getKstDateKey } from "@/lib/format";
@@ -85,6 +86,7 @@ export default function Notifications({ navigate }: { navigate: (route: Route) =
           unreadNotifications > 0 ? `읽지 않은 알림 ${unreadNotifications}개` : "읽지 않은 알림이 없어요"
         }
       />
+      <PushEnableBanner onDone={showToast} />
       <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
         <div role="group" aria-label="알림 목록" className="flex items-baseline gap-4">
           {tabs.map((tab) => (
