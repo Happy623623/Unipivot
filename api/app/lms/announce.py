@@ -8,6 +8,8 @@
    한 트랜잭션에 쓴다. 공고는 그 과목 수강생만 본다(`visible_canvas_course_id`)
 4. 공고가 생기면 판정·알림은 **이미 있는 길**이 처리한다 — 피드·상세가 판정하고(S1-5), 적격이면
    예약 작업이 "새 공고" 알림을 만든다(F-33). 여기서 따로 부르지 않는다
+5. 일정 변경이고 **바뀌는 날을 읽었으면** 그 과목 수강생 모두의 플래너에 할 일을 넣고 일정 변경
+   알림을 만든다(F-53 2부). 날짜를 못 읽었거나 이미 지난 날이면 갈래만 적고 넘어간다
 
 지키는 것:
 - **동기화는 실패하지 않는다.** 분류가 터져도 과제·주차 자료는 이미 저장했고, 그 공지는 분류 전으로
@@ -19,7 +21,7 @@
 """
 
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -34,17 +36,20 @@ from app.extraction.store import load_departments
 from app.llm import LlmClient
 from app.lms.classify import Classified, classify
 from app.repositories.announcements import AnnouncementRepository, PendingAnnouncement
+from app.repositories.notifications import NotificationRepository, ScheduleNotice
 from app.schemas.opportunities import Category
 
 logger = logging.getLogger(__name__)
 Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 AgentFor = Callable[[Sequence[Department]], ExtractionAgent]
 RepoFor = Callable[[AsyncConnection], AnnouncementRepository]
+NotesFor = Callable[[AsyncConnection], NotificationRepository]
 DepartmentsFor = Callable[[AsyncConnection], Awaitable[Sequence[Department]]]
 
 MAX_PER_SYNC = 5  # 한 동기화에서 분류할 공지 수 상한(비용)
 RECENT_DAYS = 30  # 이보다 오래된 공지는 분류하지 않는다(지금 할 일이 없다)
 CLASSIFY_TOOL = "classify_announcement"  # 실행 기록의 도구 이름(처리 과정 F-42)
+SCHEDULE_TITLE = "{course} 수업 일정이 바뀌었어요"  # 일정 변경 알림 제목(F-53 2부)
 TOPIC_PATH = "{base}/courses/{course}/discussion_topics/{topic}"
 DEFAULT_KIND: Category = "etc"  # 분류를 다시 하지 않는 재시도에서 쓰는 공고 종류
 
@@ -55,6 +60,8 @@ class AnnouncementOutcome:
 
     classified: int = 0  # 이번에 갈래를 정한 공지 수
     opportunities: int = 0  # 그중 공고로 만든 수
+    schedule_tasks: int = 0  # 일정 변경으로 플래너에 넣은 할 일 수(수강생 전체 합)
+    notices: int = 0  # 그때 만든 일정 변경 알림 수
     failed: int = 0  # 모델·추출이 터져 다음으로 미룬 수
 
 
@@ -72,11 +79,13 @@ class AnnouncementService:
         limit: int = MAX_PER_SYNC,
         recent_days: int = RECENT_DAYS,
         repo_for: RepoFor = AnnouncementRepository,
+        notes_for: NotesFor = NotificationRepository,
         departments_for: DepartmentsFor = load_departments,
     ) -> None:
         self.transaction = transaction
         # 저장소·학과 목록은 바꿔 끼울 수 있다(테스트는 가짜를 넣는다)
         self.repo_for = repo_for
+        self.notes_for = notes_for
         self.departments_for = departments_for
         self.llm = llm
         self.classify_model = classify_model
@@ -86,9 +95,12 @@ class AnnouncementService:
         self.recent_days = recent_days
 
     async def run(
-        self, run: AgentRun, *, now: datetime, courses: Sequence[int]
+        self, run: AgentRun, *, now: datetime, courses: Mapping[int, str]
     ) -> AnnouncementOutcome:
-        """이 사용자의 과목 공지를 분류한다. 모델이 없거나 집을 것이 없으면 빈 결과다."""
+        """이 사용자의 과목 공지를 분류한다. 모델이 없거나 집을 것이 없으면 빈 결과다.
+
+        `courses`는 **과목 번호 → 화면 이름**이다(알림 문구에 과목 이름을 쓴다).
+        """
         if self.llm is None or not courses:
             return AnnouncementOutcome()
         async with self.transaction() as conn:
@@ -101,15 +113,20 @@ class AnnouncementService:
             return AnnouncementOutcome()
         outcome = AnnouncementOutcome()
         for one in pending:
-            outcome = _add(outcome, await self._one(run, one, now=now))
+            outcome = _add(outcome, await self._one(run, one, now=now, courses=courses))
         return outcome
 
     async def _one(
-        self, run: AgentRun, announcement: PendingAnnouncement, *, now: datetime
+        self,
+        run: AgentRun,
+        announcement: PendingAnnouncement,
+        *,
+        now: datetime,
+        courses: Mapping[int, str],
     ) -> AnnouncementOutcome:
         """공지 하나. 터지면 로그만 남기고 다음 공지로 간다(동기화는 성공이다)."""
         try:
-            return await self._classify_one(run, announcement, now=now)
+            return await self._classify_one(run, announcement, now=now, courses=courses)
         except Exception as exc:  # 모델 오류·시간 초과·DB 오류. 다음 동기화에서 다시 집는다
             logger.warning(
                 "공지를 분류하지 못해 다음으로 미뤄요: announcement %s, %r", announcement.id, exc
@@ -117,7 +134,12 @@ class AnnouncementService:
             return AnnouncementOutcome(failed=1)
 
     async def _classify_one(
-        self, run: AgentRun, announcement: PendingAnnouncement, *, now: datetime
+        self,
+        run: AgentRun,
+        announcement: PendingAnnouncement,
+        *,
+        now: datetime,
+        courses: Mapping[int, str],
     ) -> AnnouncementOutcome:
         if announcement.classified:
             # 분류는 끝났고 공고만 못 만든 공지다. 모델을 다시 부르지 않는다
@@ -148,10 +170,46 @@ class AnnouncementService:
                 summary=result.summary,
                 run_id=run.id,
             )
+        if result.is_schedule_change:
+            return await self._schedule(announcement, result, now=now, courses=courses)
         if not result.is_opportunity:
             return AnnouncementOutcome(classified=1)
         made = await self._opportunity(run, announcement, category_hint=result, now=now)
         return AnnouncementOutcome(classified=1, opportunities=1 if made else 0)
+
+    async def _schedule(
+        self,
+        announcement: PendingAnnouncement,
+        result: Classified,
+        *,
+        now: datetime,
+        courses: Mapping[int, str],
+    ) -> AnnouncementOutcome:
+        """일정 변경 공지 → 그 과목 수강생 모두의 플래너 할 일 + 일정 변경 알림(F-53 2부).
+
+        날짜를 못 읽었거나 **이미 지난 날**이면 갈래만 적고 끝낸다 — 지난 휴강은 할 일이 아니다.
+        """
+        on = result.change_date
+        if on is None or on < now.astimezone(KST).date():
+            return AnnouncementOutcome(classified=1)
+        course = courses.get(announcement.canvas_course_id, "")
+        async with self.transaction() as conn:
+            tasks = await self.repo_for(conn).add_schedule_task(
+                announcement.id,
+                announcement.canvas_course_id,
+                title=result.change_title,
+                on=on,
+            )
+            notices = await self.notes_for(conn).add_schedule_notices(
+                announcement.canvas_course_id,
+                ScheduleNotice(
+                    announcement_id=announcement.id,
+                    title=SCHEDULE_TITLE.format(course=course).strip(),
+                    body=result.summary or result.change_title,
+                ),
+                now=now,
+            )
+        return AnnouncementOutcome(classified=1, schedule_tasks=tasks, notices=notices)
 
     async def _opportunity(
         self,
@@ -204,6 +262,8 @@ def _add(left: AnnouncementOutcome, right: AnnouncementOutcome) -> AnnouncementO
     return AnnouncementOutcome(
         classified=left.classified + right.classified,
         opportunities=left.opportunities + right.opportunities,
+        schedule_tasks=left.schedule_tasks + right.schedule_tasks,
+        notices=left.notices + right.notices,
         failed=left.failed + right.failed,
     )
 

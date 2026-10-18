@@ -68,6 +68,8 @@
 >
 > v0.4 보강(10/18, 과목 공지 분류): 동기화가 과목 공지를 받아 저장하고 갈래를 나눈다(F-53 1부). `new_announcements`는 처음 본 공지 수, 기회성 공지는 그 과목 수강생만 보는 공고가 된다. `GET /lms/updates`의 `announcement` 항목을 채운다
 >
+> v0.4 보강(10/18, 일정 변경 공지): 일정 변경 공지는 바뀌는 날에 플래너 할 일(`source = lms_announcement`, 완료만 수정)과 `schedule_change` 알림을 **그 과목 수강생 모두에게** 만든다(F-53 2부). 새 글 피드의 `planner_task_id`가 그 할 일이다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -751,6 +753,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 ```
 
 - `link.type`: `opportunity` \| `syllabus_item` \| `lms_assignment` \| `lms_announcement` \| `null`
+- 공지에서 온 할 일은 **일정 변경 공지**(F-53)로 생긴 것이다. 제목은 `휴강`·`강의실 변경`·`수업 시간 변경`·`수업 일정 변경` 중 하나이고, 날짜는 공지가 말한 바뀌는 날이다. 칩(`link.title`)에는 과목 이름이 뜬다
 - `auto_completed`: LMS 제출로 자동 완료된 항목(F-51)
 - `markers`는 체크할 수 없는 표시 항목이다. 지금은 **준비를 마친** 공고의 마감일(`kind = deadline`)만 있다. 공고 상세의 `prep.prepared`와 같은 기준이라 준비하는 중이거나 멈춘 계획은 들어가지 않고, 날짜는 `deadline_at`을 KST 날짜로 바꾼 값이다. 마감일이 없는 상시 공고는 마커가 없다
 - `link.category`는 공고에서 온 할 일에만 있고, LMS·강의계획서 할 일은 칩에 과목명(`link.title`)을 쓴다
@@ -1153,6 +1156,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - `opportunity`로 분류된 공지는 `opportunity_id`로 공고 상세에 연결된다(그 공고는 그 과목 수강생만 본다)
 - 아직 올라오지 않은 예약 공지는 내려주지 않는다. 그래서 공지 항목의 `posted_at`은 늘 있다(과목 상세는 null일 수 있다)
 - 같은 동기화에 들어온 공지는 **올린 순**으로 저장한다. 피드가 처음 본 순이라, 그러지 않으면 같은 시각끼리 순서가 들쭉날쭉해진다
+- `planner_task_id`는 일정 변경 공지로 만든 플래너 할 일이다(F-53 2부). 바뀌는 날을 읽지 못했거나 이미 지난 날이면 null이다
 - `type`에 `assignment`(새 과제, 마감 D-3 이내 미제출 과제)를 더한다
 - 분반 한정 공지(`is_section_specific`)는 내려주지 않는다
 
@@ -1163,6 +1167,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - 알림 행은 `(user_id, dedupe_key)`로 upsert한다(키 형식은 ERD 5장). 같은 공고의 마감 임박 알림은 D-3과 D-1에 한 번씩이다. 알림 시각은 KST 09:00이고, 그 시점이 이미 지난 알림은 만들지 않는다(마감이 가까워 들어온 공고는 D-1만 받는다). 마감 임박은 적격이거나 준비한 공고에만 만든다
 - 공고 마감이 바뀌면 같은 키의 pending 알림에서 시각만 고친다. 과제를 제출했거나 준비를 취소하면 pending 알림을 지운다
 - 관심 없음(F-45)으로 표시한 공고는 공고 알림(new_eligible, 공고 deadline_soon, profile_needed)을 만들지 않고, 보내기 전에 다시 보고 표시가 있으면 건너뛴다(F-33 배치를 만들 때 적용)
+- `schedule_change`(일정 변경 공지, F-53 2부)는 **찾은 때 바로** 보낸다(다음 아침까지 미루면 휴강을 늦게 안다). 공지는 과목 공통이라 그 과목 수강생 모두에게 한 번씩 가고, 키는 `schedule_change:ann:{lms_announcement_id}`다. 바뀌는 날을 읽지 못했거나 이미 지난 날이면 만들지 않는다
 
 ### `GET /notifications`
 

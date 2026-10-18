@@ -58,6 +58,7 @@ DEADLINE_TITLE = "마감이 가까워요"
 PROFILE_TITLE = "프로필 정보가 필요해요"
 ASSIGNMENT_TYPE = "new_assignment"  # notifications.type·user_settings.muted_notification_types
 MATERIAL_TYPE = "new_material"  # 새 주차 항목(F-52). 과목 수강생 모두에게 간다
+SCHEDULE_TYPE = "schedule_change"  # 일정 변경 공지(F-53 2부). 과목 수강생 모두에게 간다
 _NEEDED = " 입력하면 판정할 수 있어요"
 
 # 공고 하나를 사용자 한 명에게 보일지 보는 조건. opportunities.VISIBLE과 같은 뜻이다
@@ -113,6 +114,15 @@ class MaterialNotice:
     """새 주차 항목 알림 하나. 문구는 과목 이름을 아는 쪽(app/lms/sync.py)에서 만든다."""
 
     item_id: str
+    title: str
+    body: str
+
+
+@dataclass(frozen=True)
+class ScheduleNotice:
+    """일정 변경 알림 하나(F-53 2부). 문구는 과목 이름을 아는 쪽에서 만든다."""
+
+    announcement_id: str
     title: str
     body: str
 
@@ -226,6 +236,36 @@ class NotificationRepository:
             )
             created += max(cursor.rowcount, 0)
         return created
+
+    async def add_schedule_notices(
+        self, canvas_course_id: int, notice: ScheduleNotice, *, now: datetime
+    ) -> int:
+        """일정 변경 알림을 **그 과목 수강생 모두에게** 만든다(F-53 2부, ERD 3-2).
+
+        키 꼴은 ERD 5장 표 그대로다: `schedule_change:ann:{lms_announcement_id}`. 찾은 때 바로
+        보낸다(새 과제 알림과 같다) — 휴강은 다음 아침에 알리면 늦는다.
+        """
+        cursor = await self.conn.execute(
+            "insert into notifications (user_id, type, lms_announcement_id, title, body,"
+            " scheduled_at, dedupe_key)"
+            " select c.user_id, %(type)s, %(ann)s::uuid, %(title)s, %(body)s, %(now)s,"
+            " %(type)s || ':ann:' || %(ann)s"
+            " from lms_courses c"
+            " join lms_connections n on n.user_id = c.user_id and n.status <> 'disconnected'"
+            " left join user_settings s on s.user_id = c.user_id"
+            " where c.canvas_course_id = %(canvas)s and coalesce(c.is_active, true)"
+            "   and not (%(type)s = any(coalesce(s.muted_notification_types, '{}')))"
+            " on conflict (user_id, dedupe_key) do nothing",
+            {
+                "canvas": canvas_course_id,
+                "type": SCHEDULE_TYPE,
+                "ann": notice.announcement_id,
+                "title": notice.title,
+                "body": notice.body,
+                "now": now,
+            },
+        )
+        return max(cursor.rowcount, 0)
 
     async def drop_assignment_notices(self, user_id: str, assignment_ids: Sequence[str]) -> int:
         """제출한 과제의 **아직 보내지 않은** 알림을 지운다(명세 10장). 보낸 알림은 알림함에 남는다."""

@@ -133,6 +133,7 @@ class SyncOutcome:
     new_announcements: int = 0  # 처음 본 과목 공지(F-53)
     classified: int = 0  # 그중 갈래를 정한 공지 수
     announcement_opportunities: int = 0  # 기회성 공지로 만든 공고 수
+    schedule_tasks: int = 0  # 일정 변경 공지로 넣은 플래너 할 일 수(수강생 전체 합)
     events: int = 0  # 캘린더에 넣은 과제 마감(F-51)
     moved_events: int = 0  # 마감이 바뀌어 시각을 고친 일정
     notices: int = 0
@@ -294,6 +295,7 @@ class LmsSyncService:
                 "new_announcements": outcome.new_announcements,
                 "classified_announcements": outcome.classified,
                 "announcement_opportunities": outcome.announcement_opportunities,
+                "schedule_tasks": outcome.schedule_tasks,
                 "notices": outcome.notices,
                 "failed_courses": outcome.failed_courses,
                 "calendar_events": outcome.events,
@@ -474,7 +476,9 @@ class LmsSyncService:
             return outcome
         try:
             made = await self.announcer.run(
-                run, now=job.now, courses=[course.canvas_course_id for course in rows]
+                run,
+                now=job.now,
+                courses={course.canvas_course_id: course.short_name for course in rows},
             )
         except Exception as exc:  # pending 조회가 터진 경우까지. 다음 동기화에서 다시 본다
             logger.warning("공지 분류를 건너뛰어요: user %s, %r", job.user_id, exc)
@@ -486,6 +490,9 @@ class LmsSyncService:
                 **outcome.__dict__,
                 "classified": made.classified,
                 "announcement_opportunities": made.opportunities,
+                "schedule_tasks": made.schedule_tasks,
+                # 일정 변경 알림은 과제·자료 알림과 같은 칸에 더해 센다(명세 8장의 notices)
+                "notices": outcome.notices + made.notices,
             }
         )
 

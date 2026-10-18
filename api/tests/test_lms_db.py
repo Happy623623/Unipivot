@@ -22,7 +22,9 @@ from app.repositories.notifications import (
     AssignmentNotice,
     MaterialNotice,
     NotificationRepository,
+    ScheduleNotice,
 )
+from app.repositories.planner import PlannerRepository
 from app.repositories.runs import RunRepository
 from app.schemas.lms import SAVE_TOOL
 from tests.db_world import DATABASE_URL, connect, make_user
@@ -2225,3 +2227,139 @@ async def test_announcements_are_stored_in_the_order_they_were_posted(
     ).fetchall()
     assert [row["canvas_topic_id"] for row in rows] == [1, 2]  # 오래된 글이 먼저 들어간다
     assert rows[0]["first_seen_at"] < rows[1]["first_seen_at"]
+
+
+# ── 일정 변경 공지 → 플래너·알림 (F-53 2부) ─────────────────────────────────
+
+
+async def _enrolled(world: dict[str, Any], user_id: str) -> None:
+    """그 사용자를 데이터베이스 과목 수강생으로 만들고 LMS 연결을 붙인다."""
+    await world["repo"].save_courses(user_id, [DATABASE], now=world["now"])
+    await world["repo"].save_connection(user_id, token="enc", last4="a9f2", canvas_user_id=1)
+
+
+async def test_a_schedule_change_task_goes_to_everyone_taking_the_course(
+    world: dict[str, Any],
+) -> None:
+    """공지는 과목 공통이다(ERD 3-2). 누가 동기화했든 수강생 모두의 플래너에 들어간다."""
+    notices, me, other, now = world["announcements"], world["me"], world["other"], world["now"]
+    await _enrolled(world, me)
+    await _enrolled(world, other)
+    saved = await notices.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+    on = (now + timedelta(days=4)).date()
+
+    made = await notices.add_schedule_task(saved[0].id, DATABASE["id"], title="휴강", on=on)
+
+    assert made == 2
+    rows = await (
+        await world["conn"].execute(
+            "select user_id::text as user_id, source::text as source, title, due_date,"
+            " coalesce(is_done, false) as is_done from planner_tasks"
+            " where lms_announcement_id = %s order by user_id",
+            (saved[0].id,),
+        )
+    ).fetchall()
+    assert sorted(row["user_id"] for row in rows) == sorted([me, other])
+    assert {row["source"] for row in rows} == {"lms_announcement"}
+    assert {(row["title"], row["due_date"], row["is_done"]) for row in rows} == {
+        ("휴강", on, False)
+    }
+
+
+async def test_the_same_announcement_makes_one_task_per_student(world: dict[str, Any]) -> None:
+    notices, me, now = world["announcements"], world["me"], world["now"]
+    await _enrolled(world, me)
+    saved = await notices.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+    on = (now + timedelta(days=4)).date()
+
+    first = await notices.add_schedule_task(saved[0].id, DATABASE["id"], title="휴강", on=on)
+    again = await notices.add_schedule_task(saved[0].id, DATABASE["id"], title="휴강", on=on)
+
+    assert (first, again) == (1, 0)
+
+
+async def test_a_student_who_disconnected_gets_no_schedule_task(world: dict[str, Any]) -> None:
+    notices, me, other, now = world["announcements"], world["me"], world["other"], world["now"]
+    await _enrolled(world, me)
+    await _enrolled(world, other)
+    await world["conn"].execute(
+        "update lms_connections set status = 'disconnected' where user_id = %s", (other,)
+    )
+    saved = await notices.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+
+    made = await notices.add_schedule_task(
+        saved[0].id, DATABASE["id"], title="휴강", on=(now + timedelta(days=2)).date()
+    )
+
+    assert made == 1
+
+
+async def test_a_schedule_notice_goes_to_everyone_and_only_once(world: dict[str, Any]) -> None:
+    notices, me, other, now = world["announcements"], world["me"], world["other"], world["now"]
+    notes = NotificationRepository(world["conn"])
+    await _enrolled(world, me)
+    await _enrolled(world, other)
+    saved = await notices.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+    notice = ScheduleNotice(
+        announcement_id=saved[0].id, title="데이터베이스 수업 일정이 바뀌었어요", body="휴강한다"
+    )
+
+    first = await notes.add_schedule_notices(DATABASE["id"], notice, now=now)
+    again = await notes.add_schedule_notices(DATABASE["id"], notice, now=now)
+
+    assert (first, again) == (2, 0)
+    rows = await (
+        await world["conn"].execute(
+            "select type::text as type, dedupe_key, scheduled_at, body from notifications"
+            " where lms_announcement_id = %s",
+            (saved[0].id,),
+        )
+    ).fetchall()
+    assert {row["type"] for row in rows} == {"schedule_change"}
+    # 키 꼴은 ERD 5장 표 그대로다
+    assert {row["dedupe_key"] for row in rows} == {f"schedule_change:ann:{saved[0].id}"}
+    assert {row["scheduled_at"] for row in rows} == {now}  # 찾은 때 바로 보낸다
+    assert {row["body"] for row in rows} == {"휴강한다"}
+
+
+async def test_a_student_who_muted_schedule_changes_gets_no_notice(world: dict[str, Any]) -> None:
+    notices, me, now = world["announcements"], world["me"], world["now"]
+    notes = NotificationRepository(world["conn"])
+    await _enrolled(world, me)
+    await world["conn"].execute(
+        "insert into user_settings (user_id, muted_notification_types)"
+        " values (%s, array['schedule_change'])",
+        (me,),
+    )
+    saved = await notices.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+
+    made = await notes.add_schedule_notices(
+        DATABASE["id"],
+        ScheduleNotice(announcement_id=saved[0].id, title="바뀌었어요", body="휴강한다"),
+        now=now,
+    )
+
+    assert made == 0
+
+
+async def test_a_schedule_change_task_shows_the_course_in_the_planner(
+    world: dict[str, Any],
+) -> None:
+    """플래너 할 일의 링크는 공지이고, 칩에는 **짧은 과목 이름**이 뜬다(명세 7장)."""
+    notices, me, now, conn = world["announcements"], world["me"], world["now"], world["conn"]
+    await _enrolled(world, me)
+    saved = await notices.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+    on = (now + timedelta(days=3)).date()
+    await notices.add_schedule_task(saved[0].id, DATABASE["id"], title="휴강", on=on)
+
+    planner = await PlannerRepository(conn).tasks(
+        me, start=on - timedelta(days=1), end=on + timedelta(days=1), include_done=True
+    )
+
+    task = next(one for one in planner.items if one.source == "lms_announcement")
+    assert (task.title, task.due_date) == ("휴강", on)
+    assert (task.link.type, task.link.id, task.link.title) == (
+        "lms_announcement",
+        saved[0].id,
+        "데이터베이스",
+    )

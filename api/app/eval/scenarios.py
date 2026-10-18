@@ -4,7 +4,8 @@
 본다. 다르면 그 자리에서 멈추고 실패로 남는다 — 뒤 단계가 앞 단계의 결과를 쓰기 때문이다.
 
 판정·요건이 S01–S08, 포스터·준비하기·캘린더·알림이 S11–S14, 계획서가 S15, LMS 과제가 S16–S18이다.
-PRD 8장의 P0는 S01–S18 열여덟 개이고, 여기 있는 것은 그중 **열여섯 개**다. 없는 것과 이유:
+PRD 8장의 P0는 S01–S18 열여덟 개이고, 여기 있는 것은 그중 **열여섯 개**다(P1인 S22·S23도 F-53과
+함께 넣었다). 없는 것과 이유:
 
 - S09(요건이 첨부에만 있는 공고)·S10(공지 수정 재수집): 입력이 실제 HWP·PDF 파일과 저장한 공지
   폴더다. 그 파일을 레포에 둔 뒤에 붙인다
@@ -1272,6 +1273,135 @@ async def s23(world: EvalWorld) -> None:
     await world.check("공고는 하나뿐", expected=1, actual=count[0]["count"])
 
 
+# ── S22: 과목 공지 → 일정 변경 → 플래너 (F-53 2부) ──────────────────────────
+
+CANCELLED_DAYS = 4  # 시계에서 며칠 뒤 수업이 휴강인지
+
+
+async def s22(world: EvalWorld) -> None:
+    """과목 공지 "휴강 안내" → 일정 변경으로 분류 → 플래너에 할 일 + 알림.
+
+    공지는 과목 공통이라(ERD 3-2) 할 일과 알림이 **수강생 모두에게** 생긴다. 여기서는 한 명만 보고,
+    수강생 전체로 퍼지는 것은 DB 테스트가 본다(`test_lms_db.py`).
+
+    할 일은 **완료만** 고칠 수 있다(명세 7장) — 제목·날짜는 LMS가 기준이다. 그것도 함께 본다.
+    """
+    student = await world.user(grade=3)
+    client, jobs = world.client(student), world.internal()
+    first = await _connect_lms(world, client)
+    await world.check("처음에는 공지 없음", expected=0, actual=first["new_announcements"])
+
+    changed_on = (world.now + timedelta(days=CANCELLED_DAYS)).astimezone(KST).date()
+    world.lms.add_announcement(
+        DB_COURSE_ID,
+        CANCELLED_TOPIC_ID,
+        "휴강 안내",
+        message=f"<p>{changed_on.month}월 {changed_on.day}일 수업은 휴강합니다.</p>",
+        posted_days_ago=0.5,
+    )
+    world.records(
+        _classify_reply(
+            "schedule_change",
+            CANCELLED_SUMMARY,
+            change_date=changed_on.isoformat(),
+            change_kind="cancelled",
+        )
+    )
+    world.travel(minutes=6)
+    result = await _sync(world, client)
+
+    await world.check("공지 하나를 처음 봄", expected=1, actual=result["new_announcements"])
+    rows = await world.rows(
+        "select category::text as category, summary, opportunity_id from lms_announcements"
+        " where canvas_topic_id = %s",
+        CANCELLED_TOPIC_ID,
+    )
+    await world.check("일정 변경으로 분류", expected="schedule_change", actual=rows[0]["category"])
+    await world.check("한 줄 요약", expected=CANCELLED_SUMMARY, actual=rows[0]["summary"])
+    await world.check("공고는 만들지 않음", expected=None, actual=rows[0]["opportunity_id"])
+
+    # 플래너: 바뀌는 날에 "휴강" 할 일 하나. 칩에는 짧은 과목 이름이 뜬다
+    tasks = await _announcement_tasks(world, client, changed_on)
+    await world.check(
+        "플래너에 휴강 하나",
+        expected=[("휴강", changed_on.isoformat(), "데이터베이스")],
+        actual=[(one["title"], one["due_date"], one["link"]["title"]) for one in tasks],
+    )
+    await world.check(
+        "할 일이 공지를 가리킨다", expected="lms_announcement", actual=tasks[0]["link"]["type"]
+    )
+
+    # 고칠 수 있는 것은 완료 여부뿐이다(명세 7장)
+    locked = await client.patch(
+        world.path(f"/planner/tasks/{tasks[0]['id']}"), json={"title": "쉬는 날"}
+    )
+    await world.check("제목은 못 고친다", expected=400, actual=locked.status_code)
+    await world.check(
+        "막힌 항목을 알려 준다",
+        expected=["title"],
+        actual=locked.json()["error"]["details"]["fields"],
+    )
+    done = await client.patch(
+        world.path(f"/planner/tasks/{tasks[0]['id']}"), json={"is_done": True}
+    )
+    await world.check("완료는 고친다", expected=200, actual=done.status_code)
+
+    # 알림: 찾은 때 바로 보낸다(휴강은 다음 아침이면 늦다)
+    sent = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
+    await world.check("보낸 알림 하나 이상", expected=True, actual=sent["sent"] >= 1)
+    box = (await client.get(world.path("/notifications"))).json()
+    await world.check(
+        "알림함에 일정 변경 하나",
+        expected=[("데이터베이스 수업 일정이 바뀌었어요", CANCELLED_SUMMARY)],
+        actual=[
+            (item["title"], item["body"])
+            for item in box["items"]
+            if item["type"] == "schedule_change"
+        ],
+    )
+
+    # 새 글 피드: 공지에 그 할 일 번호가 붙는다(명세 9장 planner_task_id)
+    updates = (await client.get(world.path("/lms/updates"), params={"type": "announcement"})).json()
+    await world.check(
+        "피드 공지에 할 일 번호",
+        expected=[tasks[0]["id"]],
+        actual=[item["planner_task_id"] for item in updates["items"]],
+    )
+
+    # 다시 동기화해도 할 일·알림은 하나뿐이고 모델을 다시 부르지 않는다
+    world.travel(minutes=6)
+    await _sync(world, client)
+    counted = await world.rows(
+        "select (select count(*) from planner_tasks where user_id = %s"
+        "   and source = 'lms_announcement') as tasks,"
+        " (select count(*) from notifications where user_id = %s"
+        "   and type = 'schedule_change') as notices",
+        student,
+        student,
+    )
+    await world.check(
+        "할 일 하나·알림 하나",
+        expected=(1, 1),
+        actual=(counted[0]["tasks"], counted[0]["notices"]),
+    )
+
+
+async def _announcement_tasks(
+    world: EvalWorld, client: httpx.AsyncClient, around: date
+) -> list[dict]:
+    """공지에서 온 플래너 할 일(그날 앞뒤로 본다)."""
+    planner = await client.get(
+        world.path("/planner/tasks"),
+        params={
+            "from": (around - timedelta(days=1)).isoformat(),
+            "to": (around + timedelta(days=1)).isoformat(),
+            "include_done": "true",
+        },
+    )
+    planner.raise_for_status()
+    return [one for one in planner.json()["items"] if one["source"] == "lms_announcement"]
+
+
 # ── 공통 ───────────────────────────────────────────────────────────────────
 
 
@@ -1313,6 +1443,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("S16", "LMS 새 과제(녹화 응답) → 캘린더·플래너 1건 + 알림", "P0", s16),
     Scenario("S17", "LMS 과제 마감 변경 → 기존 캘린더 일정 수정, 새 이벤트 없음", "P0", s17),
     Scenario("S18", "LMS 과제 제출 → 플래너 자동 완료, 보내지 않은 알림 취소", "P0", s18),
+    Scenario("S22", '과목 공지 "휴강 안내" → 일정 변경 분류 → 플래너 반영 + 알림', "P1", s22),
     Scenario(
         "S23", '과목 공지 "연구 참여 모집" → 기회성 분류 → 수강생 피드 공고 → 판정', "P1", s23
     ),

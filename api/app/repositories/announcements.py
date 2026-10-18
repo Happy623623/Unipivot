@@ -19,7 +19,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import Depends
@@ -235,6 +235,36 @@ class AnnouncementRepository:
             content_hash=content_hash(announcement.message or announcement.title, ()),
         )
         return opportunity_id
+
+    async def add_schedule_task(
+        self,
+        announcement_id: str,
+        canvas_course_id: int,
+        *,
+        title: str,
+        on: date,
+    ) -> int:
+        """일정 변경 공지를 **그 과목 수강생 모두의** 플래너에 넣는다(F-53 2부).
+
+        공지는 과목 공통이라(ERD 3-2) 누가 동기화했는지와 상관없이 수강생 전체가 받는다 — 새 주차
+        항목 알림(`add_material_notices`)과 같은 모양이다. 연결을 끊은 사람은 뺀다.
+
+        `(user_id, lms_announcement_id)`에는 유일 인덱스가 없어서 `not exists`로 막는다. 인덱스를
+        만들면 마이그레이션이 하나 더 생긴다(아래 "남은 것").
+
+        고칠 수 있는 것은 완료 여부뿐이다(명세 7장) — 제목·날짜는 LMS가 기준이다.
+        """
+        cursor = await self.conn.execute(
+            "insert into planner_tasks (user_id, source, lms_announcement_id, title, due_date)"
+            " select c.user_id, 'lms_announcement', %(ann)s::uuid, %(title)s, %(on)s"
+            " from lms_courses c"
+            " join lms_connections n on n.user_id = c.user_id and n.status <> 'disconnected'"
+            " where c.canvas_course_id = %(canvas)s and coalesce(c.is_active, true)"
+            "   and not exists (select 1 from planner_tasks t"
+            "     where t.user_id = c.user_id and t.lms_announcement_id = %(ann)s::uuid)",
+            {"ann": announcement_id, "canvas": canvas_course_id, "title": title, "on": on},
+        )
+        return max(cursor.rowcount, 0)
 
     async def _row(self, sql: str, params: Any) -> dict[str, Any] | None:
         return await (await self.conn.execute(sql, params)).fetchone()

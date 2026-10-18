@@ -8,7 +8,7 @@ import json
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from itertools import count
 from typing import Any
 
@@ -44,7 +44,7 @@ from app.repositories.lms import (
     get_lms_repo,
     update_scope,
 )
-from app.repositories.notifications import AssignmentNotice, MaterialNotice
+from app.repositories.notifications import AssignmentNotice, MaterialNotice, ScheduleNotice
 from app.repositories.opportunities import Cursor
 from app.repositories.runs import get_run_repo
 from app.schemas.calendar import CalendarEventView
@@ -319,6 +319,15 @@ class FakeNotes:
         self.dropped += list(assignment_ids)
         return len(self.dropped)
 
+    async def add_schedule_notices(
+        self, canvas_course_id: int, notice: ScheduleNotice, *, now: datetime
+    ) -> int:
+        assert canvas_course_id
+        self.schedules.append(notice)
+        return 1
+
+    schedules: list[ScheduleNotice] = field(default_factory=list)
+
 
 @pytest.fixture
 def lms(settings: Settings) -> FakeLms:
@@ -464,6 +473,13 @@ class FakeAnnouncements:
 
     urls: list[str | None] = field(default_factory=list)
     extractions: list[Any] = field(default_factory=list)
+    schedule_tasks: list[tuple[str, int, str, Any]] = field(default_factory=list)
+
+    async def add_schedule_task(
+        self, announcement_id: str, canvas_course_id: int, *, title: str, on: Any
+    ) -> int:
+        self.schedule_tasks.append((announcement_id, canvas_course_id, title, on))
+        return 1
 
 
 @pytest.fixture
@@ -515,6 +531,7 @@ def client(
         agent_for=lambda names: ExtractionAgent(llm, model=EXTRACTION_MODEL, departments=names),
         lms_base=BASE,
         repo_for=lambda conn: announcements_repo,  # type: ignore[arg-type,return-value]
+        notes_for=lambda conn: notes,  # type: ignore[arg-type,return-value]
         departments_for=departments,
     )
     service = LmsSyncService(
@@ -1786,3 +1803,78 @@ def test_a_course_whose_announcements_fail_is_skipped(
 
     assert response.status_code == 202
     assert [course for course, _ in announcements_repo.saved] == [216515]
+
+
+# ── 일정 변경 공지 → 플래너 (F-53 2부) ──────────────────────────────────────
+
+
+def test_a_schedule_change_with_a_date_becomes_a_planner_task(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    notes: FakeNotes,
+    llm: ScriptedLlm,
+    log: FakeLogConnection,
+) -> None:
+    announcements_repo.pending_rows = [pending(title="휴강 안내", message="10월 20일 휴강합니다")]
+    llm.replies = [
+        classify_reply(
+            "schedule_change",
+            "10월 20일 수업은 휴강한다",
+            change_date="2026-10-20",
+            change_kind="cancelled",
+        )
+    ]
+
+    client.post(SYNC)
+
+    assert announcements_repo.schedule_tasks == [
+        (f"n-{RESEARCH_TOPIC_ID}", 214023, "휴강", date(2026, 10, 20))
+    ]
+    assert [(one.title, one.body) for one in notes.schedules] == [
+        ("데이터베이스 수업 일정이 바뀌었어요", "10월 20일 수업은 휴강한다")
+    ]
+    assert log.outputs()["save_lms_sync"]["schedule_tasks"] == 1
+
+
+def test_a_schedule_change_without_a_date_is_only_classified(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    notes: FakeNotes,
+    llm: ScriptedLlm,
+) -> None:
+    """무슨 날인지 모르면 할 일을 만들지 않는다(갈래만 적는다)."""
+    announcements_repo.pending_rows = [pending(title="보강 안내")]
+    llm.replies = [classify_reply("schedule_change", "보강을 한다", change_kind="time")]
+
+    client.post(SYNC)
+
+    assert announcements_repo.classified and announcements_repo.schedule_tasks == []
+    assert notes.schedules == []
+
+
+def test_a_schedule_change_in_the_past_is_only_classified(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    notes: FakeNotes,
+    llm: ScriptedLlm,
+) -> None:
+    """지난 휴강은 할 일이 아니다. 지금(NOW)보다 앞선 날짜는 버린다."""
+    announcements_repo.pending_rows = [pending(title="휴강 안내")]
+    llm.replies = [classify_reply("schedule_change", "어제 휴강했다", change_date="2026-10-15")]
+
+    client.post(SYNC)
+
+    assert announcements_repo.schedule_tasks == []
+    assert notes.schedules == []
+
+
+def test_a_made_up_change_date_is_dropped(
+    client: TestClient, announcements_repo: FakeAnnouncements, llm: ScriptedLlm
+) -> None:
+    """게시일에서 너무 먼 날짜는 모델이 지어낸 것으로 보고 버린다(게시일 + 120일까지)."""
+    announcements_repo.pending_rows = [pending(title="휴강 안내")]
+    llm.replies = [classify_reply("schedule_change", "휴강한다", change_date="2027-06-01")]
+
+    client.post(SYNC)
+
+    assert announcements_repo.schedule_tasks == []
