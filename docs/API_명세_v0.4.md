@@ -72,6 +72,8 @@
 >
 > v0.4 보강(10/18, 계획서 일정 캘린더 표시): 계획서 일정에 `calendar_registered`가 생겼다(과제 목록과 같은 기준). 화면이 "캘린더에 넣기" 버튼을 숨기는 값이다
 >
+> v0.4 보강(10/18, 웹 푸시): `POST`·`DELETE /push/subscriptions`와 **실제 푸시 발송**(F-33). 발송 작업 응답에 `pushed`·`push_failed`·`push_dropped`가 붙고, 푸시 페이로드의 `url` 규칙을 적었다. VAPID 키가 없으면 푸시를 보내지 않고 알림함에만 쌓는다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1233,9 +1235,16 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 { "subscribed": true }
 ```
 
+- `endpoint`는 **https만** 받는다(422). 암호화한 본문을 평문 길로 보내지 않는다
+- 같은 `endpoint`가 다시 오면 키만 갱신하고 201을 그대로 준다(브라우저가 구독을 새로 만들면 주소가 같을 수 있다)
+- **다른 사용자가 같은 `endpoint`로 구독하면 주인이 바뀐다**(한 브라우저를 번갈아 쓰는 경우). 그 주소로 가는 푸시는 지금 로그인한 사람의 알림이어야 한다
+- `user_agent`는 사용자가 기기를 알아보게 적어 두는 값이다(최대 200자). 없어도 된다
+
 ### `DELETE /push/subscriptions`
 
 `{ "endpoint": "..." }` → `204`
+- **내 구독만** 지운다. 없는 주소나 남의 주소를 보내도 `204`다(브라우저가 이미 지웠을 수 있다)
+- 푸시 서비스가 `404`·`410`을 주면 서버가 그 구독을 스스로 지운다(발송 작업, 12장)
 
 ### 푸시 페이로드 (서버 → 서비스 워커)
 
@@ -1244,12 +1253,20 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   "type": "new_material",
   "title": "기계학습 8주차 자료가 올라왔어요",
   "body": "08 - Ensemble Methods",
-  "url": "/lms/updates?focus=uuid",
+  "url": "/academics/<course_id>?tab=materials",
   "notification_id": "uuid"
 }
 ```
 
 `type`: ERD `notification_type`(`new_eligible`, `new_assignment`, `new_material`, `schedule_change`, `task_due`, `deadline_soon`, `profile_needed`)
+- `url`은 **알림함에서 누르는 곳과 같은 화면**이다(같은 규칙을 서버와 web이 함께 쓴다).
+  공고 → `/opportunities/{id}`(정보 필요 알림은 `?focus=profile_input`), 플래너 할 일 → `/planner`,
+  LMS 과제·자료·공지 → `/academics/{course_id}?tab=assignments|materials|announcements`.
+  과목을 찾을 수 없으면(수강을 뺐다) `/academics`, 가리킬 대상이 없으면 `/`다
+- `body`는 없을 수 있다(null). `title`은 늘 있다
+- 본문은 **구독 키로 암호화해서** 보낸다(RFC 8291 aes128gcm). 머리값은 `Authorization: vapid t=<JWT>, k=<공개 키>`,
+  `Content-Encoding: aes128gcm`, `TTL: 86400`이다. 서버에 VAPID 키가 없으면 푸시를 보내지 않고 알림함에만 쌓는다
+- 푸시가 실패해도 알림은 보낸 것으로 남는다. **같은 알림을 두 번 보내지 않는다**(한 번 빠뜨리는 쪽을 택했다)
 
 ## 11. 에이전트 실행 조회
 
@@ -1304,7 +1321,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `POST /internal/jobs/crawl-contests` | 스케줄러 | 공모전 수집 (P1) |
 | `POST /internal/jobs/lms-sync` | 스케줄러(30분) | LMS 연결된 사용자의 과목·과제 동기화(F-51). 오래 안 한 사람부터 한 번에 50명까지 보고, 최근 5분 안에 동기화를 시작한 사람은 건너뛴다. 한 사람이 실패해도 다음 사람을 계속하고(실패는 그 사람의 실행 기록에 남는다), 토큰이 막힌 사람만 연결을 `error`로 바꾼다. 응답은 `{users, synced, failed, skipped, new_assignments, due_changed, submitted}`이고 `skipped`는 그새 대시보드가 동기화를 시작했거나 연결이 사라진 사람 수다 |
 | `POST /internal/jobs/schedule-notifications` | 스케줄러(매일) | 공고 알림 예약(새 적격·마감 임박 D-3·D-1·정보 필요). 사용자당 `dedupe_key` 1행으로 upsert하고, 마감이 바뀌면 아직 보내지 않은 행의 시각만 고치며, 보낼 이유가 없어진 pending 행은 지운다. 응답은 `{created, rescheduled, removed, by_type}` |
-| `POST /internal/jobs/send-notifications` | 스케줄러(5분) | 예약된 알림 발송. 보내기 전에 숨김을 다시 보고, `profile_needed`는 사용자당 KST 하루 1건까지만 보낸다. 푸시 구독이 없거나 푸시를 끈 사용자는 푸시만 건너뛰고 행은 알림함에 남는다. 응답은 `{due, sent, pushable, skipped}`이고 `pushable`은 푸시를 보낼 수 있었던 알림 수다 |
+| `POST /internal/jobs/send-notifications` | 스케줄러(5분) | 예약된 알림 발송. 보내기 전에 숨김을 다시 보고, `profile_needed`는 사용자당 KST 하루 1건까지만 보낸다. 푸시 구독이 없거나 푸시를 끈 사용자는 푸시만 건너뛰고 행은 알림함에 남는다. 응답은 `{due, sent, pushable, skipped, pushed, push_failed, push_dropped}`다 — `pushable`은 푸시를 보낼 수 있었던 알림 수, `pushed`는 푸시 서비스가 받아 준 구독 수(한 알림에 구독이 여러 개면 여러 번 센다), `push_failed`는 실패한 구독 수, `push_dropped`는 사라져서(404·410) 지운 구독 수다. 알림함 행을 닫은 뒤에 푸시를 보낸다 |
 | `POST /internal/jobs/expire-opportunities` | 스케줄러(매일) | 마감 지난 공고 `expired` 처리 |
 | `POST /internal/eval/run` | 개발자 | 요청 예: `{ "scenario_codes": ["S01", "S09"], "now": "2026-10-12T09:00:00+09:00", "fixtures": "recorded" }`. `now`로 시계를 고정하고, `fixtures: recorded`면 LMS·Google·온통청년 대신 녹화한 응답을 쓴다. 테스트용 Google 계정에 만든 이벤트는 끝나면 지운다. `agent_runs.scenario_code`로 기록. 지금은 사람이 `python -m app.eval.cli`로 돌린다(배포 때 같은 함수 `app/eval.run_scenarios`를 부른다). 시나리오 하나가 `agent_runs` 한 줄(trigger `eval`)이고, 확인한 것은 그 아래 `tool_calls`에 `check`로 남는다. 시나리오가 만든 실행(준비하기·포스터 추출)에도 같은 `scenario_code`를 붙이므로, 비용은 `agent_runs.cost_usd`가 아니라 `scenario_code`로 묶은 `llm_calls`를 더해서 센다. 응답은 `now`·`priced_on`·`scenarios`·`passed`·`success_rate`·`latency{p50_ms,p95_ms}`·`cost_usd`·`llm_calls`·`results[]`다. 시험용 DB가 아니면(Supabase 주소) 409 `EVAL_NOT_ALLOWED`로 거절한다 — 시나리오가 사용자·공고를 만들고 지우기 때문이다 |
 | `GET /internal/metrics` | 개발자 | 기간별 성공률·응답시간(p50·p95)·호출비용 집계에 두 가지를 더한다. 하나는 제품 지표 5개(판정 불가 비율과 원인 상위 3개, 즉석 입력 응답률, 준비하기 전환율, LMS 연결 완료율, 주간 재방문율)이고, 다른 하나는 최근 eval 실행 기준의 판정 혼동행렬이다. 비용은 모델 단가표(적용 날짜 포함)로 계산한다. 호출비용은 `scenario_code`로 묶은 `llm_calls`를 더한다(시나리오 실행 행의 `cost_usd`는 0이다). 기간은 `?from=&to=`(KST 날짜, 양 끝 포함)이고 주지 않으면 오늘까지 30일이다. 응답은 `from`·`to`와 세 묶음이다 — `scenarios`(`runs`·`passed`·`success_rate`·`latency{p50_ms,p95_ms}`·`cost_usd`·`llm_calls`·`by_scenario[]`), `eligibility`(`run_started_at`·`checks`·`correct`·`accuracy`·`rows[]{expected,counts,total}`·`eligible_to_ineligible`·`ineligible_to_eligible`), `product`(`undetermined`·`profile_prompt`·`prepare_conversion`·`lms_connect`·`weekly_return`, 각각 `{numerator,denominator,rate}`이고 `undetermined`에는 `top_missing_fields[]`가 더 있다). 비율은 분모가 0이면 `rate`가 `null`이다. 혼동행렬은 시나리오 번호마다 가장 최근 실행만 센다. 판정 불가 비율만 기간이 아니라 지금 저장된 판정(활성 공고) 기준이다 |

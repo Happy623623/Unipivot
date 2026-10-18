@@ -338,9 +338,12 @@ async def test_sending_closes_the_row_even_without_a_push_subscription() -> None
             await built.judge(user, opportunity, "eligible")
         await built.repo.schedule(now=NOW)
 
-        result = await built.repo.send(now=NOW + timedelta(days=1))
+        sent = await built.repo.send(now=NOW + timedelta(days=1))
+        result = sent.result
         assert (result.due, result.sent, result.skipped) == (2, 2, 0)  # 새 공고 알림 2건
         assert result.pushable == 1  # 구독이 있는 사용자만
+        # 보낸 알림 번호도 함께 온다(푸시 발송이 이 번호로 구독을 찾는다, F-33)
+        assert len(sent.ids) == 2
         assert all("succeeded" in line for line in await built.keys(plain) if "new_" in line)
 
 
@@ -378,7 +381,7 @@ async def test_a_hidden_opportunity_is_checked_again_before_sending() -> None:
         await built.repo.schedule(now=NOW)
         await built.mark(student, opportunity, "not_interested")
 
-        result = await built.repo.send(now=NOW + timedelta(days=1))
+        result = (await built.repo.send(now=NOW + timedelta(days=1))).result
         assert (result.sent, result.skipped) == (0, 1)
         assert all("pending" in line for line in await built.keys(student))
 
@@ -393,11 +396,11 @@ async def test_only_one_profile_notice_goes_out_a_day() -> None:
             await built.view(student, opportunity)
         await built.repo.schedule(now=NOW)
 
-        first = await built.repo.send(now=NOW + timedelta(days=1))
+        first = (await built.repo.send(now=NOW + timedelta(days=1))).result
         assert (first.due, first.sent, first.skipped) == (3, PROFILE_DAILY, 3 - PROFILE_DAILY)
-        later = await built.repo.send(now=NOW + timedelta(days=1, hours=1))
+        later = (await built.repo.send(now=NOW + timedelta(days=1, hours=1))).result
         assert later.sent == 0  # 같은 날에는 더 보내지 않는다
-        tomorrow = await built.repo.send(now=NOW + timedelta(days=2))
+        tomorrow = (await built.repo.send(now=NOW + timedelta(days=2))).result
         assert tomorrow.sent == PROFILE_DAILY
         assert "거주지역을 입력하면 판정할 수 있어요" in (await built.bodies(student))[0]
 

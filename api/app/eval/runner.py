@@ -25,7 +25,13 @@ import psycopg
 from app.agent_log import agent_run, using
 from app.config import Settings
 from app.eligibility import KST
-from app.eval.fakes import RecordedCalendar, RecordedLearningX, RecordedLlm, RecordedStorage
+from app.eval.fakes import (
+    RecordedCalendar,
+    RecordedLearningX,
+    RecordedLlm,
+    RecordedPush,
+    RecordedStorage,
+)
 from app.eval.models import CheckFailed, Report, ScenarioResult
 from app.eval.world import (
     DEFAULT_NOW,
@@ -80,6 +86,7 @@ async def _one(
 ) -> ScenarioResult:
     llm, storage, calendar = RecordedLlm(), RecordedStorage(), RecordedCalendar()
     lms = RecordedLearningX(now)  # 녹화한 LearningX(S16–S18이 중간에 고친다)
+    push = RecordedPush()  # 녹화한 푸시 서비스(F-33). 바깥을 부르지 않는다
     clock = Clock(now)  # 시나리오가 옮길 수 있다(world.travel)
     world: EvalWorld | None = None
     run_id: str | None = None
@@ -88,7 +95,13 @@ async def _one(
     ok, error = True, None
     try:
         app, pool, log_pool = await open_app(
-            settings, clock=clock, llm=llm, storage=storage, calendar=calendar, lms=lms
+            settings,
+            clock=clock,
+            llm=llm,
+            storage=storage,
+            calendar=calendar,
+            lms=lms,
+            push=push,
         )
         try:
             async with agent_run(using(log), trigger=TRIGGER, scenario_code=scenario.code) as run:
@@ -104,6 +117,7 @@ async def _one(
                     storage=storage,
                     calendar=calendar,
                     lms=lms,
+                    push=push,
                 )
                 started = time.perf_counter()
                 try:

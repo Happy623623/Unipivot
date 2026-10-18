@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     vision_model: str = "gemini-3.8-flash"
     guide_model: str = "gemini-3.5-flash-lite"  # 준비하기의 서류 안내(짧은 구조화 답)
     classify_model: str = "gemini-3.5-flash-lite"  # 과목 공지 갈래 나누기(F-53, 짧은 구조화 답)
+    # 웹 푸시 VAPID(F-33). 비면 푸시를 보내지 않고 알림함에만 쌓는다.
+    # 키는 `uv run python -m app.push.keys`로 만든다 — 레포에 넣지 않는다
+    vapid_private_key: str = ""
+    vapid_subject: str = ""  # mailto: 또는 서비스 주소(푸시 서비스가 연락할 곳)
     extraction_max_reads: int = 4  # 요건 추출 읽기 도구 상한(PRD 14장 미결, W2–3에 확정)
     extraction_max_tokens: int = 150_000
     youth_api_key: str = ""  # 온통청년 OPEN API 인증키(청년정책 수집, app/youth)

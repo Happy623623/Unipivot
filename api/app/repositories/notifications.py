@@ -119,6 +119,14 @@ class MaterialNotice:
 
 
 @dataclass(frozen=True)
+class Sent:
+    """발송 한 번의 결과와 **보낸 알림 번호**. 번호는 푸시 발송에만 쓴다(응답에는 없다)."""
+
+    result: SendResult
+    ids: list[str]
+
+
+@dataclass(frozen=True)
 class ScheduleNotice:
     """일정 변경 알림 하나(F-53 2부). 문구는 과목 이름을 아는 쪽에서 만든다."""
 
@@ -328,8 +336,12 @@ class NotificationRepository:
         )
         return cursor.rowcount
 
-    async def send(self, *, now: datetime, limit: int = SEND_LIMIT) -> SendResult:
-        """보낼 때가 된 알림을 닫는다. 숨긴 공고와 하루 한도를 넘는 알림은 보내지 않고 둔다."""
+    async def send(self, *, now: datetime, limit: int = SEND_LIMIT) -> Sent:
+        """보낼 때가 된 알림을 닫는다. 숨긴 공고와 하루 한도를 넘는 알림은 보내지 않고 둔다.
+
+        **푸시는 여기서 보내지 않는다.** 보낸 알림 번호를 함께 돌려주고, 부른 쪽(내부 작업)이
+        푸시 발송기에 넘긴다 — DB 트랜잭션을 쥔 채로 바깥을 부르지 않는다.
+        """
         due = await self.due(now=now, limit=limit)
         already = await self.sent_today(now=now, kind="profile_needed")
         sending: list[str] = []
@@ -342,11 +354,14 @@ class NotificationRepository:
                 already[item.user_id] = already.get(item.user_id, 0) + 1
             sending.append(item.id)
         count = await self.pushable(sending)
-        return SendResult(
-            due=len(due),
-            sent=await self.mark_sent(sending, now=now),
-            pushable=count,
-            skipped=len(due) - len(sending),
+        return Sent(
+            result=SendResult(
+                due=len(due),
+                sent=await self.mark_sent(sending, now=now),
+                pushable=count,
+                skipped=len(due) - len(sending),
+            ),
+            ids=sending,
         )
 
     # ── 알림함 ──────────────────────────────────────────────────────────────

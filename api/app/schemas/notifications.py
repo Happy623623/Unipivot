@@ -83,9 +83,17 @@ class ScheduleResult(BaseModel):
 
 
 class SendResult(BaseModel):
-    """발송 배치. pushable은 푸시를 보낼 수 있었던 알림 수다(실제 발송은 F-33)."""
+    """발송 배치(명세 12장).
+
+    `pushable`은 푸시를 **보낼 수 있었던** 알림 수(구독이 있고 푸시를 끄지 않았다),
+    `pushed`는 그중 푸시 서비스가 받아 준 구독 수다. 한 알림에 구독이 여러 개면 여러 번 센다.
+    `push_failed`는 보내다 실패한 구독 수고, `push_dropped`는 사라져서 지운 구독 수다.
+    """
 
     due: int
     sent: int
     pushable: int
     skipped: int  # 숨긴 공고·하루 한도로 보내지 않고 둔 알림
+    pushed: int = 0
+    push_failed: int = 0
+    push_dropped: int = 0

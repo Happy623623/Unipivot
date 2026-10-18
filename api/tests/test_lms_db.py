@@ -1943,7 +1943,11 @@ async def test_it_saves_an_announcement_once_and_updates_the_text(world: dict[st
     assert [one.title for one in first] == ["휴강"]
     assert again == []  # 두 번째는 처음 본 것이 아니다
     rows = await (
-        await conn.execute("select title, canvas_topic_id from lms_announcements")
+        await conn.execute(
+            # 이 과목으로 좁힌다. 공지 표는 과목 공통이라 다른 시험이 남긴 행이 있을 수 있다
+            "select title, canvas_topic_id from lms_announcements where canvas_course_id = %s",
+            (DATABASE["id"],),
+        )
     ).fetchall()
     assert [(row["title"], row["canvas_topic_id"]) for row in rows] == [("휴강(고침)", 1)]
 
@@ -2222,7 +2226,8 @@ async def test_announcements_are_stored_in_the_order_they_were_posted(
     rows = await (
         await conn.execute(
             "select canvas_topic_id, first_seen_at from lms_announcements"
-            " order by first_seen_at, canvas_topic_id"
+            " where canvas_course_id = %s order by first_seen_at, canvas_topic_id",
+            (DATABASE["id"],),
         )
     ).fetchall()
     assert [row["canvas_topic_id"] for row in rows] == [1, 2]  # 오래된 글이 먼저 들어간다

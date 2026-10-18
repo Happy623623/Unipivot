@@ -15,10 +15,14 @@ dependencies = [
   "olefile>=0.47",
   "beautifulsoup4>=4.12",
   "python-multipart>=0.0.32",
+  # 바깥 호출(LearningX·Google·Supabase Storage·온통청년·웹 푸시)에 쓴다. 지금까지는
+  # google-genai가 끌어오는 것에 얹혀 있었다 — 앱이 직접 import하는 패키지는 직접 적는다
+  "httpx>=0.27",
+  "http-ece>=1.2.1",  # 웹 푸시 본문 암호화(F-33, RFC 8291)
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6", "respx>=0.22", "reportlab>=4"]
+dev = ["pytest>=8", "ruff>=0.6", "respx>=0.22", "reportlab>=4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

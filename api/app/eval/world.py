@@ -48,6 +48,7 @@ from app.eval.fakes import (
     RecordedCalendar,
     RecordedLearningX,
     RecordedLlm,
+    RecordedPush,
     RecordedStorage,
     Reply,
 )
@@ -57,6 +58,9 @@ from app.lms.announce import AnnouncementService
 from app.lms.service import LmsService, get_lms_service
 from app.lms.sync import LmsSyncService, extraction_agent, get_lms_sync_service
 from app.main import create_app
+from app.push.deps import get_push_sender
+from app.push.keys import generate_keys, load_keys
+from app.push.send import PushSender
 from app.repositories.calendar import CalendarRepository
 from app.repositories.lms import LmsRepository, get_lms_repo
 from app.repositories.profiles import ProfileRepository
@@ -118,6 +122,7 @@ def eval_settings(database_url: str) -> Settings:
     """시나리오용 설정. 로그인 비밀키와 토큰 암호화 키는 이 실행 안에서만 쓸 값을 새로 만든다.
 
     실제 Supabase 비밀키를 쓰지 않는다. 시나리오가 자기 토큰을 만들어 자기 사용자로 부른다.
+    VAPID 키도 이 실행에서 새로 만든다 — 실제 키를 쓰지 않고, 녹화한 푸시 서비스에만 보낸다(F-33).
     """
     return Settings(
         database_url=database_url,
@@ -125,6 +130,8 @@ def eval_settings(database_url: str) -> Settings:
         supabase_jwt_secret=secrets.token_urlsafe(32),
         token_encryption_key=Fernet.generate_key().decode(),
         internal_api_key=secrets.token_urlsafe(32),
+        vapid_private_key=generate_keys()[0],
+        vapid_subject="mailto:eval@unipivot.test",
     )
 
 
@@ -151,6 +158,7 @@ class EvalWorld:
         storage: RecordedStorage,
         calendar: RecordedCalendar,
         lms: RecordedLearningX,
+        push: RecordedPush,
     ) -> None:
         self.conn = conn  # autocommit. 세계를 만들고 치운다
         self.app = app
@@ -161,6 +169,7 @@ class EvalWorld:
         self.scenario_code = scenario_code
         self.llm, self.storage, self.calendar = llm, storage, calendar
         self.lms = lms  # 녹화한 LearningX. 시나리오가 과제·마감·제출을 고친다(S16–S18)
+        self.push = push  # 녹화한 푸시 서비스. 받은 본문을 시나리오가 풀어 본다(F-33)
         self.users: list[str] = []
         self.opportunities: list[str] = []
         self.checks: list[Check] = []
@@ -532,6 +541,7 @@ async def open_app(
     storage: RecordedStorage,
     calendar: RecordedCalendar,
     lms: RecordedLearningX,
+    push: RecordedPush,
 ) -> tuple[FastAPI, AsyncConnectionPool, AsyncConnectionPool]:
     """실제 풀을 달고 시계·모델·파일 저장소·Google 캘린더·LearningX만 녹화한 것으로 바꾼 앱.
 
@@ -585,9 +595,17 @@ async def open_app(
             ),
         )
 
+    def recorded_push() -> PushSender:
+        """VAPID 키는 이 실행에서 만든 것이고, 푸시 서비스는 녹화한 것이다(F-33)."""
+        return PushSender(
+            load_keys(private_key=settings.vapid_private_key, subject=settings.vapid_subject),
+            client=push.client(),
+        )
+
     app.dependency_overrides.update(
         {
             get_settings: lambda: settings,
+            get_push_sender: recorded_push,
             get_lms_service: recorded_lms,
             get_lms_sync_service: recorded_sync,
             current_time: lambda: clock.now,  # 주입 시계(PRD 8장). travel로 옮긴다

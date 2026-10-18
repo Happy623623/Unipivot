@@ -9,10 +9,17 @@
 
 from __future__ import annotations
 
+import json
+import secrets
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any
+
+import http_ece
+import httpx
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from app.calendar.google import (
     EVENT_MINUTES,
@@ -23,6 +30,7 @@ from app.calendar.google import (
 from app.llm import LlmReply, ModelTurn, ToolCall, ToolSpec, Turn, Usage, UserTurn
 from app.lms.client import LearningXClient, LearningXError
 from app.posters.prompt import SUBMIT
+from app.push.keys import b64u
 from app.syllabi.extract import SEMESTER_DAYS
 from app.uploads.storage import StorageError, SupabaseStorage
 from app.youth.regions import region_table
@@ -89,6 +97,53 @@ class RecordedLlm:
         return LlmReply(
             turn=turn, usage=self.usage, latency_ms=RECORDED_LATENCY_MS, finish_reason="STOP"
         )
+
+
+class RecordedPush:
+    """메모리에 담는 푸시 서비스(F-33). 바깥을 부르지 않고 받은 요청을 적어 둔다.
+
+    시나리오는 **브라우저 쪽 비밀 키**를 들고 있어서, 서버가 보낸 본문을 실제로 풀어 본다
+    (`decrypt`). 암호화가 틀리면 브라우저에서만 조용히 안 열리는데, 그걸 시나리오가 잡는다.
+    """
+
+    def __init__(self, status: int = 201) -> None:
+        self.status = status
+        self.private = ec.generate_private_key(ec.SECP256R1())
+        self.auth = secrets.token_bytes(16)
+        self.requests: list[tuple[str, bytes, dict[str, str]]] = []
+
+    @property
+    def endpoint(self) -> str:
+        return f"https://{RECORDED}-push.example/send/eval"
+
+    def subscription(self) -> dict[str, Any]:
+        """`POST /push/subscriptions`에 보낼 몸통(브라우저가 주는 모양 그대로)."""
+        public = self.private.public_key().public_bytes(
+            Encoding.X962, PublicFormat.UncompressedPoint
+        )
+        return {
+            "endpoint": self.endpoint,
+            "keys": {"p256dh": b64u(public), "auth": b64u(self.auth)},
+            "user_agent": f"{RECORDED} / eval",
+        }
+
+    def client(self) -> httpx.AsyncClient:
+        """발송기에 끼울 httpx 클라이언트. 요청을 가로채 메모리에 담는다."""
+
+        async def handle(request: httpx.Request) -> httpx.Response:
+            self.requests.append((str(request.url), request.content, dict(request.headers)))
+            return httpx.Response(self.status)
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handle))
+
+    def decrypt(self, index: int = 0) -> dict[str, Any]:
+        """받은 본문을 브라우저 키로 풀어 페이로드 JSON으로."""
+        _url, body, _headers = self.requests[index]
+        plain = http_ece.decrypt(
+            body, private_key=self.private, auth_secret=self.auth, version="aes128gcm"
+        )
+        found: dict[str, Any] = json.loads(plain)
+        return found
 
 
 class RecordedStorage(SupabaseStorage):

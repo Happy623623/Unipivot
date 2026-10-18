@@ -540,7 +540,8 @@ async def s14(world: EvalWorld) -> None:
     예약(하루 한 번)과 발송(5분마다)은 스케줄러가 부르는 작업이라 시나리오가 서비스 키로 직접 부른다.
     예약한 뒤 그날이 되어야 보내지므로 중간에 시계를 옮긴다(`world.travel`).
 
-    실제 푸시 발송은 F-33이다. 여기서는 "푸시를 보낼 수 있는 알림"으로 세고, 알림함을 눈으로 본다.
+    푸시도 함께 본다(F-33). 브라우저 구독을 등록하고, 녹화한 푸시 서비스가 받은 본문을 **구독 비밀
+    키로 풀어** 제목·주소가 맞는지 확인한다. 암호화가 틀리면 브라우저에서만 조용히 안 열린다.
     """
     student = await world.user(grade=3, gpa_last_semester=3.5)
     opportunity = await world.add("마감 임박 교내 장학", days=4.5, requirements=(GRADE_RULE,))
@@ -563,9 +564,16 @@ async def s14(world: EvalWorld) -> None:
     await world.check("다시 예약해도 안 늘어남", expected=0, actual=again["created"])
     await world.check("지운 것 없음", expected=0, actual=again["removed"])
 
+    # 브라우저가 알림을 켰다(F-33). 구독을 올려 두면 발송 때 푸시가 함께 간다
+    subscribed = await client.post(
+        world.path("/push/subscriptions"), json=world.push.subscription()
+    )
+    await world.check("푸시 구독 등록", expected=201, actual=subscribed.status_code)
+
     # 아직 보낼 때가 아니다(마감 임박은 D-3 아침에 보낸다)
     early = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
     await world.check("D-3 전에는 보낼 것이 없음", expected=0, actual=early["due"])
+    await world.check("보낸 푸시도 없음", expected=0, actual=len(world.push.requests))
     await world.check(
         "알림함에 마감 알림 없음", expected=[], actual=await _deadlines(world, client)
     )
@@ -573,11 +581,38 @@ async def s14(world: EvalWorld) -> None:
     world.travel(days=2)  # D-3 아침이 지났다
     sent = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
     await world.check("D-3 발송", expected=1, actual=sent["sent"])
-    await world.check("푸시 구독 없음", expected=0, actual=sent["pushable"])
+    await world.check("푸시 보낼 수 있는 알림 하나", expected=1, actual=sent["pushable"])
+    await world.check("푸시 보냄", expected=1, actual=sent["pushed"])
+    await world.check("푸시 실패 없음", expected=0, actual=sent["push_failed"])
+    await world.check("지운 구독 없음", expected=0, actual=sent["push_dropped"])
     await world.check("알림함에 D-3 하나", expected=["D-3"], actual=await _deadlines(world, client))
 
+    # 녹화한 푸시 서비스가 받은 것: 머리값은 VAPID·aes128gcm이고, 본문은 구독 키로만 풀린다
+    url, _body, headers = world.push.requests[0]
+    await world.check("푸시를 보낸 주소", expected=world.push.endpoint, actual=url)
+    await world.check(
+        "VAPID 머리값", expected=True, actual=headers["authorization"].startswith("vapid t=")
+    )
+    await world.check("암호화 방식", expected="aes128gcm", actual=headers["content-encoding"])
+    opened = world.push.decrypt()
+    await world.check("푸시 종류", expected="deadline_soon", actual=opened["type"])
+    await world.check("푸시 제목", expected="마감이 가까워요", actual=opened["title"])
+    await world.check("푸시 본문", expected="마감 임박 교내 장학 · D-3", actual=opened["body"])
+    await world.check(
+        "누르면 갈 곳", expected=f"/opportunities/{opportunity}", actual=opened["url"]
+    )
+
+    # 알림을 끄면(구독 해제) 다음 발송에는 푸시가 가지 않는다
+    removed = await client.request(
+        "DELETE", world.path("/push/subscriptions"), json={"endpoint": world.push.endpoint}
+    )
+    await world.check("구독 해제", expected=204, actual=removed.status_code)
+
     world.travel(days=2)  # D-1 아침이 지났다
-    await jobs.post(world.path("/internal/jobs/send-notifications"))
+    after = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
+    await world.check("D-1도 보냈다", expected=1, actual=after["sent"])
+    await world.check("푸시는 가지 않았다", expected=0, actual=after["pushed"])
+    await world.check("푸시 요청도 하나뿐", expected=1, actual=len(world.push.requests))
     await world.check(
         "D-3·D-1 한 번씩", expected=["D-1", "D-3"], actual=sorted(await _deadlines(world, client))
     )
