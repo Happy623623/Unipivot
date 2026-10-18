@@ -5,14 +5,18 @@
 """
 
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from psycopg.types.json import Jsonb
 
 from app.eligibility import KST
+from app.extraction.models import ExtractionResult, RequirementDraft
+from app.lms.announcements import CanvasAnnouncement
 from app.lms.assignments import CanvasAssignment, assignments
 from app.lms.modules import CanvasModuleItem, module_items
+from app.repositories.announcements import AnnouncementRepository
 from app.repositories.lms import AssignmentChanges, LmsRepository, SavedAssignment
 from app.repositories.notifications import (
     AssignmentNotice,
@@ -46,6 +50,7 @@ async def world() -> Any:
         now = (await (await conn.execute("select now() as now")).fetchone())["now"]
         yield {
             "repo": LmsRepository(conn),
+            "announcements": AnnouncementRepository(conn),
             "conn": conn,
             "now": now,
             "me": await make_user(conn),
@@ -1410,7 +1415,7 @@ async def test_the_feed_filters_by_kind_and_course(world: dict[str, Any]) -> Non
     )
     assert {one.title for one in only_db} == {"DB 강의", "실습 2주차 결과 제출"}
     nothing, _ = await repo.updates(me, since=since, now=now, kinds=["announcement"])
-    assert nothing == []  # 공지는 F-53이 채운다
+    assert nothing == []  # 그 과목에 공지가 없으면 빈다
 
 
 async def test_the_feed_leaves_out_old_things(world: dict[str, Any]) -> None:
@@ -1866,3 +1871,357 @@ async def test_assignment_titles_leave_out_what_is_gone(world: dict[str, Any]) -
 
     await conn.execute("update lms_courses set is_active = false where user_id = %s", (me,))
     assert await repo.assignment_titles(me, [kept]) == {}  # 수강을 뺀 과목도 빠진다
+
+
+# ── 과목 공지 (F-53) ────────────────────────────────────────────────────────
+
+
+def _announcement(
+    topic_id: int,
+    *,
+    title: str = "공지",
+    message: str | None = "본문",
+    posted_at: Any = None,
+    attachments: int = 0,
+    section: bool = False,
+) -> CanvasAnnouncement:
+    return CanvasAnnouncement(
+        canvas_topic_id=topic_id,
+        title=title,
+        message=message,
+        posted_at=posted_at,
+        attachment_count=attachments,
+        is_section_specific=section,
+    )
+
+
+async def _run_id(world: dict[str, Any]) -> str:
+    row = await (
+        await world["conn"].execute(
+            "insert into agent_runs (user_id, trigger_type, status)"
+            " values (%s, 'lms_sync', 'succeeded') returning id::text as id",
+            (world["me"],),
+        )
+    ).fetchone()
+    return str(row["id"])
+
+
+def _extraction(*, succeeded: bool = True) -> ExtractionResult:
+    if not succeeded:
+        return ExtractionResult(succeeded=False, needs_review=True, review_reasons=("실패",))
+    return ExtractionResult(
+        succeeded=True,
+        requirements=(
+            RequirementDraft(
+                clause_no=1,
+                field="grade",
+                operator="gte",
+                value=3,
+                basis=None,
+                evidence_text="지원 자격: 3학년 이상",
+                is_ambiguous=False,
+            ),
+        ),
+        deadline_at=None,
+        easy_summary="연구 참여 학생을 뽑아요",
+        confidence=Decimal("0.90"),
+    )
+
+
+async def test_it_saves_an_announcement_once_and_updates_the_text(world: dict[str, Any]) -> None:
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+
+    first = await repo.save(
+        DATABASE["id"], [_announcement(1, title="휴강", posted_at=now)], now=now
+    )
+    again = await repo.save(
+        DATABASE["id"], [_announcement(1, title="휴강(고침)", posted_at=now)], now=now
+    )
+
+    assert [one.title for one in first] == ["휴강"]
+    assert again == []  # 두 번째는 처음 본 것이 아니다
+    rows = await (
+        await conn.execute("select title, canvas_topic_id from lms_announcements")
+    ).fetchall()
+    assert [(row["title"], row["canvas_topic_id"]) for row in rows] == [("휴강(고침)", 1)]
+
+
+async def test_pending_takes_recent_unclassified_announcements_of_my_courses(
+    world: dict[str, Any],
+) -> None:
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+    await repo.save(
+        DATABASE["id"],
+        [
+            _announcement(1, title="최근", posted_at=now - timedelta(days=2)),
+            _announcement(2, title="두 달 전", posted_at=now - timedelta(days=60)),
+            _announcement(3, title="예약", posted_at=None),
+            _announcement(4, title="분반 한정", posted_at=now, section=True),
+        ],
+        now=now,
+    )
+    await repo.save(
+        MACHINE_LEARNING["id"], [_announcement(5, title="남의 과목", posted_at=now)], now=now
+    )
+    await conn.execute(
+        "update lms_announcements set category = 'general' where canvas_topic_id = 1"
+    )
+    await repo.save(DATABASE["id"], [_announcement(6, title="또 최근", posted_at=now)], now=now)
+
+    found = await repo.pending(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    )
+
+    assert [one.title for one in found] == [
+        "또 최근"
+    ]  # 분류한 것·오래된 것·예약·분반·남의 과목은 빠진다
+
+
+async def test_pending_retries_an_opportunity_without_an_opportunity_first(
+    world: dict[str, Any],
+) -> None:
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+    await repo.save(
+        DATABASE["id"],
+        [
+            _announcement(1, title="분류 전", posted_at=now),
+            _announcement(2, title="공고를 못 만든 기회성", posted_at=now - timedelta(days=200)),
+        ],
+        now=now,
+    )
+    await conn.execute(
+        "update lms_announcements set category = 'opportunity' where canvas_topic_id = 2"
+    )
+
+    found = await repo.pending(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    )
+
+    # 분류가 끝난 공지를 먼저 집는다(모델을 다시 부르지 않는다). 게시일이 오래돼도 다시 집는다
+    assert [one.title for one in found] == ["공고를 못 만든 기회성", "분류 전"]
+    assert [one.classified for one in found] == [True, False]
+    one_only = await repo.pending(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=1
+    )
+    assert len(one_only) == 1
+
+
+async def test_a_classification_does_not_overwrite_an_earlier_one(world: dict[str, Any]) -> None:
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+    saved = await repo.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+    run_id = await _run_id(world)
+
+    await repo.save_classification(
+        saved[0].id, category="schedule_change", summary="휴강한다", run_id=run_id
+    )
+    await repo.save_classification(
+        saved[0].id, category="opportunity", summary="모집한다", run_id=run_id
+    )
+
+    row = await (
+        await conn.execute(
+            "select category::text as category, summary, classified_run_id::text as run"
+            " from lms_announcements where id = %s",
+            (saved[0].id,),
+        )
+    ).fetchone()
+    assert (row["category"], row["summary"], row["run"]) == ("schedule_change", "휴강한다", run_id)
+
+
+async def test_an_opportunity_announcement_becomes_a_course_only_opportunity(
+    world: dict[str, Any],
+) -> None:
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+    await repo.save(
+        DATABASE["id"],
+        [
+            _announcement(
+                520_964,
+                title="데이터베이스 연구실 연구 참여 학생 모집",
+                message="지원 자격: 3학년 이상",
+                posted_at=now,
+            )
+        ],
+        now=now,
+    )
+    run_id = await _run_id(world)
+    found = await repo.pending(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    )
+
+    opportunity_id = await repo.create_opportunity(
+        found[0],
+        category="research",
+        original_url="https://lms.test/courses/214023/discussion_topics/520964",
+        extraction=_extraction(),
+        run_id=run_id,
+    )
+
+    assert opportunity_id is not None
+    row = await (
+        await conn.execute(
+            "select o.source_type::text as source_type, o.external_id, o.category::text as kind,"
+            " o.title, o.raw_text, o.original_url, o.visible_canvas_course_id as course,"
+            " o.extraction_run_id::text as run, o.needs_review, o.easy_summary,"
+            " (select count(*) from requirements r where r.opportunity_id = o.id) as reqs,"
+            " (select count(*) from lms_announcements n where n.opportunity_id = o.id) as linked"
+            " from opportunities o where o.id = %s",
+            (opportunity_id,),
+        )
+    ).fetchone()
+    assert row["source_type"] == "lms_announcement"
+    assert row["external_id"] == "520964"
+    assert row["kind"] == "research"
+    assert row["title"] == "데이터베이스 연구실 연구 참여 학생 모집"
+    assert row["raw_text"] == "지원 자격: 3학년 이상"
+    assert row["course"] == DATABASE["id"]  # 그 과목 수강생만 본다
+    assert row["run"] == run_id  # 판정에 들어간다
+    assert row["needs_review"] is False
+    assert (row["reqs"], row["linked"]) == (1, 1)
+
+
+async def test_a_failed_extraction_leaves_the_opportunity_out_of_judging(
+    world: dict[str, Any],
+) -> None:
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+    await repo.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+    found = await repo.pending(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    )
+
+    opportunity_id = await repo.create_opportunity(
+        found[0],
+        category="etc",
+        original_url=None,
+        extraction=_extraction(succeeded=False),
+        run_id=await _run_id(world),
+    )
+
+    row = await (
+        await conn.execute(
+            "select extraction_run_id, needs_review from opportunities where id = %s",
+            (opportunity_id,),
+        )
+    ).fetchone()
+    assert row["extraction_run_id"] is None  # 판정에서 빠진다(원문 확인 필요로 보인다)
+    assert row["needs_review"] is True
+
+
+async def test_a_second_create_makes_no_second_opportunity(world: dict[str, Any]) -> None:
+    repo, now = world["announcements"], world["now"]
+    await repo.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+    found = await repo.pending(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    )
+    run_id = await _run_id(world)
+    first = await repo.create_opportunity(
+        found[0], category="etc", original_url=None, extraction=_extraction(), run_id=run_id
+    )
+
+    again = await repo.create_opportunity(
+        found[0], category="etc", original_url=None, extraction=_extraction(), run_id=run_id
+    )
+
+    assert first is not None and again is None
+
+
+async def test_the_feed_shows_announcements_and_hides_section_specific_ones(
+    world: dict[str, Any],
+) -> None:
+    repo, notices, me, now = world["repo"], world["announcements"], world["me"], world["now"]
+    conn = world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    saved = await notices.save(
+        DATABASE["id"],
+        [
+            _announcement(1, title="연구 참여 모집", posted_at=now - timedelta(days=1)),
+            _announcement(2, title="분반 한정", posted_at=now, section=True),
+        ],
+        now=now,
+    )
+    run_id = await _run_id(world)
+    await notices.save_classification(
+        saved[0].id, category="opportunity", summary="모집한다", run_id=run_id
+    )
+    found = await notices.pending(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    )
+    opportunity_id = await notices.create_opportunity(
+        found[0], category="research", original_url=None, extraction=_extraction(), run_id=run_id
+    )
+
+    items, _ = await repo.updates(
+        me, since=now - timedelta(days=7), now=now, kinds=["announcement"]
+    )
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.type == "announcement"
+    assert (item.title, item.summary, item.category) == (
+        "연구 참여 모집",
+        "모집한다",
+        "opportunity",
+    )
+    assert item.opportunity_id == opportunity_id
+    assert item.planner_task_id is None  # 일정 변경 공지의 할 일은 F-53 2부다
+    assert item.posted_at == (now - timedelta(days=1)).astimezone(KST)
+    assert item.course.short_name == "데이터베이스"
+    await conn.execute("select 1")  # 트랜잭션이 살아 있는지 확인(되돌리기 전)
+
+
+async def test_the_course_detail_shows_the_announcements(world: dict[str, Any]) -> None:
+    repo, notices, me, now = world["repo"], world["announcements"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    saved = await notices.save(
+        DATABASE["id"],
+        [
+            _announcement(1, title="오래된 공지", posted_at=now - timedelta(days=3)),
+            _announcement(2, title="최근 공지", posted_at=now),
+            _announcement(3, title="분반 한정", posted_at=now, section=True),
+        ],
+        now=now,
+    )
+    await notices.save_classification(
+        saved[1].id, category="material", summary="자료를 올렸다", run_id=await _run_id(world)
+    )
+
+    detail = await repo.course_detail(me, course, now=now, lms_base="https://lms.test")
+
+    assert detail is not None
+    assert [one.title for one in detail.announcements] == ["최근 공지", "오래된 공지"]
+    assert (detail.announcements[0].category, detail.announcements[0].summary) == (
+        "material",
+        "자료를 올렸다",
+    )
+    assert detail.announcements[1].category is None  # 아직 분류 전
+
+
+async def test_announcements_are_stored_in_the_order_they_were_posted(
+    world: dict[str, Any],
+) -> None:
+    """새 글 피드는 "처음 본 순"이라, 한 동기화에 들어온 공지는 **올린 순**으로 넣어야 한다.
+
+    같은 `now`를 그대로 쓰면 first_seen_at이 모두 같아 피드 순서가 id(uuid)로 정해진다 — 실행마다
+    뒤집힌다. 그래서 1마이크로초씩 밀어 넣는다(저장소 머리말).
+    """
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+
+    # 일부러 최신 글을 먼저 건넨다(LearningX도 최신 먼저 준다)
+    await repo.save(
+        DATABASE["id"],
+        [
+            _announcement(2, title="어제 올린 글", posted_at=now - timedelta(days=1)),
+            _announcement(1, title="그제 올린 글", posted_at=now - timedelta(days=2)),
+        ],
+        now=now,
+    )
+
+    rows = await (
+        await conn.execute(
+            "select canvas_topic_id, first_seen_at from lms_announcements"
+            " order by first_seen_at, canvas_topic_id"
+        )
+    ).fetchall()
+    assert [row["canvas_topic_id"] for row in rows] == [1, 2]  # 오래된 글이 먼저 들어간다
+    assert rows[0]["first_seen_at"] < rows[1]["first_seen_at"]

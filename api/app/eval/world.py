@@ -23,6 +23,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from functools import partial
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -52,8 +53,9 @@ from app.eval.fakes import (
 )
 from app.eval.models import Check, CheckFailed, plain
 from app.llm.deps import get_llm
+from app.lms.announce import AnnouncementService
 from app.lms.service import LmsService, get_lms_service
-from app.lms.sync import LmsSyncService, get_lms_sync_service
+from app.lms.sync import LmsSyncService, extraction_agent, get_lms_sync_service
 from app.main import create_app
 from app.repositories.calendar import CalendarRepository
 from app.repositories.lms import LmsRepository, get_lms_repo
@@ -484,6 +486,15 @@ class EvalWorld:
         # 실행에서 "처음 본 자료"가 0건이 되어 재현되지 않는다. **녹화가 쓰는 과목 번호**(시나리오
         # 전용 번호대)이고 아무도 듣지 않는 것만 지운다 — 실제 학생의 과목 자료는 건드리지 않는다
         canvas_ids = [row["id"] for row in self.lms.rows]
+        # 기회성 공지로 만든 공고(F-53)는 올린 사람이 없어 위의 두 줄로는 지워지지 않는다. 남겨 두면
+        # 다음 실행에서 "새 공고" 알림이 공고 수만큼 늘어 S23이 재현되지 않는다
+        statements.append(
+            (
+                "delete from opportunities where source_type = 'lms_announcement'"
+                " and visible_canvas_course_id = any(%s::bigint[])",
+                (canvas_ids,),
+            )
+        )
         for table in ("lms_module_items", "lms_announcements"):
             statements.append(
                 (
@@ -554,7 +565,10 @@ async def open_app(
         )
 
     def recorded_sync(runner: Annotated[TaskRunner, Depends(get_runner)]) -> LmsSyncService:
-        """동기화도 LearningX와 Google만 녹화한 것으로 바꾼다(저장·로그는 실제 DB)."""
+        """동기화도 LearningX와 Google만 녹화한 것으로 바꾼다(저장·로그는 실제 DB).
+
+        공지 분류(F-53)도 끼운다 — 모델만 녹화한 것이고 저장소·학과 목록은 실제 DB다.
+        """
         return LmsSyncService(
             transaction=pool.connection,
             log_connection=log_pool.connection,
@@ -562,6 +576,13 @@ async def open_app(
             calendar_client=calendar,
             encryption_key=settings.token_encryption_key,
             runner=runner,
+            announcer=AnnouncementService(
+                transaction=pool.connection,
+                llm=llm,
+                classify_model=settings.classify_model,
+                agent_for=partial(extraction_agent, llm, settings),
+                lms_base=settings.lms_api_base,
+            ),
         )
 
     app.dependency_overrides.update(

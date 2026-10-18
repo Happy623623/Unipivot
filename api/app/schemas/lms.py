@@ -126,8 +126,10 @@ class AssignmentList(BaseModel):
     items: list[AssignmentItem]
 
 
-# `GET /lms/updates?type=`에 쓸 수 있는 값. 공지(`announcement`)는 F-53이 채운다(그때까지 결과가 빈다)
+# `GET /lms/updates?type=`에 쓸 수 있는 값
 UpdateType = Literal["module_item", "assignment", "announcement"]
+# 공지 갈래(F-53). 새 글 피드와 과목 상세가 함께 쓴다. null이면 아직 분류 전이다
+AnnouncementCategory = Literal["schedule_change", "material", "opportunity", "general"]
 
 
 class ModuleItemUpdate(BaseModel):
@@ -157,7 +159,29 @@ class AssignmentUpdate(BaseModel):
     first_seen_at: datetime
 
 
-LmsUpdateItem = Annotated[ModuleItemUpdate | AssignmentUpdate, Field(discriminator="type")]
+class AnnouncementUpdate(BaseModel):
+    """과목 공지 하나(F-53). 분류 전이면 `category`·`summary`가 null이다.
+
+    `planner_task_id`는 일정 변경 공지를 플래너에 반영했을 때 그 할 일이다(F-53 2부). 그때까지는
+    늘 null이다 — 명세 9장에 있는 칸이라 자리를 비워 둔다.
+    """
+
+    type: Literal["announcement"] = "announcement"
+    id: str
+    course: AssignmentCourse
+    title: str
+    summary: str | None
+    # 예약 공지는 피드에 넣지 않으므로 늘 있다(과목 상세는 null일 수 있다)
+    posted_at: datetime  # KST 오프셋
+    category: AnnouncementCategory | None
+    attachment_count: int
+    opportunity_id: str | None  # 기회성 공지로 만든 공고(없으면 null)
+    planner_task_id: str | None
+
+
+LmsUpdateItem = Annotated[
+    ModuleItemUpdate | AssignmentUpdate | AnnouncementUpdate, Field(discriminator="type")
+]
 
 
 class LmsUpdateList(BaseModel):
@@ -181,7 +205,6 @@ class SyncJobResult(BaseModel):
 SyllabusItemType = Literal["midterm", "final", "presentation", "assignment", "etc"]
 # `materials.status`(job_status). 요약이 아직 없으면 파일만 있고 상태는 pending이다
 MaterialStatus = Literal["pending", "running", "succeeded", "failed"]
-AnnouncementCategory = Literal["schedule_change", "material", "opportunity", "general"]
 
 
 class CourseHeader(BaseModel):

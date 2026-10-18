@@ -209,6 +209,8 @@ class RunRepository:
                 ),
                 # F-52 전 실행에는 이 칸이 없다(그때는 주차 항목을 받지 않았다)
                 new_module_items=int(output.get("new_module_items", 0)),
+                # F-53 전 실행에도 없다(공지를 받지 않았다)
+                new_announcements=int(output.get("new_announcements", 0)),
                 # 캘린더 자동 등록 전 실행에도 없다
                 calendar_events=int(output.get("calendar_events", 0)),
                 calendar_moved=int(output.get("calendar_moved", 0)),

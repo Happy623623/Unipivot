@@ -430,6 +430,15 @@ def lms_moment(base: datetime, days: float) -> str:
     return at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def lms_posted(base: datetime, days_ago: float) -> str:
+    """시나리오 시계에서 며칠 **전 그 시각**을 LMS 꼴(UTC `...Z`)로.
+
+    공지 게시 시각은 `lms_moment`처럼 그날 23:59:59로 맞추지 않는다 — 공지 둘을 "하루 전·반나절
+    전"으로 두면 같은 날 23:59:59로 뭉개져 집는 순서가 뒤집힌다(2026-10-18에 S23에서 걸렸다).
+    """
+    return (base - timedelta(days=days_ago)).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def lms_module(module_id: int, name: str, items: Sequence[dict[str, Any]]) -> dict[str, Any]:
     return {
         "id": module_id,
@@ -438,6 +447,49 @@ def lms_module(module_id: int, name: str, items: Sequence[dict[str, Any]]) -> di
         "items_count": len(items),
         "state": "started",
         "items": list(items),
+    }
+
+
+def lms_announcement(
+    topic_id: int,
+    course_id: int,
+    title: str,
+    *,
+    message: str,
+    posted_at: str | None,
+    section_specific: bool = False,
+) -> dict[str, Any]:
+    """녹화한 과목 공지 한 건(F-53). 본문은 HTML이고 시각은 UTC(`...Z`)다.
+
+    녹화 파일에는 본문이 길이만 남아 있어(개인정보 지우기) **본문 글은 우리가 쓴 것**이다.
+    칸 이름·꼴은 녹화 그대로다(`attachments`는 16건 중 2건에만 있었다).
+    """
+    url = f"https://lms.test/courses/{course_id}/discussion_topics/{topic_id}"
+    return {
+        "id": topic_id,
+        "title": title,
+        "message": message,
+        "posted_at": posted_at,
+        "created_at": posted_at,
+        "delayed_post_at": None,
+        "last_reply_at": posted_at,
+        "lock_at": None,
+        "assignment_id": None,
+        "root_topic_id": None,
+        "position": 1,
+        "discussion_type": "side_comment",
+        "is_section_specific": section_specific,
+        "user_name": "담당 교수",
+        "permissions": {"attach": False, "update": False, "reply": False, "delete": False},
+        "read_state": "unread",
+        "unread_count": 0,
+        "attachments": [],
+        "published": True,
+        "locked": True,
+        "html_url": url,
+        "url": url,
+        "pinned": False,
+        "todo_date": None,
     }
 
 
@@ -521,6 +573,32 @@ class RecordedLearningX(LearningXClient):
         """다음 동기화에서 새로 보일 과제. 마감은 시계에서 `in_days`일 뒤 23:59:59 KST다."""
         self.assignment_rows[course_id].append(
             lms_assignment(canvas_id, course_id, name, due_at=lms_moment(self.now, in_days))
+        )
+
+    def add_announcement(
+        self,
+        course_id: int,
+        topic_id: int,
+        title: str,
+        *,
+        message: str,
+        posted_days_ago: float = 0,
+        section_specific: bool = False,
+    ) -> None:
+        """다음 동기화에서 새로 보일 과목 공지(F-53).
+
+        게시 시각은 **주입한 시계에서 며칠 전**이다(`lms_moment`) — 시계를 어느 날로 두고 돌려도
+        "최근 공지"로 집힌다(분류는 30일 안의 공지만 본다).
+        """
+        self.announcement_rows.setdefault(course_id, []).append(
+            lms_announcement(
+                topic_id,
+                course_id,
+                title,
+                message=message,
+                posted_at=lms_posted(self.now, posted_days_ago),
+                section_specific=section_specific,
+            )
         )
 
     def change_due(self, canvas_id: int, *, in_days: float) -> None:

@@ -40,7 +40,9 @@ from app.eval.syllabus import (
     syllabus_pdf,
 )
 from app.eval.world import EvalWorld, Reply, Rule, Scenario
+from app.extraction.prompt import SUBMIT as EXTRACTION_TOOL
 from app.extraction.validate import LOW_CONFIDENCE as LOW_CONFIDENCE_REASON
+from app.lms.classify import SUBMIT as CLASSIFY_TOOL
 from app.prepare.guide import TOOL_NAME as GUIDE_TOOL
 from app.schemas.syllabi import EXTRACT_TOOL as SYLLABUS_TOOL
 
@@ -1065,6 +1067,211 @@ async def _deadlines(world: EvalWorld, client: httpx.AsyncClient) -> list[str]:
     ]
 
 
+# ── S23: 과목 공지 → 기회성 공지 → 공고 (F-53) ──────────────────────────────
+
+RESEARCH_TOPIC_ID = 520_964
+RESEARCH_TITLE = "데이터베이스 연구실 연구 참여 학생 모집"
+RESEARCH_GRADE_LINE = "지원 자격: 3학년 이상"
+RESEARCH_BODY = (
+    "<p>데이터베이스 연구실에서 연구 참여 학생을 모집합니다.</p>"
+    "<ul><li>모집 인원: 2명</li>"
+    f"<li>{RESEARCH_GRADE_LINE}</li>"
+    "<li>활동 기간: 12월 ~ 2월 (주 10시간)</li>"
+    "<li>제출 서류: 성적증명서</li></ul>"
+)
+CANCELLED_TOPIC_ID = 520_357
+CANCELLED_SUMMARY = "다음 주 월요일 수업은 휴강한다"
+RESEARCH_SUMMARY = "연구 참여 학생 2명을 모집한다"
+
+
+def _classify_reply(category: str, summary: str, **extra: str) -> Reply:
+    """녹화한 분류 답. 갈래와 한 줄 요약만 받는다(요건은 추출 에이전트가 뽑는다)."""
+    return tool_reply(CLASSIFY_TOOL, category=category, summary=summary, **extra)
+
+
+def _research_requirements() -> Reply:
+    """녹화한 요건 추출 답. 근거 문장은 공지 본문에 있는 줄이어야 저장된다."""
+    return tool_reply(
+        EXTRACTION_TOOL,
+        requirements=[
+            {
+                "clause_no": 1,
+                "field": "grade",
+                "operator": "gte",
+                "value_json": "3",
+                "evidence_text": RESEARCH_GRADE_LINE,
+                "is_ambiguous": False,
+            }
+        ],
+        documents=[{"name": "성적증명서"}],
+        easy_summary="3학년 이상이면 지원할 수 있어요",
+        confidence=0.9,
+        needs_review=False,
+    )
+
+
+async def s23(world: EvalWorld) -> None:
+    """과목 공지 "연구 참여 학생 모집" → 기회성으로 분류 → 수강생 피드에 공고 → 판정.
+
+    공지 두 건을 함께 올린다. 하나는 휴강 안내(일정 변경)라 **공고가 되지 않아야** 하고, 하나가
+    기회성 공지다. 분류는 값싼 모델 한 번, 기회성이면 요건 추출이 한 번 더 돈다(모델 호출 세 번).
+
+    공개 범위도 같이 본다 — 그 과목을 듣지 않는 학생의 피드에는 보이지 않아야 한다(명세 5장).
+    """
+    student = await world.user(grade=3, gpa_last_semester=3.5)
+    outsider = await world.user(grade=3)  # 그 과목을 듣지 않는 학생
+    client, jobs = world.client(student), world.internal()
+    first = await _connect_lms(world, client)
+    await world.check("처음에는 공지 없음", expected=0, actual=first["new_announcements"])
+
+    # 교수가 공지 두 건을 올렸다(휴강 안내 + 연구 참여 모집)
+    world.lms.add_announcement(
+        DB_COURSE_ID,
+        CANCELLED_TOPIC_ID,
+        "휴강 안내",
+        message="<p>다음 주 월요일 수업은 휴강합니다.</p>",
+        posted_days_ago=1,
+    )
+    world.lms.add_announcement(
+        DB_COURSE_ID,
+        RESEARCH_TOPIC_ID,
+        RESEARCH_TITLE,
+        message=RESEARCH_BODY,
+        posted_days_ago=0.5,
+    )
+    # 집는 순서는 게시일 최신순이다(연구 참여 모집이 먼저다)
+    world.records(
+        _classify_reply("opportunity", RESEARCH_SUMMARY, opportunity_category="research"),
+        _research_requirements(),
+        _classify_reply("schedule_change", CANCELLED_SUMMARY),
+    )
+    world.travel(minutes=6)  # 5분 안에 또 부르면 서버가 건너뛴다(명세 9장)
+    result = await _sync(world, client)
+
+    await world.check("공지 둘을 처음 봄", expected=2, actual=result["new_announcements"])
+    rows = await world.rows(
+        "select canvas_topic_id, category::text as category, summary,"
+        " opportunity_id is not null as linked from lms_announcements"
+        " where canvas_topic_id = any(%s) order by canvas_topic_id",
+        [CANCELLED_TOPIC_ID, RESEARCH_TOPIC_ID],
+    )
+    await world.check(
+        "갈래와 한 줄 요약",
+        expected=[("schedule_change", CANCELLED_SUMMARY), ("opportunity", RESEARCH_SUMMARY)],
+        actual=[(row["category"], row["summary"]) for row in rows],
+    )
+    await world.check(
+        "공고는 기회성 공지에만",
+        expected=[False, True],
+        actual=[row["linked"] for row in rows],
+    )
+    linked = await world.rows(
+        "select opportunity_id::text as id from lms_announcements where canvas_topic_id = %s",
+        RESEARCH_TOPIC_ID,
+    )
+    opportunity = str(linked[0]["id"])
+    # 공고 행의 created_at은 **DB 기본값**(실제 now())이다. 주입 시계가 실제 시각과 멀면 "등록 7일
+    # 이내"(새 공고 알림 조건, 명세 10장)가 어긋나므로 시나리오가 주입 시계로 맞춰 준다
+    await world.rows(
+        "update opportunities set created_at = %s where id = %s::uuid returning id",
+        world.now,
+        opportunity,
+    )
+
+    # 피드: 수강생에게는 보이고, 그 과목을 듣지 않는 학생에게는 보이지 않는다(명세 5장)
+    card = await world.feed_card(client, opportunity)
+    await world.check("수강생 피드에 있음", expected=True, actual=card is not None)
+    await world.check("피드 카드 제목", expected=RESEARCH_TITLE, actual=(card or {}).get("title"))
+    await world.check(
+        "피드의 과목 이름", expected="데이터베이스", actual=(card or {}).get("course_name")
+    )
+    await world.judged(
+        "피드 판정", expected="eligible", actual=(card or {}).get("eligibility", {}).get("status")
+    )
+    other = await world.feed_card(world.client(outsider), opportunity)
+    await world.check("다른 학생 피드에는 없음", expected=None, actual=other)
+
+    # 새 글 피드(명세 9장): 공지가 갈래·공고 번호와 함께 온다
+    updates = (await client.get(world.path("/lms/updates"), params={"type": "announcement"})).json()
+    await world.check(
+        "새 글 피드의 공지 둘",
+        expected=[RESEARCH_TITLE, "휴강 안내"],
+        actual=[item["title"] for item in updates["items"]],
+    )
+    await world.check(
+        "기회성 공지에 공고 번호",
+        expected=[opportunity, None],
+        actual=[item["opportunity_id"] for item in updates["items"]],
+    )
+    await world.check(
+        "일정 변경 공지의 할 일은 아직 없음(F-53 2부)",
+        expected=[None, None],
+        actual=[item["planner_task_id"] for item in updates["items"]],
+    )
+
+    # 과목 상세 공지 탭(명세 9장): 화면이 읽는 그대로 본다 — 최신 먼저, 갈래와 요약이 붙는다
+    courses = (await client.get(world.path("/lms/courses"))).json()["items"]
+    course_id = next(one["id"] for one in courses if one["short_name"] == "데이터베이스")
+    tab = (await _course(world, client, course_id))["announcements"]
+    await world.check(
+        "공지 탭에 둘(최신 먼저)",
+        expected=[RESEARCH_TITLE, "휴강 안내"],
+        actual=[one["title"] for one in tab],
+    )
+    await world.check(
+        "탭의 갈래",
+        expected=["opportunity", "schedule_change"],
+        actual=[one["category"] for one in tab],
+    )
+    await world.check(
+        "탭의 공고 번호",
+        expected=[opportunity, None],
+        actual=[one["opportunity_id"] for one in tab],
+    )
+
+    # 적격 공고라 "새 공고" 알림이 예약되고, 보내면 알림함에 쌓인다(F-33)
+    scheduled = (await jobs.post(world.path("/internal/jobs/schedule-notifications"))).json()
+    await world.check("새 공고 알림 예약", expected=1, actual=scheduled["by_type"]["new_eligible"])
+    # 알림 시각은 다음 09:00 KST다(지금이 09시를 넘었으니 내일 아침). 그때가 되어야 보낸다
+    world.travel(days=1)
+    sent = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
+    await world.check("보낸 알림 하나 이상", expected=True, actual=sent["sent"] >= 1)
+    box = (await client.get(world.path("/notifications"))).json()
+    await world.check(
+        "알림함에 새 공고",
+        expected=[RESEARCH_TITLE],
+        actual=[item["body"] for item in box["items"] if item["type"] == "new_eligible"],
+    )
+
+    # 공고 상세: 과목 공지에서 온 공고라 과목 이름이 함께 간다(명세 5장).
+    # **알림을 예약한 뒤에 연다** — 상세를 먼저 열면 "새 공고" 알림을 만들지 않는다(명세 10장)
+    detail = await _detail(world, client, opportunity)
+    await world.check("공고 제목", expected=RESEARCH_TITLE, actual=detail["title"])
+    await world.check("출처", expected="lms_announcement", actual=detail["source_type"])
+    await world.check("과목 이름", expected="데이터베이스", actual=detail["course_name"])
+    await world.check(
+        "요건 묶음 하나(조건 하나)",
+        expected=[1],
+        actual=[one["condition_count"] for one in detail["eligibility"]["clauses"]],
+    )
+    await world.check(
+        "필요 서류", expected=["성적증명서"], actual=[one["name"] for one in detail["documents"]]
+    )
+    await world.check("원문 확인 필요 아님", expected=False, actual=detail["needs_review"])
+    await world.judged("상세 판정", expected="eligible", actual=detail["eligibility"]["status"])
+
+    # 다시 동기화해도 공고는 하나다(모델을 다시 부르지 않는다)
+    world.travel(minutes=6)
+    again = await _sync(world, client)
+    await world.check("새로 본 공지 없음", expected=0, actual=again["new_announcements"])
+    count = await world.rows(
+        "select count(*) as count from opportunities where source_type = 'lms_announcement'"
+        " and external_id = %s",
+        str(RESEARCH_TOPIC_ID),
+    )
+    await world.check("공고는 하나뿐", expected=1, actual=count[0]["count"])
+
+
 # ── 공통 ───────────────────────────────────────────────────────────────────
 
 
@@ -1106,6 +1313,9 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("S16", "LMS 새 과제(녹화 응답) → 캘린더·플래너 1건 + 알림", "P0", s16),
     Scenario("S17", "LMS 과제 마감 변경 → 기존 캘린더 일정 수정, 새 이벤트 없음", "P0", s17),
     Scenario("S18", "LMS 과제 제출 → 플래너 자동 완료, 보내지 않은 알림 취소", "P0", s18),
+    Scenario(
+        "S23", '과목 공지 "연구 참여 모집" → 기회성 분류 → 수강생 피드 공고 → 판정', "P1", s23
+    ),
 )
 
 BY_CODE = {scenario.code: scenario for scenario in SCENARIOS}

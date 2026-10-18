@@ -25,10 +25,14 @@ from app.config import Settings, get_settings
 from app.crypto import encrypt
 from app.db import get_log_connect
 from app.eligibility import KST
+from app.extraction.agent import ExtractionAgent
+from app.lms.announce import AnnouncementService
+from app.lms.announcements import CanvasAnnouncement
 from app.lms.assignments import CanvasAssignment
 from app.lms.client import LearningXClient
 from app.lms.sync import LmsSyncService, Repos, SyncJob, get_lms_sync_service
 from app.main import create_app
+from app.repositories.announcements import PendingAnnouncement, SavedAnnouncement
 from app.repositories.calendar import AssignmentDeadline, GoogleTokens
 from app.repositories.lms import (
     AssignmentChanges,
@@ -60,13 +64,19 @@ from app.schemas.lms import (
 )
 from tests.conftest import USER_ID, make_token
 from tests.fakes import FakeLogConnection
+from tests.llm_fakes import ScriptedLlm
+from tests.llm_fakes import call as model_call
 from tests.lms_samples import (
     COURSES,
+    DB_ANNOUNCEMENTS,
     DB_ASSIGNMENTS,
     DB_MODULES,
+    ML_ANNOUNCEMENTS,
     ML_ASSIGNMENTS,
     ML_MODULES,
     MODULE_WITHOUT_ITEMS,
+    RESEARCH_TITLE,
+    RESEARCH_TOPIC_ID,
 )
 from tests.prepare_fakes import FakeRunRepository, run_row
 
@@ -77,6 +87,8 @@ GOOGLE = "https://calendar.test"  # 가짜 Google 캘린더(respx가 가로챈�
 TOKEN = "18742~pAtB1g3TestTokenValue0000000000"
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=UTC)  # 2026-10-16 12:00 KST
 INTERNAL_KEY = "test-internal-key"
+CLASSIFY_MODEL = "gemini-3.5-flash-lite"
+EXTRACTION_MODEL = "gemini-3.8-flash"
 COURSE_UUID = "33333333-3333-4333-8333-333333333333"
 EVENT_ROW = "88888888-8888-4888-8888-888888888888"  # 캘린더 일정 행 id(Google 번호의 바탕)
 FEED_ITEM = "22222222-2222-4222-8222-222222222222"  # 커서는 uuid만 받는다(decode_cursor)
@@ -397,6 +409,74 @@ def calendar(settings: Settings) -> FakeCalendar:
     return FakeCalendar(key=settings.token_encryption_key)
 
 
+@dataclass
+class FakeAnnouncements:
+    """공지 저장소 가짜. 저장한 것과 분류 결과를 메모리에 남긴다(SQL은 test_lms_db.py가 본다)."""
+
+    saved: list[tuple[int, list[CanvasAnnouncement]]] = field(default_factory=list)
+    new_ids: dict[int, list[str]] = field(default_factory=dict)  # 과목 → 처음 본 공지 id
+    pending_rows: list[PendingAnnouncement] = field(default_factory=list)
+    classified: list[tuple[str, str, str | None]] = field(default_factory=list)
+    created: list[tuple[str, str]] = field(default_factory=list)  # (공지 id, 공고 종류)
+    linked: set[str] = field(default_factory=set)  # 이미 공고가 붙은 공지
+    asked: list[tuple[list[int], datetime, int]] = field(default_factory=list)
+
+    async def save(
+        self, canvas_course_id: int, items: list[CanvasAnnouncement], *, now: datetime
+    ) -> list[SavedAnnouncement]:
+        self.saved.append((canvas_course_id, items))
+        ids = self.new_ids.get(canvas_course_id)
+        chosen = items if ids is None else [one for one in items if str(one.canvas_topic_id) in ids]
+        return [
+            SavedAnnouncement(
+                id=f"n-{one.canvas_topic_id}", canvas_topic_id=one.canvas_topic_id, title=one.title
+            )
+            for one in chosen
+        ]
+
+    async def pending(
+        self, *, courses: list[int], recent_from: datetime, limit: int
+    ) -> list[PendingAnnouncement]:
+        self.asked.append((courses, recent_from, limit))
+        return [one for one in self.pending_rows if one.canvas_course_id in set(courses)][:limit]
+
+    async def save_classification(
+        self, announcement_id: str, *, category: str, summary: str | None, run_id: str | None
+    ) -> None:
+        self.classified.append((announcement_id, category, summary))
+
+    async def create_opportunity(
+        self,
+        announcement: PendingAnnouncement,
+        *,
+        category: str,
+        original_url: str | None,
+        extraction: Any,
+        run_id: str | None,
+    ) -> str | None:
+        self.extractions.append(extraction)
+        if announcement.id in self.linked:
+            return None  # 다른 수강생의 동기화가 먼저 만들었다
+        self.linked.add(announcement.id)
+        self.created.append((announcement.id, category))
+        self.urls.append(original_url)
+        return f"opportunity-{announcement.canvas_topic_id}"
+
+    urls: list[str | None] = field(default_factory=list)
+    extractions: list[Any] = field(default_factory=list)
+
+
+@pytest.fixture
+def announcements_repo() -> FakeAnnouncements:
+    return FakeAnnouncements()
+
+
+@pytest.fixture
+def llm() -> ScriptedLlm:
+    """기본은 답을 하나도 안 담은 모델. 분류를 보는 테스트만 답을 넣는다."""
+    return ScriptedLlm()
+
+
 @pytest.fixture
 def notes() -> FakeNotes:
     return FakeNotes()
@@ -413,6 +493,8 @@ def client(
     lms: FakeLms,
     notes: FakeNotes,
     calendar: FakeCalendar,
+    announcements_repo: FakeAnnouncements,
+    llm: ScriptedLlm,
     log: FakeLogConnection,
 ) -> Iterator[TestClient]:
     # 배치(`/internal/jobs/lms-sync`)를 부르려면 서비스 키가 있어야 한다
@@ -423,6 +505,18 @@ def client(
     async def transaction() -> AsyncIterator[Any]:
         yield None  # 가짜 저장소는 연결을 쓰지 않는다
 
+    async def departments(conn: Any) -> list[Any]:
+        return []  # 학과 목록은 요건 추출의 "목록에 없는 학과" 검사에만 쓴다
+
+    announcer = AnnouncementService(
+        transaction=transaction,
+        llm=llm,
+        classify_model=CLASSIFY_MODEL,
+        agent_for=lambda names: ExtractionAgent(llm, model=EXTRACTION_MODEL, departments=names),
+        lms_base=BASE,
+        repo_for=lambda conn: announcements_repo,  # type: ignore[arg-type,return-value]
+        departments_for=departments,
+    )
     service = LmsSyncService(
         transaction=transaction,
         log_connection=using(log),  # type: ignore[arg-type]
@@ -435,7 +529,10 @@ def client(
         ),
         encryption_key=settings.token_encryption_key,
         runner=InlineRunner(),  # 응답 전에 동기화를 끝까지 돌린다
-        repos=lambda conn: Repos(lms=lms, notes=notes, calendar=calendar),  # type: ignore[arg-type]
+        announcer=announcer,
+        repos=lambda conn: Repos(  # type: ignore[arg-type]
+            lms=lms, notes=notes, calendar=calendar, announcements=announcements_repo
+        ),
     )
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_lms_sync_service] = lambda: service
@@ -463,6 +560,12 @@ def canvas() -> Iterator[respx.MockRouter]:
         )
         router.get(f"{BASE}/api/v1/courses/216515/modules").mock(
             return_value=httpx.Response(200, json=ML_MODULES)
+        )
+        router.get(f"{BASE}/api/v1/courses/214023/discussion_topics").mock(
+            return_value=httpx.Response(200, json=DB_ANNOUNCEMENTS)
+        )
+        router.get(f"{BASE}/api/v1/courses/216515/discussion_topics").mock(
+            return_value=httpx.Response(200, json=ML_ANNOUNCEMENTS)
         )
         yield router
 
@@ -494,6 +597,7 @@ def test_the_run_records_every_outside_call_as_a_tool(
         "fetch_lms_courses",
         "fetch_lms_assignments",
         "fetch_lms_modules",
+        "fetch_lms_announcements",
         "save_lms_sync",
     ]
     assert TOKEN not in str(log.statements)  # 입력·출력에 토큰이 남지 않는다
@@ -1480,3 +1584,205 @@ def test_an_event_gone_from_google_410_is_not_brought_back(
     client.post(SYNC)
     assert not insert.called
     assert calendar.moved == []
+
+
+# ── 과목 공지 (F-53) ────────────────────────────────────────────────────────
+
+
+def pending(
+    topic_id: int = RESEARCH_TOPIC_ID,
+    *,
+    title: str = RESEARCH_TITLE,
+    message: str = "지원 자격: 3학년 이상",
+    course: int = 214023,
+    category: str | None = None,
+) -> PendingAnnouncement:
+    return PendingAnnouncement(
+        id=f"n-{topic_id}",
+        canvas_course_id=course,
+        canvas_topic_id=topic_id,
+        title=title,
+        message=message,
+        posted_at=NOW - timedelta(days=2),
+        category=category,  # type: ignore[arg-type]
+        summary=None,
+    )
+
+
+def classify_reply(category: str, summary: str = "한 줄 요약", **extra: Any) -> Any:
+    return model_call("submit_announcement", category=category, summary=summary, **extra)
+
+
+def submit_requirements(**extra: Any) -> Any:
+    """요건 추출 에이전트의 제출. 근거 문장은 공지 본문에 있는 글이어야 통과한다."""
+    return model_call(
+        "submit_requirements",
+        requirements=[
+            {
+                "clause_no": 1,
+                "field": "grade",
+                "operator": "gte",
+                "value_json": "3",
+                "evidence_text": "지원 자격: 3학년 이상",
+                "is_ambiguous": False,
+            }
+        ],
+        documents=[],
+        confidence=0.9,
+        needs_review=False,
+        **extra,
+    )
+
+
+def test_it_saves_the_announcements_of_every_course(
+    client: TestClient, announcements_repo: FakeAnnouncements
+) -> None:
+    client.post(SYNC)
+    saved = {course: [one.title for one in items] for course, items in announcements_repo.saved}
+    assert saved == {
+        214023: [RESEARCH_TITLE, "휴강 안내", "3주차 강의에 사용한 json 파일"],
+        216515: ["중간고사 안내"],
+    }
+    # 본문은 평문으로 바꿔 저장한다(화면·분류·요건 추출이 같은 글을 본다)
+    first = announcements_repo.saved[0][1][0]
+    assert "<p>" not in (first.message or "")
+    assert "모집 인원: 2명" in (first.message or "")
+    assert first.attachment_count == 0
+
+
+def test_the_result_counts_the_new_announcements(
+    client: TestClient, log: FakeLogConnection
+) -> None:
+    client.post(SYNC)
+    assert log.outputs()["save_lms_sync"]["new_announcements"] == 4
+
+
+def test_it_does_not_call_the_model_when_there_is_nothing_to_classify(
+    client: TestClient, llm: ScriptedLlm
+) -> None:
+    client.post(SYNC)
+    assert llm.requests == []
+
+
+def test_a_schedule_change_announcement_is_only_classified(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    llm: ScriptedLlm,
+    log: FakeLogConnection,
+) -> None:
+    """갈래만 정하고 공고는 만들지 않는다(플래너 반영은 F-53 2부다)."""
+    announcements_repo.pending_rows = [pending(title="휴강 안내", message="10월 20일 휴강합니다")]
+    llm.replies = [classify_reply("schedule_change", "10월 20일 수업은 휴강한다")]
+
+    client.post(SYNC)
+
+    assert announcements_repo.classified == [
+        (f"n-{RESEARCH_TOPIC_ID}", "schedule_change", "10월 20일 수업은 휴강한다")
+    ]
+    assert announcements_repo.created == []
+    assert "classify_announcement" in log.tools()
+    assert log.outputs()["save_lms_sync"]["classified_announcements"] == 1
+    assert log.outputs()["save_lms_sync"]["announcement_opportunities"] == 0
+
+
+def test_an_opportunity_announcement_becomes_an_opportunity(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    llm: ScriptedLlm,
+    log: FakeLogConnection,
+) -> None:
+    announcements_repo.pending_rows = [pending()]
+    llm.replies = [
+        classify_reply("opportunity", "연구 참여 학생을 모집한다", opportunity_category="research"),
+        submit_requirements(),
+    ]
+
+    client.post(SYNC)
+
+    assert announcements_repo.created == [(f"n-{RESEARCH_TOPIC_ID}", "research")]
+    # 공고 원문 링크는 저장한 주소가 아니라 LMS 주소 + 번호로 만든다(명세 8장)
+    assert announcements_repo.urls == [
+        f"{BASE}/courses/214023/discussion_topics/{RESEARCH_TOPIC_ID}"
+    ]
+    extraction = announcements_repo.extractions[0]
+    assert extraction.succeeded and len(extraction.requirements) == 1
+    assert log.outputs()["save_lms_sync"]["announcement_opportunities"] == 1
+
+
+def test_the_classify_call_uses_the_cheap_model_and_the_announcement_text(
+    client: TestClient, announcements_repo: FakeAnnouncements, llm: ScriptedLlm
+) -> None:
+    announcements_repo.pending_rows = [pending()]
+    llm.replies = [classify_reply("general")]
+
+    client.post(SYNC)
+
+    first = llm.requests[0]
+    assert first.model == CLASSIFY_MODEL
+    assert first.force_tool == "submit_announcement"
+    message = first.turns[0].text  # type: ignore[union-attr]
+    assert RESEARCH_TITLE in message and "지원 자격: 3학년 이상" in message
+
+
+def test_a_retried_announcement_is_not_classified_again(
+    client: TestClient, announcements_repo: FakeAnnouncements, llm: ScriptedLlm
+) -> None:
+    """분류는 끝났고 공고만 못 만든 공지. 모델은 요건 추출에만 쓴다."""
+    announcements_repo.pending_rows = [pending(category="opportunity")]
+    llm.replies = [submit_requirements()]
+
+    client.post(SYNC)
+
+    assert announcements_repo.classified == []  # 다시 분류하지 않는다
+    assert announcements_repo.created == [(f"n-{RESEARCH_TOPIC_ID}", "etc")]
+    assert [one.model for one in llm.requests] == [EXTRACTION_MODEL]
+
+
+def test_an_already_linked_announcement_makes_no_second_opportunity(
+    client: TestClient, announcements_repo: FakeAnnouncements, llm: ScriptedLlm
+) -> None:
+    announcements_repo.pending_rows = [pending(category="opportunity")]
+    announcements_repo.linked.add(f"n-{RESEARCH_TOPIC_ID}")  # 다른 수강생이 먼저 만들었다
+    llm.replies = [submit_requirements()]
+
+    client.post(SYNC)
+
+    assert announcements_repo.created == []
+
+
+def test_the_sync_still_succeeds_when_classifying_fails(
+    client: TestClient, announcements_repo: FakeAnnouncements, lms: FakeLms
+) -> None:
+    """모델이 터져도 과제·주차 자료·공지는 이미 저장했다. 그 공지는 다음 동기화에서 다시 본다."""
+    announcements_repo.pending_rows = [pending()]  # 모델에 답을 담아 두지 않았다
+
+    response = client.post(SYNC)
+
+    assert response.status_code == 202
+    assert announcements_repo.classified == []
+    assert lms.synced_at == NOW  # 동기화는 끝까지 갔다
+    assert lms.error is None  # 연결을 오류로 바꾸지 않는다
+
+
+def test_it_only_classifies_my_courses_and_recent_announcements(
+    client: TestClient, announcements_repo: FakeAnnouncements
+) -> None:
+    client.post(SYNC)
+    courses, recent_from, limit = announcements_repo.asked[0]
+    assert sorted(courses) == [214023, 216515]
+    assert recent_from == NOW - timedelta(days=30)
+    assert limit == 5
+
+
+def test_a_course_whose_announcements_fail_is_skipped(
+    client: TestClient, canvas: respx.MockRouter, announcements_repo: FakeAnnouncements
+) -> None:
+    """공지를 못 받아도 동기화는 성공이다(과제·주차 자료는 이미 받았다)."""
+    canvas.get(f"{BASE}/api/v1/courses/214023/discussion_topics").mock(
+        return_value=httpx.Response(500)
+    )
+
+    response = client.post(SYNC)
+
+    assert response.status_code == 202
+    assert [course for course, _ in announcements_repo.saved] == [216515]

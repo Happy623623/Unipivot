@@ -287,7 +287,8 @@ async def test_detail_visibility() -> None:
         mine = await repo.detail(me, ids["내 포스터 I"], now=now)
         assert mine is not None and mine.uploaded_by_me
         course = await repo.detail(me, ids["과목 공지 J"], now=now)
-        assert course is not None and course.course_name == "202620HY23525_선형대수"
+        # 화면에 쓰는 짧은 이름이다(명세 5장 예시 "데이터베이스")
+        assert course is not None and course.course_name == "선형대수"
 
         # 마감일이 지났는데 아직 마감 처리(expired)되지 않은 공고도 보인다(피드의 include_expired와 같다)
         late = await repo.detail(me, ids["지난 G"], now=now)
@@ -312,7 +313,7 @@ async def test_detail_visibility() -> None:
         assert not await visible("과목 공지 J")
         await prepare("과목 공지 J")
         dropped = await repo.detail(me, ids["과목 공지 J"], now=now)
-        assert dropped is not None and dropped.course_name == "202620HY23525_선형대수"
+        assert dropped is not None and dropped.course_name == "선형대수"
 
         # 첫 요청이 상세여도 프로필 행을 이름과 함께 만든다
         newbie = str(uuid.uuid4())

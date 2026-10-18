@@ -101,7 +101,7 @@ async def test_feed_lists_judged_opportunities_with_counts() -> None:
         )
         assert e.needs_review and (f.d_day, f.deadline_at) == (None, None)
         assert by_title["내 포스터 I"].uploaded_by_me
-        assert by_title["과목 공지 J"].course_name == "202620HY23525_선형대수"
+        assert by_title["과목 공지 J"].course_name == "선형대수"  # 화면에 쓰는 짧은 이름
 
         counts = await repo.feed_counts(me, now=now)
         assert counts.model_dump() == {

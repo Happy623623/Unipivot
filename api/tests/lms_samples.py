@@ -25,7 +25,15 @@
 - 항목이 없는 모듈이 흔하다(84개 중 47개가 `items: []`)
 - 학생이 여는 주소는 `html_url`이다. `url`은 API 주소라 열어도 JSON이다
 
-공지 샘플은 F-53에서 더한다(그 기능이 쓸 때 함께 넣는다).
+공지 샘플에서 확인한 것(F-53, 공지 16건 녹화):
+
+- 본문은 `message`에 **HTML**로 온다(길이 80–4,458자). 녹화 파일에는 본문·이름이 길이만 남아 있어
+  (`<3710자>`) 샘플 본문은 우리가 쓴 글이다 — 모양만 녹화와 같다
+- `posted_at`은 16건 모두 있었다. 예약 공지(`delayed_post_at`)는 1건이었다
+- `attachments`는 16건 중 2건(JSON 파일 하나, 포스터 PNG 하나). 수만 센다
+- `is_section_specific`는 16건 모두 false였다. true면 분반 한정이라 화면에 내려주지 않는다
+- `locked`(8건)는 댓글 잠금이라 우리와 상관없다. `user_name`은 쓰지 않는다(개인정보)
+- 제목이 비슷한 공지가 섞인다("휴강 안내" / "휴강안내 (Class Cancellation Notice)")
 """
 
 from typing import Any
@@ -355,3 +363,98 @@ MODULE_WITHOUT_ITEMS: dict[str, Any] = {
     "items_url": "https://lms.test/api/v1/courses/214023/modules/2871999/items",
     "state": "locked",
 }
+
+
+# ── 과목 공지 (F-53) ────────────────────────────────────────────────────────
+# `GET /courses/{id}/discussion_topics?only_announcements=true` 응답 모양이다.
+# 본문(message)은 우리가 쓴 글이고, 나머지 칸은 녹화와 같은 모양·값 꼴이다.
+RESEARCH_TOPIC_ID = 520964
+CANCELLED_TOPIC_ID = 520357
+MATERIAL_TOPIC_ID = 519515
+SECTION_TOPIC_ID = 521001
+DELAYED_TOPIC_ID = 521002
+RESEARCH_TITLE = "데이터베이스 연구실 연구 참여 학생 모집"
+RESEARCH_BODY = (
+    "<p>데이터베이스 연구실에서 2026학년도 겨울 연구 참여 학생을 모집합니다.</p>"
+    "<ul><li>모집 인원: 2명</li>"
+    "<li>지원 자격: 3학년 이상, 전체 평점 3.0 이상</li>"
+    "<li>활동 기간: 12월 ~ 2월 (주 10시간)</li>"
+    "<li>제출 서류: 성적증명서, 자기소개서</li>"
+    "<li>신청 마감: 11월 20일 18시</li></ul>"
+    "<p>문의는 연구실로 주세요.</p>"
+)
+
+
+def announcement(
+    topic_id: int,
+    course_id: int,
+    title: str,
+    *,
+    message: str,
+    posted_at: str | None = "2026-09-28T04:43:23Z",
+    attachments: int = 0,
+    section_specific: bool = False,
+) -> dict[str, Any]:
+    """공지 한 건. 칸 이름·꼴은 녹화 그대로다."""
+    url = f"https://lms.test/courses/{course_id}/discussion_topics/{topic_id}"
+    return {
+        "id": topic_id,
+        "title": title,
+        "message": message,
+        "posted_at": posted_at,
+        "created_at": posted_at or "2026-09-28T04:43:23Z",
+        "delayed_post_at": None if posted_at else "2026-12-01T00:00:00Z",
+        "last_reply_at": posted_at,
+        "lock_at": None,
+        "assignment_id": None,
+        "root_topic_id": None,
+        "position": 1,
+        "discussion_type": "side_comment",
+        "is_section_specific": section_specific,
+        "user_name": "담당 교수",
+        "permissions": {"attach": False, "update": False, "reply": False, "delete": False},
+        "read_state": "unread",
+        "unread_count": 0,
+        "attachments": [{"id": 11637886 + index} for index in range(attachments)],
+        "published": True,
+        "locked": True,
+        "html_url": url,
+        "url": url,
+        "pinned": False,
+        "todo_date": None,
+    }
+
+
+DB_ANNOUNCEMENTS: list[dict[str, Any]] = [
+    announcement(
+        RESEARCH_TOPIC_ID,
+        214023,
+        RESEARCH_TITLE,
+        message=RESEARCH_BODY,
+        posted_at="2026-10-14T04:41:13Z",
+    ),
+    announcement(
+        CANCELLED_TOPIC_ID,
+        214023,
+        "휴강 안내",
+        message="<p>10월 20일(월) 수업은 휴강합니다. 보강은 추후 공지합니다.</p>",
+        posted_at="2026-10-10T10:00:03Z",
+    ),
+    announcement(
+        MATERIAL_TOPIC_ID,
+        214023,
+        "3주차 강의에 사용한 json 파일",
+        message="<p>수업에서 쓴 파일을 첨부합니다.</p>",
+        posted_at="2026-10-05T05:06:22Z",
+        attachments=1,
+    ),
+]
+ML_ANNOUNCEMENTS: list[dict[str, Any]] = [
+    announcement(
+        519001,
+        216515,
+        "중간고사 안내",
+        message="<p>중간고사는 수업 시간에 봅니다. 범위는 1~6주차입니다.</p>",
+        posted_at="2026-10-12T01:00:00Z",
+    )
+]

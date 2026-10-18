@@ -61,6 +61,7 @@ from app.eligibility import (
 )
 from app.extraction.prompt import FETCH_ORIGINAL, READ_IMAGE, READ_TEXT, SUBMIT
 from app.extraction.sources import whole
+from app.lms.parse import course_name as parse_course_name
 from app.schemas.opportunities import (
     CATEGORIES,
     ELIGIBILITY_STATUSES,
@@ -517,7 +518,7 @@ class OpportunityRepository:
             review_reasons=_lines(row["review_reasons"]),
             extraction_confidence=float(confidence) if confidence is not None else None,
             uploaded_by_me=row["uploaded_by_me"],
-            course_name=row["course_name"],
+            course_name=_short_course(row["course_name"]),
             attachments=[_attachment(item) for item in row["attachments"] if item["source_url"]],
             eligibility=eligibility,
             documents=[DocumentItem(**document) for document in row["documents"]],
@@ -694,7 +695,7 @@ def _item(row: dict[str, Any], today: date) -> OpportunityItem:
         ),
         needs_review=bool(row["needs_review"]),
         uploaded_by_me=row["uploaded_by_me"],
-        course_name=row["course_name"],
+        course_name=_short_course(row["course_name"]),
         prepared=row["prepared"],
         is_new=row["is_new"],
         my_mark=row["my_mark"],
@@ -939,6 +940,16 @@ def _attachment(item: dict[str, Any]) -> AttachmentItem:
 
 def _text(value: Any) -> str | None:
     return str(value) if value is not None else None
+
+
+def _short_course(name: str | None) -> str | None:
+    """과목 공지 공고의 과목 이름. 화면에 쓰는 **짧은 이름**이다(명세 5장 예시: "데이터베이스").
+
+    저장한 과목명은 `202620HY23525_데이터베이스` 꼴이라 그대로 내려주면 화면에
+    "202620HY23525_데이터베이스 수강생 대상"이 뜬다. 과목 목록·과목 상세와 같은 규칙으로 줄인다
+    (`app/lms/parse.course_name`). 꼴이 다른 과목명은 이름 전체가 짧은 이름이다.
+    """
+    return parse_course_name(name).short_name if name else None
 
 
 def get_opportunity_repo(

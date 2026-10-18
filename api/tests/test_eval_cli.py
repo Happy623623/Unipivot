@@ -49,7 +49,8 @@ from app.uploads.storage import StorageError
 
 pytestmark = pytest.mark.anyio
 
-# PRD 8장 표의 P0 시나리오 중 지금까지 만든 것. S09·S10은 실제 HWP·PDF 파일이 먼저다
+# PRD 8장 표에서 지금까지 만든 시나리오. S09·S10은 실제 HWP·PDF 파일이 먼저다.
+# S23은 P1이지만 F-53 1부와 함께 만들었다(기회성 공지 → 공고 → 판정)
 EXPECTED_CODES = (
     "S01",
     "S02",
@@ -67,12 +68,14 @@ EXPECTED_CODES = (
     "S16",
     "S17",
     "S18",
+    "S23",
 )
 
 
 def test_the_scenario_list_matches_the_prd_table() -> None:
     assert tuple(scenario.code for scenario in SCENARIOS) == EXPECTED_CODES
-    assert all(scenario.priority == "P0" for scenario in SCENARIOS)
+    # 우선순위는 PRD 표 그대로다(S23만 P1)
+    assert {scenario.code for scenario in SCENARIOS if scenario.priority != "P0"} == {"S23"}
     assert all(scenario.title and scenario.run.__doc__ for scenario in SCENARIOS)
 
 

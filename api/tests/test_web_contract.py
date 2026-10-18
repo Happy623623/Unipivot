@@ -40,7 +40,11 @@ PAIRS = [
     ("SyllabusConfirmResult", "SyllabusConfirmResult"),
 ]
 # `GET /lms/updates`는 종류별로 모양이 다르다(web은 합집합 하나로 적는다)
-UPDATE_PAIRS = [("module_item", "ModuleItemUpdate"), ("assignment", "AssignmentUpdate")]
+UPDATE_PAIRS = [
+    ("module_item", "ModuleItemUpdate"),
+    ("assignment", "AssignmentUpdate"),
+    ("announcement", "AnnouncementUpdate"),
+]
 
 
 def _text() -> str:

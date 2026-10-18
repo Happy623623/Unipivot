@@ -31,6 +31,7 @@ from app.lms.modules import CanvasModuleItem
 from app.lms.parse import course_name, is_canvas_id
 from app.repositories.opportunities import Cursor
 from app.schemas.lms import (
+    AnnouncementUpdate,
     AssignmentCourse,
     AssignmentItem,
     AssignmentUpdate,
@@ -186,20 +187,38 @@ _UPDATES = (
     "    c.name as course_name, i.module_name, i.title, i.item_type, i.html_url,"
     "    null::timestamptz as due_at, null as submission_state,"
     "    (select f.id from files f where f.lms_module_item_id = i.id and f.user_id = c.user_id"
-    "      order by f.created_at, f.id limit 1) as uploaded_file_id"
+    "      order by f.created_at, f.id limit 1) as uploaded_file_id,"
+    # 공지 칸(F-53). 첫 갈래에서 형을 못 박아야 union이 글자·숫자를 섞지 않는다
+    "    null::text as summary, null::text as category, null::timestamptz as posted_at,"
+    "    null::smallint as attachment_count, null::uuid as opportunity_id,"
+    "    null::uuid as planner_task_id"
     "  from lms_module_items i"
     "  join lms_courses c on c.canvas_course_id = i.canvas_course_id and c.user_id = %(uid)s"
     "    and coalesce(c.is_active, true)"
     "  where i.first_seen_at >= %(since)s"
     "  union all"
     "  select 'assignment', a.id, a.first_seen_at, c.id, c.name, null, a.title, null, a.html_url,"
-    "    a.due_at, a.submission_state::text, null"
+    "    a.due_at, a.submission_state::text, null,"
+    "    null, null, null, null, null, null"
     "  from lms_assignments a"
     "  join lms_courses c on c.id = a.lms_course_id and c.user_id = a.user_id"
     "  where a.user_id = %(uid)s and a.removed_at is null and coalesce(c.is_active, true)"
     # 새 과제이거나, 마감이 가까운 미제출 과제다(명세 9장)
     "    and (a.first_seen_at >= %(since)s or (a.submission_state = 'unsubmitted'"
     "      and a.due_at >= %(now)s and a.due_at < %(soon)s))"
+    "  union all"
+    # 과목 공지(F-53). 과목 공통 표라 과목 번호로 잇고, 분반 한정 공지는 내려주지 않는다(명세 9장)
+    "  select 'announcement', n.id, n.first_seen_at, c.id, c.name, null, n.title, null, null,"
+    "    null, null, null,"
+    "    n.summary, n.category::text, n.posted_at, n.attachment_count, n.opportunity_id,"
+    "    (select p.id from planner_tasks p where p.lms_announcement_id = n.id"
+    "      and p.user_id = c.user_id order by p.created_at, p.id limit 1)"
+    "  from lms_announcements n"
+    "  join lms_courses c on c.canvas_course_id = n.canvas_course_id and c.user_id = %(uid)s"
+    "    and coalesce(c.is_active, true)"
+    # 예약 공지(posted_at이 없는 글)는 아직 소식이 아니라 넣지 않는다
+    "  where n.first_seen_at >= %(since)s and not n.is_section_specific"
+    "    and n.posted_at is not null"
     ") as feed where kind = any(%(kinds)s::text[])"
 )
 
@@ -859,10 +878,22 @@ def update_since(scope: str) -> datetime | None:
         return None
 
 
-def _update(row: dict[str, Any]) -> ModuleItemUpdate | AssignmentUpdate:
+def _update(row: dict[str, Any]) -> ModuleItemUpdate | AssignmentUpdate | AnnouncementUpdate:
     course = AssignmentCourse(
         id=str(row["course_id"]), short_name=course_name(row["course_name"]).short_name
     )
+    if row["kind"] == "announcement":
+        return AnnouncementUpdate(
+            id=str(row["id"]),
+            course=course,
+            title=row["title"],
+            summary=row["summary"],
+            posted_at=row["posted_at"].astimezone(KST),
+            category=row["category"],
+            attachment_count=row["attachment_count"] or 0,
+            opportunity_id=str(row["opportunity_id"]) if row["opportunity_id"] else None,
+            planner_task_id=str(row["planner_task_id"]) if row["planner_task_id"] else None,
+        )
     if row["kind"] == "module_item":
         return ModuleItemUpdate(
             id=str(row["id"]),

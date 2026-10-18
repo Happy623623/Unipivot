@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     extraction_model: str = "gemini-3.8-flash"
     vision_model: str = "gemini-3.8-flash"
     guide_model: str = "gemini-3.5-flash-lite"  # 준비하기의 서류 안내(짧은 구조화 답)
+    classify_model: str = "gemini-3.5-flash-lite"  # 과목 공지 갈래 나누기(F-53, 짧은 구조화 답)
     extraction_max_reads: int = 4  # 요건 추출 읽기 도구 상한(PRD 14장 미결, W2–3에 확정)
     extraction_max_tokens: int = 150_000
     youth_api_key: str = ""  # 온통청년 OPEN API 인증키(청년정책 수집, app/youth)
