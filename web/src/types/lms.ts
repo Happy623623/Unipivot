@@ -11,6 +11,8 @@ export interface SyllabusItemView {
   title: string;
   starts_at: string | null; // KST 오프셋. 날짜만 적힌 일정은 그날 09:00이다
   is_confirmed: boolean;
+  // 캘린더에 실제로 들어간 일정인지. 확인 화면(추출 결과)에서는 늘 false다
+  calendar_registered: boolean;
 }
 
 // GET /runs/{id}의 계획서 추출 결과 (API 명세 8장)

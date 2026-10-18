@@ -2363,3 +2363,70 @@ async def test_a_schedule_change_task_shows_the_course_in_the_planner(
         saved[0].id,
         "데이터베이스",
     )
+
+
+# ── 계획서 일정의 캘린더 등록 여부 (명세 9장) ───────────────────────────────
+
+
+async def test_the_course_detail_says_which_items_are_in_the_calendar(
+    world: dict[str, Any],
+) -> None:
+    """화면이 "캘린더에 넣기" 버튼을 숨기는 기준이다. **실제로 들어간 것만** true다.
+
+    자리만 잡고 넣다 만 행(external_event_id가 null)은 false여서 다시 넣을 수 있다.
+    """
+    repo, me, other, now, conn = (
+        world["repo"],
+        world["me"],
+        world["other"],
+        world["now"],
+        world["conn"],
+    )
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    syllabus = await (
+        await conn.execute(
+            "insert into syllabi (user_id, lms_course_id, course_name, semester)"
+            " values (%s, %s, '데이터베이스', '2026-2') returning id",
+            (me, course),
+        )
+    ).fetchone()
+    items: dict[str, str] = {}
+    for title, starts in (
+        ("중간고사", now + timedelta(days=2)),
+        ("기말고사", now + timedelta(days=40)),
+        ("발표", now + timedelta(days=10)),
+    ):
+        row = await (
+            await conn.execute(
+                "insert into syllabus_items (syllabus_id, item_type, title, starts_at,"
+                " is_confirmed) values (%s, 'etc', %s, %s, true) returning id",
+                (syllabus["id"], title, starts),
+            )
+        ).fetchone()
+        items[title] = str(row["id"])
+    # 중간고사는 캘린더에 들어갔고, 기말고사는 자리만 잡았다(넣다 만 것), 발표는 남의 일정이다
+    await conn.execute(
+        "insert into calendar_events (user_id, provider, syllabus_item_id, external_event_id,"
+        " title, starts_at) values (%s, 'google', %s, 'ev-1', '[시험] 중간고사', %s)",
+        (me, items["중간고사"], now + timedelta(days=2)),
+    )
+    await conn.execute(
+        "insert into calendar_events (user_id, provider, syllabus_item_id, external_event_id,"
+        " title, starts_at) values (%s, 'google', %s, null, '[시험] 기말고사', %s)",
+        (me, items["기말고사"], now + timedelta(days=40)),
+    )
+    await conn.execute(
+        "insert into calendar_events (user_id, provider, syllabus_item_id, external_event_id,"
+        " title, starts_at) values (%s, 'google', %s, 'ev-2', '[발표] 발표', %s)",
+        (other, items["발표"], now + timedelta(days=10)),
+    )
+
+    detail = await repo.course_detail(me, course, now=now, lms_base="https://lms.test")
+
+    assert detail is not None
+    assert {one.title: one.calendar_registered for one in detail.syllabus_items} == {
+        "중간고사": True,
+        "기말고사": False,  # 자리만 잡은 행은 아직 들어간 것이 아니다
+        "발표": False,  # 남의 캘린더 일정은 내 것이 아니다
+    }

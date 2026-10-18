@@ -32,6 +32,9 @@ class SyllabusItemView(BaseModel):
     title: str
     starts_at: datetime | None  # KST 오프셋. 날짜만 적힌 일정은 그날 09:00이다
     is_confirmed: bool = False
+    # 캘린더에 실제로 들어간 일정인지(과제 목록·공고 상세와 같은 기준). 추출 결과에서는 늘 false다
+    # — 확정하기 전에는 캘린더에 넣지 않는다
+    calendar_registered: bool = False
 
 
 # 캘린더 일정 제목 앞머리. 공고는 `[마감]`, LMS 과제는 `[과제]`다(명세 7장)

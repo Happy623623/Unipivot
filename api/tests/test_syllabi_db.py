@@ -444,6 +444,8 @@ async def test_the_model_cannot_invent_an_exam_date(settings: Settings) -> None:
             "title": "중간고사",
             "starts_at": "2026-10-20T10:30:00+09:00",
             "is_confirmed": False,
+            # 확인하기 전이라 캘린더에는 아직 없다(명세 9장)
+            "calendar_registered": False,
         }
     ]
 

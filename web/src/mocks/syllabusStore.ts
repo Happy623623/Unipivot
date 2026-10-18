@@ -15,7 +15,7 @@ import type {
 // 목데이터의 "데이터베이스"는 계획서가 없는 과목이라(has_syllabus false) 업로드 흐름을 그대로 돈다
 
 // 뽑은 척할 일정. 주차만 적힌 계획서를 모델이 센 모양이다(시각이 없는 일정은 그날 09:00)
-const EXTRACTED: Omit<SyllabusItemView, "id" | "is_confirmed">[] = [
+const EXTRACTED: Omit<SyllabusItemView, "id" | "is_confirmed" | "calendar_registered">[] = [
   { item_type: "midterm", title: "중간고사", starts_at: "2026-10-20T10:30:00+09:00" },
   { item_type: "presentation", title: "팀 프로젝트 중간 발표", starts_at: "2026-11-10T09:00:00+09:00" },
   { item_type: "final", title: "기말고사", starts_at: "2026-12-08T10:30:00+09:00" },
@@ -61,6 +61,7 @@ export function extractStoredSyllabus(
     ...item,
     id: `${id}-${index + 1}`,
     is_confirmed: false,
+    calendar_registered: false,
   }));
   stored.set(id, { courseId, items, calendar: new Set() });
   const course = courseDetails[courseId];
@@ -151,7 +152,13 @@ export function confirmStoredSyllabus(
         events += 1;
       }
     }
-    return { ...row, title: fixed.title, starts_at, is_confirmed: fixed.selected };
+    return {
+      ...row,
+      title: fixed.title,
+      starts_at,
+      is_confirmed: fixed.selected,
+      calendar_registered: syllabus.calendar.has(row.id),
+    };
   });
   return {
     confirmed,
@@ -168,7 +175,11 @@ export function withStoredSyllabus(course: CourseDetail): CourseDetail {
   return {
     ...course,
     course: { ...course.course, has_syllabus: true, syllabus_id: syllabusIdOf(course.course.id) },
-    syllabus_items: syllabus.items,
+    // 캘린더에 넣은 일정은 다시 열어도 "넣었어요"로 보인다(서버의 calendar_registered 흉내)
+    syllabus_items: syllabus.items.map((item) => ({
+      ...item,
+      calendar_registered: syllabus.calendar.has(item.id),
+    })),
   };
 }
 

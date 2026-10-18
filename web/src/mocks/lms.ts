@@ -139,6 +139,7 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
             title: "중간고사",
             starts_at: "2026-10-22T10:00:00+09:00",
             is_confirmed: true,
+            calendar_registered: true, // 이미 캘린더에 들어간 일정(버튼이 안 보인다)
           },
           {
             id: `${course.id}-s2`,
@@ -146,6 +147,7 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
             title: "Homework 4",
             starts_at: "2026-10-13T23:59:00+09:00",
             is_confirmed: true,
+            calendar_registered: false,
           },
           {
             id: `${course.id}-s3`,
@@ -153,6 +155,7 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
             title: "팀 발표",
             starts_at: "2026-11-12T14:00:00+09:00",
             is_confirmed: false,
+            calendar_registered: false,
           },
         ]
       : [],

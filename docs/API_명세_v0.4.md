@@ -70,6 +70,8 @@
 >
 > v0.4 보강(10/18, 일정 변경 공지): 일정 변경 공지는 바뀌는 날에 플래너 할 일(`source = lms_announcement`, 완료만 수정)과 `schedule_change` 알림을 **그 과목 수강생 모두에게** 만든다(F-53 2부). 새 글 피드의 `planner_task_id`가 그 할 일이다
 >
+> v0.4 보강(10/18, 계획서 일정 캘린더 표시): 계획서 일정에 `calendar_registered`가 생겼다(과제 목록과 같은 기준). 화면이 "캘린더에 넣기" 버튼을 숨기는 값이다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -828,8 +830,8 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
   "syllabus_id": "uuid",
   "course_name": "데이터베이스",
   "items": [
-    { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-21T10:30:00+09:00", "is_confirmed": false },
-    { "id": "uuid", "item_type": "presentation", "title": "팀 프로젝트 발표", "starts_at": "2026-12-09T10:30:00+09:00", "is_confirmed": false }
+    { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-21T10:30:00+09:00", "is_confirmed": false, "calendar_registered": false },
+    { "id": "uuid", "item_type": "presentation", "title": "팀 프로젝트 발표", "starts_at": "2026-12-09T10:30:00+09:00", "is_confirmed": false, "calendar_registered": false }
   ]
 }
 ```
@@ -1070,7 +1072,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   "assignments": [ { "id": "uuid", "title": "Homework 4", "due_at": "2026-10-13T23:59:00+09:00", "submission_state": "unsubmitted", "html_url": "https://learning.hanyang.ac.kr/..." } ],
   "module_items": [ { "id": "uuid", "module_name": "8주차", "title": "08 - Eigenvalues", "item_type": "ExternalTool", "html_url": "https://learning.hanyang.ac.kr/...", "is_new": true, "uploaded_file_id": null } ],
   "announcements": [ { "id": "uuid", "title": "강의실 변경 안내", "summary": "다음 주 수업은 다른 강의실에서 한다", "category": "schedule_change", "posted_at": "2026-10-04T14:00:00+09:00", "opportunity_id": null } ],
-  "syllabus_items": [ { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-20T10:30:00+09:00", "is_confirmed": true } ],
+  "syllabus_items": [ { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-20T10:30:00+09:00", "is_confirmed": true, "calendar_registered": true } ],
   "materials": [ { "file_id": "uuid", "original_name": "08_eigen.pdf", "status": "succeeded" } ]
 }
 ```
@@ -1082,6 +1084,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - **남의 과목과 수강을 뺀 과목(`is_active` false)은 404 `NOT_FOUND`다**
 - 순서는 서버가 정한다(DB 정렬 규칙에 맡기지 않는다): 과제는 마감이 가까운 순(마감 없는 것은 뒤), 주차 항목은 **새 항목 먼저** 다음 주차·제목 순, 공지는 올린 순(최신 먼저), 계획서 일정은 날짜 순, 내 자료는 올린 순(최신 먼저). 값이 같으면 id로 가른다
 - `module_items[].item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`다(녹화에 `File`은 없었다). `module_name`·`html_url`·`item_type`은 null일 수 있다
+- `syllabus_items[].calendar_registered`는 그 일정이 **캘린더에 실제로 들어갔는지**다(과제 목록의 같은 이름 칸과 같은 기준: `external_event_id`가 있는 행). 화면은 이 값으로 "캘린더에 넣기" 버튼을 숨긴다 — 자리만 잡고 넣다 만 일정은 false여서 다시 넣을 수 있다. 추출 결과(8장)에서는 아직 확정하지 않은 일정이라 늘 false다
 - `materials[].status`는 요약 상태다. 파일만 올리고 아직 요약하지 않았으면 `pending`이다
 - `course.syllabus_id`는 그 과목 계획서의 번호다(없으면 null, `has_syllabus`와 같은 뜻이다). 뽑아 두고 **확인하지 않은 일정**(`is_confirmed` false)이 남았을 때, 계획서를 다시 올리지 않고 이 번호로 `POST /syllabi/{id}/confirm`을 부르라고 준다
 

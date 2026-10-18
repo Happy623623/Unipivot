@@ -253,6 +253,9 @@ class CourseSyllabusItem(BaseModel):
     title: str
     starts_at: datetime | None
     is_confirmed: bool
+    # 캘린더에 실제로 들어간 일정인지. 화면이 "캘린더에 넣기" 버튼을 숨기는 기준이다
+    # (과제 목록의 `calendar_registered`와 같은 뜻: external_event_id가 있는 행)
+    calendar_registered: bool
 
 
 class CourseMaterial(BaseModel):

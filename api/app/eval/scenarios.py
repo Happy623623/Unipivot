@@ -849,6 +849,12 @@ async def s15(world: EvalWorld) -> None:
         expected=[True, True, False],
         actual=[one["is_confirmed"] for one in after["syllabus_items"]],
     )
+    # 캘린더에 들어간 일정은 그렇게 보인다 — 화면이 "캘린더에 넣기"를 숨기는 기준(명세 9장)
+    await world.check(
+        "캘린더에 든 일정 표시",
+        expected=[True, True, False],
+        actual=[one["calendar_registered"] for one in after["syllabus_items"]],
+    )
     # 학생이 고른 과목에 붙었다 — 다른 과목에는 계획서가 없다
     other = await _course(world, client, picked["기계학습"])
     await world.check("다른 과목은 그대로", expected=False, actual=other["course"]["has_syllabus"])

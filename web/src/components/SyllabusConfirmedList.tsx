@@ -11,7 +11,7 @@ interface SyllabusConfirmedListProps {
   waiting: number; // 확인하지 않은 일정 수
   canReview: boolean; // 계획서 번호를 알아 확인 화면을 다시 열 수 있다
   calendarConnected: boolean;
-  added: string[]; // 이 화면에서 캘린더에 넣은 일정
+  added: string[]; // 이 화면에서 방금 넣은 일정(서버가 준 calendar_registered와 합쳐 본다)
   busyItem: string | null;
   onAddToCalendar: (item: SyllabusItemView) => void;
   onConnectCalendar: () => void;
@@ -57,7 +57,7 @@ export default function SyllabusConfirmedList({
                   ? `${formatKstLongDate(item.starts_at)} ${getKstTimeKey(item.starts_at)}`
                   : "일정 미정"}
               </span>
-              {added.includes(item.id) ? (
+              {added.includes(item.id) || item.calendar_registered ? (
                 <span className="text-[12px] font-semibold text-[#15803d]">캘린더에 넣었어요</span>
               ) : (
                 item.starts_at &&

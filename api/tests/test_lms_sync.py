@@ -241,6 +241,7 @@ class FakeLms:
                     title="중간고사",
                     starts_at=NOW.astimezone(KST),
                     is_confirmed=True,
+                    calendar_registered=True,
                 )
             ],
             materials=[CourseMaterial(file_id="f-1", original_name="3주차.pdf", status="pending")],
@@ -1211,6 +1212,7 @@ def test_it_opens_a_course(client: TestClient, lms: FakeLms, settings: Settings)
         "title",
         "starts_at",
         "is_confirmed",
+        "calendar_registered",  # 화면이 "캘린더에 넣기"를 숨기는 기준(명세 9장)
     }
     assert set(body["materials"][0]) == {"file_id", "original_name", "status"}
     assert body["assignments"][0]["due_at"] == "2026-10-20T23:59:59+09:00"  # KST로 간다

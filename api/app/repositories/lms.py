@@ -664,7 +664,12 @@ class LmsRepository:
     async def _course_syllabus(self, user_id: str, course_id: str) -> list[CourseSyllabusItem]:
         rows = await self._rows(
             "select i.id, i.item_type::text as item_type, i.title, i.starts_at,"
-            " coalesce(i.is_confirmed, false) as is_confirmed"
+            " coalesce(i.is_confirmed, false) as is_confirmed,"
+            # 캘린더는 실제로 등록된 것만 true다(과제 목록·공고 상세와 같은 기준). 자리만 잡고
+            # 넣다 만 행(external_event_id가 null)은 false여서 화면이 다시 넣을 수 있다
+            " exists (select 1 from calendar_events e where e.syllabus_item_id = i.id"
+            "   and e.user_id = s.user_id and e.external_event_id is not null)"
+            "   as calendar_registered"
             " from syllabus_items i join syllabi s on s.id = i.syllabus_id"
             " where s.user_id = %(uid)s and s.lms_course_id = %(course)s",
             {"uid": user_id, "course": course_id},
@@ -676,6 +681,7 @@ class LmsRepository:
                 title=row["title"],
                 starts_at=row["starts_at"].astimezone(KST) if row["starts_at"] else None,
                 is_confirmed=row["is_confirmed"],
+                calendar_registered=row["calendar_registered"],
             )
             for row in rows
         ]
