@@ -16,6 +16,7 @@ W6 베이스라인은 `--out`으로 적어 두고, W9–10 개선을 그 값과 
 import argparse
 import asyncio
 import json
+import logging
 import sys
 import unicodedata
 from collections.abc import Sequence
@@ -50,6 +51,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 
 async def main(argv: Sequence[str]) -> int:
+    # 결과 표만 보이게 한다. 앱이 깔아 둔 info 로그 중 바깥 호출 한 줄씩은 여기서 끈다
+    # (서버에서는 그대로 남긴다 — 키를 가려 적는 것을 시험이 지키고 있다)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     args = parse_args(argv)
     if args.list:
         for scenario in SCENARIOS:

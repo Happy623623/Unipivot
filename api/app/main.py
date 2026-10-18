@@ -29,6 +29,7 @@ from app.routers import (
     runs,
     syllabi,
 )
+from app.scheduler import Scheduler, app_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -49,16 +50,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.pool, app.state.log_pool = create_pools(settings.database_url)
         await app.state.pool.open()
         await app.state.log_pool.open()
-    yield
-    # 돌던 준비하기를 잠깐 기다린다(못 끝내면 다음 요청이 멈춘 실행으로 보고 다시 만든다)
-    await app.state.runner.drain(timeout=10)
-    for pool in (app.state.pool, app.state.log_pool):
-        if pool is not None:
-            await pool.close()
+    # 정기 작업(알림 발송·LMS 동기화·알림 예약). 끄면 /internal/jobs/*로만 돈다
+    app.state.scheduler = None
+    if settings.scheduler_enabled and app.state.pool is None:
+        logger.warning(
+            "SCHEDULER_ENABLED가 켜져 있지만 DATABASE_URL이 없어 정기 작업을 띄우지 않아요"
+        )
+    elif settings.scheduler_enabled:
+        app.state.scheduler = Scheduler(app_jobs(app))
+        app.state.scheduler.start()
+    try:
+        yield
+    finally:
+        # 뜨는 중이나 도는 중에 터져도 여기를 지난다 — 안 닫으면 DB 풀의 일꾼이 남아 서버가 안 꺼진다
+        # 새 일을 더 띄우지 않게 스케줄러를 먼저 멈춘다
+        if app.state.scheduler is not None:
+            await app.state.scheduler.stop()
+        # 돌던 준비하기를 잠깐 기다린다(못 끝내면 다음 요청이 멈춘 실행으로 보고 다시 만든다)
+        await app.state.runner.drain(timeout=10)
+        for pool in (app.state.pool, app.state.log_pool):
+            if pool is not None:
+                await pool.close()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     install_log_redaction()  # 로그에서 토큰을 가린다 (요청 처리 전에 건다)
+    # uvicorn은 자기 로거만 꾸민다. 그대로 두면 앱이 남기는 info 로그(정기 작업 결과 등)가 사라진다
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s %(message)s")
     settings = settings or get_settings()
     app = FastAPI(title="UNIPIVOT API", version="0.2.0", lifespan=lifespan)
     app.state.settings = settings

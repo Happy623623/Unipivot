@@ -739,13 +739,10 @@ def extraction_agent(
     )
 
 
-def get_lms_sync_service(
-    request: Request,
-    runner: RunnerDep,
-    llm: LlmDep,
-    settings: Annotated[Settings, Depends(get_settings)],
+def lms_sync_service_for(
+    state: Any, *, settings: Settings, llm: LlmClient | None, runner: TaskRunner
 ) -> LmsSyncService:
-    state = request.app.state
+    """동기화 서비스를 만든다. 요청 밖(스케줄러)에서도 쓰려고 `app.state`를 직접 받는다."""
     pool, log_pool = getattr(state, "pool", None), getattr(state, "log_pool", None)
     if pool is None or log_pool is None:
         raise ApiError(503, "DB_UNAVAILABLE", "데이터베이스에 연결할 수 없어요.")
@@ -774,6 +771,15 @@ def get_lms_sync_service(
         runner=runner,
         announcer=announcer,
     )
+
+
+def get_lms_sync_service(
+    request: Request,
+    runner: RunnerDep,
+    llm: LlmDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> LmsSyncService:
+    return lms_sync_service_for(request.app.state, settings=settings, llm=llm, runner=runner)
 
 
 LmsSyncServiceDep = Annotated[LmsSyncService, Depends(get_lms_sync_service)]

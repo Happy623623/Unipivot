@@ -17,6 +17,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Query
 
+from app import jobs
 from app.clock import NowDep
 from app.config import Settings, get_settings
 from app.eligibility import KST
@@ -81,35 +82,22 @@ async def read_metrics(
     return await repo.metrics((start, end))
 
 
+# 아래 세 작업의 알맹이는 `app/jobs.py`에 있다. 서버 안 스케줄러(app/scheduler.py)가 같은 함수를
+# 부른다 — 손으로 부를 때와 저절로 돌 때가 달라지지 않게 한 곳에 뒀다.
+
+
 @router.post("/jobs/lms-sync", response_model=SyncJobResult)
 async def lms_sync(service: LmsSyncServiceDep, now: NowDep, _: InternalKeyDep) -> SyncJobResult:
-    """연결된 사용자의 과목·과제를 동기화한다. 30분마다 도는 작업이다(F-51).
-
-    한 사람이 실패해도 다음 사람을 계속한다(실패는 그 사람의 실행 기록에 남는다). 토큰이 막힌
-    사람은 연결을 `error`로 바꿔 화면이 다시 연결을 안내한다. 최근에 동기화한 사람은 건너뛴다.
-    """
-    outcome = await service.sync_all(now=now)
-    return SyncJobResult(
-        users=outcome.users,
-        synced=outcome.synced,
-        failed=outcome.failed,
-        skipped=outcome.skipped,
-        new_assignments=outcome.new_assignments,
-        due_changed=outcome.due_changed,
-        submitted=outcome.submitted,
-    )
+    """연결된 사용자의 과목·과제를 동기화한다. 30분마다 도는 작업이다(F-51)."""
+    return await jobs.lms_sync(service, now=now)
 
 
 @router.post("/jobs/schedule-notifications", response_model=ScheduleResult)
 async def schedule_notifications(
     repo: NotificationRepoDep, now: NowDep, _: InternalKeyDep
 ) -> ScheduleResult:
-    """공고 알림(새 적격·마감 임박·정보 필요)을 예약한다. 하루 한 번 도는 작업이다.
-
-    같은 알림은 한 번만 만들고(사용자당 `dedupe_key` 1행), 마감이 바뀌면 아직 보내지 않은 행의
-    시각만 고친다. 보낼 이유가 없어진 행은 지운다(저장소 머리말).
-    """
-    return await repo.schedule(now=now)
+    """공고 알림(새 적격·마감 임박·정보 필요)을 예약한다. 하루 한 번 도는 작업이다."""
+    return await jobs.schedule_notifications(repo, now=now)
 
 
 @router.post("/jobs/send-notifications", response_model=SendResult)
@@ -120,25 +108,8 @@ async def send_notifications(
     now: NowDep,
     _: InternalKeyDep,
 ) -> SendResult:
-    """보낼 때가 된 알림을 보낸다. 5분마다 도는 작업이다.
-
-    숨긴 공고의 알림과 하루 한도를 넘는 알림은 보내지 않고 둔다. 푸시 구독이 없거나 푸시를 끈
-    사용자는 푸시만 건너뛰고 알림함에는 남는다(F-35).
-
-    푸시는 **알림함 행을 닫은 뒤에** 보낸다(F-33). 푸시가 실패해도 알림은 보낸 것으로 남는다 —
-    같은 알림을 두 번 보내지 않는 쪽을 택했다(명세 10장). 사라진 구독(404·410)은 지운다.
-    """
-    sent = await repo.send(now=now)
-    pushed = await sender.send(await push_repo.targets(sent.ids))
-    dropped = await push_repo.drop_endpoints(pushed.gone)
-    return SendResult(
-        **{
-            **sent.result.model_dump(),
-            "pushed": pushed.sent,
-            "push_failed": pushed.failed,
-            "push_dropped": dropped,
-        }
-    )
+    """보낼 때가 된 알림을 보낸다(알림함 → 푸시). 5분마다 도는 작업이다."""
+    return await jobs.send_notifications(repo, push_repo, sender, now=now)
 
 
 @router.post("/eval/run", response_model=EvalRunResult)

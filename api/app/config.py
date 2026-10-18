@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     lms_api_base: str = "https://learning.hanyang.ac.kr"
     # /internal/* 호출에 쓰는 서비스 키(명세 12장의 X-Internal-Key). 비우면 그 경로가 모두 403이다
     internal_api_key: str = ""
+    # 서버 안 스케줄러(app/scheduler.py). 꺼 두면 정기 작업은 /internal/jobs/*로만 돈다.
+    # 바깥 크론을 쓸 때는 꺼 둔다 — 둘 다 켜면 같은 일이 두 번 돈다
+    scheduler_enabled: bool = False
 
     @property
     def storage_base_url(self) -> str:

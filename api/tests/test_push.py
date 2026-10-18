@@ -21,6 +21,7 @@ from http_ece import ECEException
 
 from app.config import Settings, get_settings
 from app.main import create_app
+from app.push.deps import push_sender_for
 from app.push.keys import b64u, generate_keys, load_keys, unb64u
 from app.push.payload import PushPayload, url_for
 from app.push.send import GONE, PushSender, PushTarget, Subscription, encrypt
@@ -341,3 +342,14 @@ def test_subscribing_needs_a_login(settings: Settings, push_repo: FakePushRepo) 
     with TestClient(app) as anonymous:
         response = anonymous.post("/api/v1/push/subscriptions", json=SUBSCRIPTION)
     assert response.status_code == 401
+
+
+def test_the_app_keeps_one_sender(settings: Settings) -> None:
+    """발송기는 앱마다 하나다(httpx 연결을 다시 쓴다). 요청 밖에서 불러도 같은 것이어야 한다."""
+
+    class FakeState:
+        pass
+
+    state = FakeState()
+    first = push_sender_for(state, settings)
+    assert push_sender_for(state, settings) is first

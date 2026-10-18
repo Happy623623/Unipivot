@@ -1,5 +1,7 @@
 """시나리오 실행의 DB 없이 볼 수 있는 부분: 고르기·출력·녹화 응답·안전장치(app/eval)."""
 
+import logging
+from collections.abc import Iterator
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -73,6 +75,15 @@ EXPECTED_CODES = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _keep_log_levels() -> Iterator[None]:
+    """CLI는 바깥 호출 로그를 끈다(프로세스 전체에 남는다). 이 파일 밖으로 새지 않게 돌려 놓는다."""
+    http = logging.getLogger("httpx")
+    level = http.level
+    yield
+    http.setLevel(level)
+
+
 def test_the_scenario_list_matches_the_prd_table() -> None:
     assert tuple(scenario.code for scenario in SCENARIOS) == EXPECTED_CODES
     # 우선순위는 PRD 표 그대로다(S23만 P1)
@@ -140,6 +151,13 @@ async def test_the_cli_lists_scenarios_without_touching_the_database(
     assert await main(["--list"]) == 0
     printed = capsys.readouterr().out
     assert all(code in printed for code in EXPECTED_CODES)
+
+
+async def test_the_cli_quiets_the_outside_call_log() -> None:
+    """결과 표만 보이게 한다. 서버 로그에서는 그대로 남긴다(키를 가려 적는 것을 시험이 지킨다)."""
+    logging.getLogger("httpx").setLevel(logging.NOTSET)
+    assert await main(["--list"]) == 0
+    assert logging.getLogger("httpx").level == logging.WARNING
 
 
 async def test_an_unknown_scenario_is_named(capsys: pytest.CaptureFixture[str]) -> None:

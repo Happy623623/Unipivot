@@ -30,7 +30,13 @@ from app.lms.announce import AnnouncementService
 from app.lms.announcements import CanvasAnnouncement
 from app.lms.assignments import CanvasAssignment
 from app.lms.client import LearningXClient
-from app.lms.sync import LmsSyncService, Repos, SyncJob, get_lms_sync_service
+from app.lms.sync import (
+    LmsSyncService,
+    Repos,
+    SyncJob,
+    get_lms_sync_service,
+    lms_sync_service_for,
+)
 from app.main import create_app
 from app.repositories.announcements import PendingAnnouncement, SavedAnnouncement
 from app.repositories.calendar import AssignmentDeadline, GoogleTokens
@@ -1880,3 +1886,31 @@ def test_a_made_up_change_date_is_dropped(
     client.post(SYNC)
 
     assert announcements_repo.schedule_tasks == []
+
+
+# ── 서비스를 만드는 자리 (요청 안에서도 스케줄러에서도 같은 것을 만든다) ──────────
+
+
+class _FakePools:
+    """연결을 열지 않는 가짜 풀. 서비스를 만들 때는 주소만 들고 있으면 된다."""
+
+    def connection(self) -> None:  # pragma: no cover - 부르지 않는다
+        raise AssertionError("이 시험은 연결을 열지 않아요")
+
+
+def test_the_service_gets_a_classifier_only_when_a_model_is_set(settings: Settings) -> None:
+    """모델이 있으면 공지 분류기를 달고, 없으면 저장만 한다(F-53).
+
+    이 배선이 끊기면 서버는 멀쩡히 뜨고 동기화도 되는데 공지 분류만 조용히 꺼진다.
+    """
+
+    class FakeState:
+        pool = log_pool = _FakePools()
+
+    runner = InlineRunner()
+    with_model = lms_sync_service_for(
+        FakeState(), settings=settings, llm=ScriptedLlm(), runner=runner
+    )
+    without_model = lms_sync_service_for(FakeState(), settings=settings, llm=None, runner=runner)
+    assert with_model.announcer is not None
+    assert without_model.announcer is None

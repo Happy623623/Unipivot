@@ -447,7 +447,7 @@ P0 18개, P1 5개다. v0.8 번호는 대조용으로 남긴다.
 | 프론트 | Next.js | 대시보드·플래너 UI, 서비스 워커로 웹 푸시, 배포 간편 |
 | 백엔드 | FastAPI (Python) | 에이전트 루프, 크롤러, PDF 파싱, LLM SDK 모두 Python 생태계가 유리 |
 | DB · 인증 · 스토리지 | Supabase | Postgres + Google OAuth + 파일 저장, RLS로 개인정보 접근 제어, 필요 시 pgvector |
-| 스케줄러 | FastAPI 내 스케줄러 또는 Supabase 크론 | 크롤링·알림 배치. W1 결정 |
+| 스케줄러 | **FastAPI 안 스케줄러**(`SCHEDULER_ENABLED`, `app/scheduler.py`) | 알림 발송(5분)·LMS 동기화(30분)·공고 알림 예약(KST 08:30)을 서버가 직접 돈다. 10/18 결정 — 바깥 크론(GitHub Actions·Supabase pg_cron)은 공개 주소가 있어야 해서 배포 뒤에 다시 본다. `POST /internal/jobs/*`와 **같은 함수**를 부르고, 둘을 같이 켜지 않는다. 워커는 하나로 둔다 |
 | 크롤링 | requests + BeautifulSoup, 필요 시 Playwright | JS 렌더링 페이지만 Playwright |
 | 문서 처리 | PDF·HWPX·HWP 텍스트 추출, 이미지와 글자 없는 스캔본만 Vision | LLM 비용 절감. 구형 HWP 변환 방법은 장학 공지 30건 샘플로 확인해 정한다 |
 | ICS 처리 | Python icalendar 라이브러리 등 | .ics 내려받기 파일 생성 |

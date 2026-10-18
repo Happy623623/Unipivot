@@ -1340,6 +1340,22 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `GET /internal/metrics` | 개발자 | 기간별 성공률·응답시간(p50·p95)·호출비용 집계에 두 가지를 더한다. 하나는 제품 지표 5개(판정 불가 비율과 원인 상위 3개, 즉석 입력 응답률, 준비하기 전환율, LMS 연결 완료율, 주간 재방문율)이고, 다른 하나는 최근 eval 실행 기준의 판정 혼동행렬이다. 비용은 모델 단가표(적용 날짜 포함)로 계산한다. 호출비용은 `scenario_code`로 묶은 `llm_calls`를 더한다(시나리오 실행 행의 `cost_usd`는 0이다). 기간은 `?from=&to=`(KST 날짜, 양 끝 포함)이고 주지 않으면 오늘까지 30일이다. 응답은 `from`·`to`와 세 묶음이다 — `scenarios`(`runs`·`passed`·`success_rate`·`latency{p50_ms,p95_ms}`·`cost_usd`·`llm_calls`·`by_scenario[]`), `eligibility`(`run_started_at`·`checks`·`correct`·`accuracy`·`rows[]{expected,counts,total}`·`eligible_to_ineligible`·`ineligible_to_eligible`), `product`(`undetermined`·`profile_prompt`·`prepare_conversion`·`lms_connect`·`weekly_return`, 각각 `{numerator,denominator,rate}`이고 `undetermined`에는 `top_missing_fields[]`가 더 있다). 비율은 분모가 0이면 `rate`가 `null`이다. 혼동행렬은 시나리오 번호마다 가장 최근 실행만 센다. 판정 불가 비율만 기간이 아니라 지금 저장된 판정(활성 공고) 기준이다 |
 | `POST /admin/opportunities/{id}/restore` | 운영자 | 신고로 숨겨진 공고 복구 (P1) |
 
+### 서버 안 스케줄러
+
+`SCHEDULER_ENABLED=true`면 서버가 세 작업을 직접 돈다(PRD 9장). 위 표의 작업을 **같은 함수**로 부르므로
+손으로 부를 때와 결과가 같다.
+
+| 작업 | 주기 | 서버를 켤 때 |
+| --- | --- | --- |
+| 알림 발송 | 5분 | 바로 한 번 돈다(꺼져 있던 동안 밀린 알림을 보낸다) |
+| LMS 동기화 | 30분 | 안 돈다 |
+| 공고 알림 예약 | 하루 한 번 KST 08:30 | 안 돈다 |
+
+- 예약이 **KST 08:30**인 것은 알림 시각이 09:00이고 지난 시각은 만들지 않기 때문이다(PRD F-33)
+- 작업 하나가 실패해도 로그만 남기고 다음 차례에 다시 돈다. 주기보다 오래 걸려도 겹쳐 돌지 않는다
+- **바깥 크론과 같이 켜지 않는다.** 바깥에서 부르려면 이 값을 꺼 둔다
+- **워커는 하나여야 한다.** 여러 프로세스로 띄우면 같은 일이 여러 번 돈다
+
 ## 13. 에러 코드
 
 | 코드 | HTTP | 의미 | 프론트 처리 |
