@@ -5,8 +5,10 @@
 Supabase가 준 이유를 오류 문구에 남기되 키는 넣지 않는다. 머리값에 못 싣는 글자가 섞인 키는 보내지
 않는다(보내다 깨지면 그 오류에 키가 실린다). 시작할 때는 키 모양을 보고 고칠 점을 알린다. 지우기는
 이미 없는 파일(Supabase는 404가 아니라 400 `NoSuchKey`로 답한다)을 지나가지만, 버킷이 없으면 실패다.
+받기 주소(F-44)는 저장소가 준 서명 경로에 `download`(원래 이름)를 붙인 것이다.
 """
 
+import json
 import logging
 
 import httpx
@@ -21,8 +23,10 @@ from app.main import create_app
 from app.uploads.storage import (
     MISSING,
     REASON_LIMIT,
+    SIGNED_SECONDS,
     WHERE,
     StorageError,
+    StorageMissing,
     SupabaseStorage,
     get_storage,
     storage_settings_problem,
@@ -246,9 +250,98 @@ async def test_remove_raises_on_anything_else(
 async def test_download_of_a_missing_file_is_still_an_error() -> None:
     """ "이미 없음"은 지우기에서만 받아 준다. 받기에서 없는 파일은 오류다(포스터를 모델에 못 넘긴다)."""
     respx.get(OBJECT).mock(return_value=httpx.Response(400, json=NO_SUCH_KEY))
-    with pytest.raises(StorageError) as caught:
+    with pytest.raises(StorageMissing) as caught:
         await storage(service_key=SECRET).download(PATH)
     assert "NoSuchKey: Object not found" in str(caught.value)
+
+
+# ── 받기 주소 (F-44) ──────────────────────────────────────────────────────────
+
+SIGN = f"{BASE}/object/sign/uploads/{PATH}"
+TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJ1cGxvYWRzL3VzZXItMSJ9.c2lnbmF0dXJlLWZvci10ZXN0cw"
+SIGNED = f"/object/sign/uploads/{PATH}?token={TOKEN}"  # 실제 저장소가 주는 모양(경로 + token)
+
+
+@respx.mock
+async def test_a_signed_url_opens_as_a_download_under_the_original_name() -> None:
+    """`download`를 붙이면 저장소가 원래 이름으로 내려보낸다(Content-Disposition: attachment)."""
+    route = respx.post(SIGN).mock(return_value=httpx.Response(200, json={"signedURL": SIGNED}))
+    url = await storage(service_key=SECRET).signed_url(PATH, download_name="3주차 공지.pdf")
+    assert url == f"{BASE}{SIGNED}&download=3%EC%A3%BC%EC%B0%A8%20%EA%B3%B5%EC%A7%80.pdf"
+    request = route.calls.last.request
+    assert json.loads(request.content) == {"expiresIn": SIGNED_SECONDS} == {"expiresIn": 300}
+    assert request.headers["content-type"] == "application/json"
+    assert request.headers["apikey"] == SECRET
+    assert "authorization" not in request.headers
+
+
+@respx.mock
+async def test_every_mark_in_the_name_is_escaped() -> None:
+    """`&`·`#`·`+`·`/`를 그대로 두면 이름이 잘리거나 다른 값이 된다."""
+    respx.post(SIGN).mock(return_value=httpx.Response(200, json={"signedURL": SIGNED}))
+    url = await storage(service_key=SECRET).signed_url(PATH, download_name="A&B #1+2/3?.pdf")
+    assert url.endswith("&download=A%26B%20%231%2B2%2F3%3F.pdf")
+
+
+@pytest.mark.parametrize(
+    ("body", "shown"),
+    [
+        (b"<html>Bad Gateway</html>", "주지 않았어요"),
+        (b'{"signedUrl": "/object/sign/uploads/p?token=t"}', "주지 않았어요"),  # 이름이 다르다
+        (b'["/object/sign/uploads/p?token=t"]', "주지 않았어요"),
+        (b'{"signedURL": 5}', "다른 것을 줬어요"),
+        (b'{"signedURL": "https://elsewhere.test/object/sign/p?token=t"}', "다른 것을 줬어요"),
+        (b'{"signedURL": "//elsewhere.test/object/sign/p?token=t"}', "다른 것을 줬어요"),
+        (b'{"signedURL": "/object/sign/uploads/p"}', "다른 것을 줬어요"),  # token이 없다
+        (b'{"signedURL": "/object/sign/uploads/p?token=t#x"}', "다른 것을 줬어요"),
+        (b'{"signedURL": "/object/sign/uploads/p?token=t x"}', "다른 것을 줬어요"),
+        (b'{"signedURL": "/object/sign/uploads/p?token=t\\n"}', "다른 것을 줬어요"),
+        (b'{"signedURL": "/object/sign/uploads\\\\p?token=t"}', "다른 것을 줬어요"),
+    ],
+    ids=[
+        "html",
+        "other-key",
+        "array",
+        "not-text",
+        "absolute",
+        "scheme-relative",
+        "no-token",
+        "fragment",
+        "space",
+        "newline",
+        "backslash",
+    ],
+)
+@respx.mock
+async def test_a_signed_path_we_cannot_trust_is_not_used(body: bytes, shown: str) -> None:
+    """주소는 우리 저장소에만 열리고 `download`가 늘 저장소에 닿아야 한다. 받은 값은 문구에 넣지 않는다."""
+    respx.post(SIGN).mock(return_value=httpx.Response(200, content=body))
+    with pytest.raises(StorageError) as caught:
+        await storage(service_key=SECRET).signed_url(PATH, download_name="a.pdf")
+    assert shown in str(caught.value)
+    assert "token" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "missing"),
+    [
+        (400, NO_SUCH_KEY, True),  # 기록만 남고 파일은 지워졌다(10/19 실제 모양)
+        (404, NO_SUCH_KEY, True),
+        (400, NO_SUCH_BUCKET, False),
+        (400, REFUSED, False),
+        (404, None, False),  # 이유가 없으면 파일이 없다고 단정하지 않는다
+    ],
+    ids=["400-no-such-key", "404-no-such-key", "no-such-bucket", "access-denied", "plain-404"],
+)
+@respx.mock
+async def test_signing_a_file_that_is_not_there_says_so(
+    status: int, body: dict[str, str] | None, missing: bool
+) -> None:
+    response = httpx.Response(status, json=body) if body else httpx.Response(status)
+    respx.post(SIGN).mock(return_value=response)
+    with pytest.raises(StorageError) as caught:
+        await storage(service_key=SECRET).signed_url(PATH, download_name="a.pdf")
+    assert isinstance(caught.value, StorageMissing) is missing
 
 
 @respx.mock

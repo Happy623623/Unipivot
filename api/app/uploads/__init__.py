@@ -32,6 +32,7 @@ PDF_TEXT_MAX_CHARS = 60_000  # 뽑은 글자 상한. 계획서 10쪽이면 2만 
 DAILY_UPLOAD_LIMIT = 20  # 사용자당 KST 하루 (API 명세 14장, 10/15 확정)
 _CHUNK_BYTES = 1024 * 1024
 _NAME_MAX = 200
+_EXTENSION_MAX = 10  # 이름을 줄일 때 남기는 확장자 길이 상한(그보다 길면 확장자가 아니라 본다)
 
 
 @dataclass(frozen=True)
@@ -188,7 +189,20 @@ def clean_name(name: str | None) -> str | None:
         return None
     base = name.replace("\\", "/").rsplit("/", 1)[-1]
     base = "".join(ch for ch in base if ch.isprintable()).strip()
+    stem, dot, extension = base.rpartition(".")
+    if len(base) > _NAME_MAX and dot and stem and 0 < len(extension) <= _EXTENSION_MAX:
+        # 줄여도 확장자는 남긴다. 내려받은 파일이 `.pdf` 없이 저장되면 열 프로그램을 못 고른다
+        return f"{stem[: _NAME_MAX - len(extension) - 1]}.{extension}"
     return base[:_NAME_MAX] or None
+
+
+def document_name(original: str | None, path: str) -> str:
+    """문서함에 보이고 내려받을 때 쓰는 이름(F-44). 원래 이름이 없으면 `파일.<확장자>`다."""
+    name = clean_name(original)
+    if name:
+        return name
+    last = path.rsplit("/", 1)[-1]
+    return f"파일.{last.rsplit('.', 1)[1]}" if "." in last else "파일"
 
 
 def storage_path(user_id: str, kind: str, file_id: str, extension: str) -> str:

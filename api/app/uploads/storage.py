@@ -6,6 +6,7 @@
 - 올리기: POST {base}/object/{bucket}/{path} (본문은 파일 바이트 그대로)
 - 받기: GET {base}/object/{bucket}/{path} (서버가 포스터를 모델에 넘길 때 쓴다)
 - 지우기: DELETE {base}/object/{bucket}/{path} (이미 없는 파일은 400 `NoSuchKey`로 온다 — 지나간다)
+- 받기 주소: POST {base}/object/sign/{bucket}/{path} → 5분짜리 서명 경로(문서함 받기, F-44)
 
 저장소 키(`SUPABASE_SERVICE_ROLE_KEY`)는 두 모양이 있고 싣는 곳이 다르다.
 - **secret key `sb_secret_…`**: 2025년 11월 뒤 만든 프로젝트에는 이것만 있다. `apikey` 머리값에만
@@ -15,10 +16,11 @@
 - **예전 service_role 키(JWT `eyJ…`)**: `apikey`와 `Authorization: Bearer` 둘 다 싣는다
 
 저장소 키는 DB 전체를 읽고 쓸 수 있는 값이라 응답·로그·오류 문구에 넣지 않는다. 머리값에 실을 수
-없는 글자가 섞인 키는 없는 것으로 본다 — 보내다 깨지면 그 오류에 키가 그대로 실린다. 내려받기는
-나중에 API가 만드는 5분짜리 서명 URL로만 한다(포스터 추출에서 쓴다).
+없는 글자가 섞인 키는 없는 것으로 본다 — 보내다 깨지면 그 오류에 키가 그대로 실린다. 브라우저 내려받기는
+API가 만드는 5분짜리 서명 URL로만 한다(문서함, F-44). 그 주소도 열쇠라 저장하지도 로그에 남기지도 않는다.
 """
 
+import json
 import re
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -34,6 +36,8 @@ NEW_KEY_PREFIX = "sb_"  # Supabase 새 API 키(sb_secret_·sb_publishable_). JWT
 KEY_SHAPE = re.compile(r"[A-Za-z0-9._-]+")  # 새 키와 JWT가 쓰는 글자. 이 밖의 글자는 머리값을 깬다
 SECRET_SHAPE = re.compile(r"sb_secret_[A-Za-z0-9_-]{20,}")  # 실제 키는 접두 뒤가 30자 남짓이다
 REASON_LIMIT = 120  # 거절 이유는 이만큼만 남긴다
+SIGNED_SECONDS = 300  # 받기 주소 수명(명세 1장: 서명 URL은 5분)
+SIGNED_PREFIX = "/object/sign/"  # 저장소가 주는 서명 경로의 앞부분
 MISSING = (
     "SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL이 있어야 포스터를 올리고 공지 첨부를 저장할 수 있어요"
 )
@@ -42,6 +46,10 @@ WHERE = "Supabase 대시보드 Project Settings > API Keys의 Secret keys 값(sb
 
 class StorageError(Exception):
     """저장소에 올리지 못했다. 설정이 비었을 때도 이 오류다(키·주소는 담지 않는다)."""
+
+
+class StorageMissing(StorageError):
+    """그 파일이 저장소에 없다(Supabase `NoSuchKey`). 기록만 남고 파일은 지워진 때다."""
 
 
 class SupabaseStorage:
@@ -55,9 +63,9 @@ class SupabaseStorage:
         """주소·버킷·키가 모두 있어야 올릴 수 있다. 키 모양이 아니면(빈칸·따옴표 등) 없는 것으로 본다."""
         return bool(self.base_url and self.bucket and KEY_SHAPE.fullmatch(self.service_key))
 
-    def _url(self, path: str) -> str:
+    def _url(self, path: str, action: str = "object") -> str:
         quoted = quote(path, safe="/")
-        return f"{self.base_url}/object/{quote(self.bucket, safe='')}/{quoted}"
+        return f"{self.base_url}/{action}/{quote(self.bucket, safe='')}/{quoted}"
 
     def _key_headers(self) -> dict[str, str]:
         """저장소 키를 싣는 머리값. 새 키는 `apikey`에만, 예전 JWT 키는 `Authorization`에도."""
@@ -80,6 +88,26 @@ class SupabaseStorage:
         지운 파일부터 다시 지우기 때문이다."""
         await self._send("DELETE", path, gone_is_ok=True)
 
+    async def signed_url(
+        self, path: str, *, download_name: str, seconds: int = SIGNED_SECONDS
+    ) -> str:
+        """`seconds`초 동안 열리는 받기 주소. 열면 `download_name`으로 내려받는다.
+
+        `download`를 붙이면 저장소가 `Content-Disposition: attachment`로 준다(storage-js의 `download`
+        선택과 같다). 공지 첨부는 형식을 가리지 않고 받아서, HTML·SVG가 브라우저에서 그대로 열리면 안
+        된다. 주소의 호스트는 언제나 우리 저장소다 — 저장소가 준 것은 서명 경로뿐이다. 없는 파일이면
+        StorageMissing이다(서명할 때 저장소가 파일을 찾아본다).
+        """
+        body = await self._send(
+            "POST",
+            path,
+            content=json.dumps({"expiresIn": seconds}).encode(),
+            content_type="application/json",
+            action="object/sign",
+        )
+        signed = _signed_path(body)
+        return f"{self.base_url}{signed}&download={quote(download_name, safe='')}"
+
     async def _send(
         self,
         method: str,
@@ -88,6 +116,7 @@ class SupabaseStorage:
         content: bytes | None = None,
         content_type: str | None = None,
         gone_is_ok: bool = False,
+        action: str = "object",
     ) -> bytes:
         if not self.ready:
             raise StorageError(
@@ -99,7 +128,7 @@ class SupabaseStorage:
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
                 response = await client.request(
-                    method, self._url(path), content=content, headers=headers
+                    method, self._url(path, action), content=content, headers=headers
                 )
         except httpx.HTTPError as exc:
             raise StorageError(f"파일 저장소에 닿지 못했어요: {type(exc).__name__}") from exc
@@ -112,7 +141,8 @@ class SupabaseStorage:
         if response.status_code >= 400:
             reason = _reason(response, self.service_key)
             detail = f"{response.status_code}, {reason}" if reason else str(response.status_code)
-            raise StorageError(f"파일 저장소가 요청을 거절했어요({detail}).")
+            error = StorageMissing if _missing(response) else StorageError
+            raise error(f"파일 저장소가 요청을 거절했어요({detail}).")
         return response.content
 
 
@@ -135,6 +165,31 @@ def _gone(response: httpx.Response) -> bool:
     if response.status_code in (404, 410):
         return code != "NoSuchBucket"
     return response.status_code == 400 and code == "NoSuchKey"
+
+
+def _missing(response: httpx.Response) -> bool:
+    """그 파일이 없다는 거절. 지금 Supabase는 400에 `code: NoSuchKey`로 준다(10/19 실제)."""
+    return _body(response).get("code") == "NoSuchKey"
+
+
+def _signed_path(body: bytes) -> str:
+    """저장소가 준 서명 경로(`/object/sign/<버킷>/<경로>?token=…`). 그 모양이 아니면 StorageError다.
+
+    뒤에 `&download=`를 붙이므로 `#`(뒤가 저장소에 가지 않는다)·빈칸·역슬래시가 있으면 쓰지 않는다.
+    오류 문구에는 받은 값을 넣지 않는다 — 열쇠(token)가 들어 있다.
+    """
+    try:
+        signed = json.loads(body)["signedURL"]
+    except (ValueError, RecursionError, KeyError, TypeError):
+        raise StorageError("파일 저장소가 받기 주소를 주지 않았어요.") from None
+    if not (
+        isinstance(signed, str)
+        and signed.startswith(SIGNED_PREFIX)
+        and "?token=" in signed
+        and not any(ch.isspace() or ch in "\\#" for ch in signed)
+    ):
+        raise StorageError("파일 저장소가 받기 주소 대신 다른 것을 줬어요.")
+    return signed
 
 
 def _reason(response: httpx.Response, key: str) -> str:

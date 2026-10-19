@@ -237,3 +237,32 @@ export interface LmsUpdateList {
   items: LmsUpdate[];
   next_cursor: string | null;
 }
+
+// 문서함 (F-44, API 명세 6장). 내 강의자료(공지 첨부 포함)·강의계획서. 포스터는 공고 쪽에 있어 넣지 않는다
+export type MyFileKind = "lecture_material" | "syllabus";
+export type MyFileOrigin = "upload" | "lms_attachment"; // 직접 올림 · 공지 첨부를 동기화가 받음
+// 파일의 과목. 수강을 뺀(지난 학기) 과목은 is_active가 false이고 과목 화면이 열리지 않는다
+export interface MyFileCourse {
+  id: string;
+  short_name: string;
+  is_active: boolean;
+}
+// GET /files?limit=&cursor= — 받은 순(최신 먼저)
+export interface MyFile {
+  file_id: string;
+  file_name: string; // 원래 이름. 없으면 "파일.<확장자>"
+  kind: MyFileKind;
+  origin: MyFileOrigin;
+  course: MyFileCourse | null; // 과목을 모르면 null
+  size_bytes: number | null;
+  created_at: string;
+}
+export interface MyFileList {
+  items: MyFile[];
+  next_cursor: string | null;
+}
+// GET /files/{id}/url — 5분 동안 열리는 받기 주소. 열면 원래 이름으로 내려받는다(주소를 들고 있지 않는다)
+export interface FileDownloadUrl {
+  url: string;
+  expires_at: string;
+}

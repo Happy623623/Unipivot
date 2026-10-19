@@ -9,6 +9,7 @@ const navItems: { route: Route; label: string; icon: string }[] = [
   { route: { name: "home" }, label: "홈", icon: "⌂" },
   { route: { name: "planner" }, label: "플래너", icon: "□" },
   { route: { name: "academics" }, label: "학업", icon: "▣" },
+  { route: { name: "documents" }, label: "문서함", icon: "▤" },
 ];
 
 export default function Sidebar({ route, navigate }: SidebarProps) {
@@ -37,7 +38,6 @@ export default function Sidebar({ route, navigate }: SidebarProps) {
             {item.label}
           </button>
         ))}
-        {/* 문서함은 P1이라 구현 전까지 메뉴를 숨긴다 */}
         <button
           type="button"
           onClick={() => navigate({ name: "upload" })}

@@ -8,6 +8,7 @@ export type Route =
       id: string;
       tab?: "assignments" | "materials" | "announcements" | "syllabus";
     }
+  | { name: "documents" }
   | { name: "upload" }
   | { name: "notifications" }
   | { name: "settings" }

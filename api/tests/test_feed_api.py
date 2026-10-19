@@ -164,6 +164,9 @@ def test_cursor_round_trip_and_errors() -> None:
         base64.urlsafe_b64encode(json.dumps(no_scope).encode()).decode(),
         encode_cursor(Cursor(scope=scope, value=moment, id="12345")),
         encode_cursor(Cursor(scope=scope, value=datetime(2026, 10, 15), id=ITEM.id)),
+        base64.urlsafe_b64encode(
+            b"[" * 100_000 + b"]" * 100_000
+        ).decode(),  # 읽다가 너무 깊어 터진다
     ]
     for text in bad:
         with pytest.raises(ValueError):

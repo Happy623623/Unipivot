@@ -32,6 +32,8 @@
 >
 > v0.4 보강(10/19, 공지 첨부 저장): 동기화가 공지 첨부를 학생 문서함에 받는다(F-54). 첨부 받기 경로(`/files/{id}/download`, 토큰 없이 verifier로), 과목 상세 공지의 `attachments[]`(이름·크기·저장 상태)
 >
+> v0.4 보강(10/19, 문서함): `GET /files`(내 강의자료·계획서 목록)와 `GET /files/{file_id}/url`(5분짜리 받기 주소, 원래 이름으로 내려받기)을 만들었다(F-44). `GET /materials`는 강의자료 요약 목록이다(문서함은 `GET /files`)
+>
 > v0.4 보강(10/13, 시·군·구 선택): 프로필 region_sigungu 값
 >
 > v0.4 보강(10/13, 관심 공고): PUT·DELETE /opportunities/{id}/mark, 피드 include_not_interested, my_mark, counts에서 관심 없음 공고 제외, 알림 규칙
@@ -179,6 +181,7 @@ sequenceDiagram
 | 공고 | `GET /opportunities/{id}/alternatives` | 대체 공고 | F-23 | P1 |
 | 공고 | `POST /opportunities/{id}/reports` | 신고 | F-17 | P1 |
 | 업로드 | `POST /files` | 파일 업로드 → `file_id` | F-13–F-15 | P0 |
+| 문서함 | `GET /files` · `GET /files/{file_id}/url` | 내 강의자료·계획서 목록, 5분짜리 받기 주소 | F-44 | P1 |
 | 포스터 | `POST /posters/extract` | 포스터 추출(비동기) | F-13 | P0 |
 | 포스터 | `POST /posters/confirm` | 확인·수정 후 공고 등록(중복이면 병합) | F-13, F-16 | P0 |
 | 준비 | `POST /opportunities/{id}/prepare` | 준비하기(서류·역산 일정·캘린더, 비동기) | F-30–F-32 | P0 |
@@ -642,6 +645,42 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 - 업로드한 파일 이름은 경로를 떼고 `files.original_name`에 저장한다
 - 파일은 비공개 Storage 버킷의 `<user_id>/<kind>/<file_id>.<확장자>`에 둔다. 저장소에 먼저 올리고 그다음에 기록을 남긴다(거꾸로 하면 끊겼을 때 없는 파일을 "이미 있어요"라고 가리킨다)
 
+### `GET /files` (P1)
+
+문서함(F-44). 내 강의자료(공지 첨부 포함)와 강의계획서를 받은 순(최신 먼저)으로 준다. `?limit=20&cursor={next_cursor}`
+
+```json
+{
+  "items": [
+    { "file_id": "uuid", "file_name": "중간고사 대비 예제.pdf", "kind": "lecture_material", "origin": "lms_attachment", "course": { "id": "uuid", "short_name": "기계학습", "is_active": true }, "size_bytes": 1843200, "created_at": "2026-10-04T16:05:00+09:00" },
+    { "file_id": "uuid", "file_name": "교양 강의계획서.pdf", "kind": "syllabus", "origin": "upload", "course": null, "size_bytes": 198656, "created_at": "2026-09-01T09:00:00+09:00" }
+  ],
+  "next_cursor": null
+}
+```
+
+- 내 파일만 준다. 종류는 `lecture_material`(공지 첨부 포함)과 `syllabus`이고, 포스터는 공고 쪽에 있어 넣지 않는다
+- `origin`은 `upload`(직접 올림)·`lms_attachment`(동기화가 받은 공지 첨부, F-54)다
+- `course`는 **내** 과목이다. 공지 첨부는 받은 과목, 계획서는 일정을 뽑을 때 고른 과목(`syllabi.lms_course_id`, 여러 번 뽑았으면 과목을 고른 마지막 것)이고, 모르면 null이다. `short_name`은 9장 `GET /lms/courses`와 같다
+- `course.is_active`는 그 과목을 지금 듣는지다. 지난 학기·수강을 뺀 과목은 false이고 과목 상세(9장)가 `404`라 화면은 과목 링크를 숨긴다. 파일은 그대로 그 과목에 묶인다
+- `file_name`은 올릴 때 이름(`files.original_name`)이고, 없으면 `파일.<확장자>`다. `size_bytes`는 저장한 크기다
+- 순서는 받은 순(최신 먼저)이고 같은 시각이면 `file_id`로 가른다. 쪽은 1장 목록 규칙대로 `limit` 1–50(기본 20)이다. 망가졌거나 다른 목록의 cursor는 `422 VALIDATION_FAILED`(`details.fields.cursor`)다
+- 화면은 이 순서대로 과목끼리 묶고(가장 최근 파일이 있는 과목부터), 과목을 모르는 파일은 맨 아래에 모은다
+
+### `GET /files/{file_id}/url` (P1)
+
+그 파일을 5분 동안 받을 수 있는 주소(F-44). 화면은 "받기"를 누를 때마다 부르고 받은 주소를 바로 연다.
+
+```json
+{ "url": "https://{project}.supabase.co/storage/v1/object/sign/uploads/{경로}?token=…&download=%EC%A4%91%EA%B0%84…pdf", "expires_at": "2026-10-15T12:05:00+09:00" }
+```
+
+- 주소를 열면 파일 저장소가 `Content-Disposition: attachment`와 원래 이름(`file_name`)으로 내려보낸다(주소의 `download`). 공지 첨부는 형식을 가리지 않고 받아서(HTML·SVG도 올 수 있다) 브라우저에서 그대로 열지 않는다
+- 주소는 그 자체로 열쇠다. 화면은 들고 있지 않고 서버는 로그에 남기지 않으며, 응답에 `Cache-Control: no-store`를 붙인다. `expires_at`은 주소를 만든 시각 + 5분이다(1장 파일 URL)
+- 내 강의자료·계획서만 된다. 남의 파일·포스터·없는 번호는 `404 NOT_FOUND`, `file_id`가 UUID가 아니면 `422 VALIDATION_FAILED`다
+- 기록은 있는데 저장소에 파일이 없으면(저장소가 `NoSuchKey`) `404 NOT_FOUND`이고, 다시 눌러도 같으니 어디서 다시 받는지 알려 준다: 공지 첨부는 "저장한 파일이 없어졌어요. LMS 공지에서 받아 주세요.", 올린 파일은 "…파일을 다시 올려 주세요." 단 서버의 저장소 설정에 고칠 점이 있으면(publishable key 등 — 그런 키에도 저장소는 `NoSuchKey`로 답한다) 이 답을 믿지 않고 `502 STORAGE_API_ERROR`다. 그 밖에 저장소가 주소를 주지 않으면(설정·연결 문제) `502 STORAGE_API_ERROR`다
+- 주소의 호스트는 언제나 우리 Supabase 저장소다. 저장소가 서명 경로(`/object/sign/…?token=…`)가 아닌 것을 주면 쓰지 않고 `502`다
+
 ### `POST /posters/extract`
 
 ```json
@@ -962,7 +1001,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 
 ### `GET /materials` (P1)
 
-내 문서함. `?lms_course_id=uuid&cursor=` → `{ "items": [{ "file_id", "file_name", "course", "created_at", "status", "total_sections", "translated_sections" }], "next_cursor" }`
+강의자료 요약 목록(F-15). `?lms_course_id=uuid&cursor=` → `{ "items": [{ "file_id", "file_name", "course", "created_at", "status", "total_sections", "translated_sections" }], "next_cursor" }`. 문서함 화면(F-44)은 이 목록이 아니라 6장 `GET /files`를 쓴다
 
 ## 9. LMS 연동
 

@@ -38,6 +38,7 @@ import type {
 // 계정·LMS·포스터 함수는 accountClient.ts·lmsClient.ts·posterClient.ts에 두고 여기서 다시 내보낸다.
 // 공고 피드·상세·준비하기는 실제 API를 부르고, 아래 플래너 함수는 아직 목이다
 export * from "@/api/accountClient";
+export * from "@/api/documentsClient";
 export * from "@/api/lmsClient";
 export * from "@/api/posterClient";
 export * from "@/api/pushClient";

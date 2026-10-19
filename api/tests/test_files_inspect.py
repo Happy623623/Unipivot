@@ -125,6 +125,9 @@ def test_the_stored_name_drops_the_folder_and_the_control_characters() -> None:
     assert clean_name("/tmp/../poster.png") == "poster.png"
     assert clean_name("이름\n줄바꿈.jpg") == "이름줄바꿈.jpg"
     assert clean_name("가" * 400) == "가" * 200
+    # 줄여도 확장자는 남긴다(내려받은 파일이 .pdf 없이 저장되지 않게). 확장자가 너무 길면 확장자로 보지 않는다
+    assert clean_name("가" * 300 + ".pdf") == "가" * 196 + ".pdf"
+    assert clean_name("가" * 300 + "." + "x" * 11) == ("가" * 300 + "." + "x" * 11)[:200]
     assert clean_name(None) is None
     assert clean_name("   ") is None
 

@@ -393,7 +393,14 @@ def decode_cursor(text: str) -> Cursor:
         if moment is not None and moment.tzinfo is None:
             raise ValueError(value)
         return Cursor(scope=scope, value=moment, id=str(uuid.UUID(ident)))
-    except (binascii.Error, ValueError, KeyError, TypeError, UnicodeDecodeError) as exc:
+    except (
+        binascii.Error,
+        ValueError,
+        KeyError,
+        TypeError,
+        UnicodeDecodeError,
+        RecursionError,
+    ) as exc:
         raise ValueError("잘못된 cursor") from exc
 
 

@@ -1,6 +1,7 @@
-"""파일 업로드 (F-13, API 명세 6장).
+"""파일 업로드와 문서함 (F-13·F-44, API 명세 6장).
 
-포스터(F-16)와 강의계획서(F-14)를 받는다. 강의자료(F-15)는 그 기능과 함께 연다.
+포스터(F-16)와 강의계획서(F-14)를 받는다. 강의자료(F-15)는 그 기능과 함께 연다. 문서함은 내
+강의자료(공지 첨부 포함)·계획서 목록과 5분짜리 받기 주소다(아래 `GET /files`·`GET /files/{id}/url`).
 받는 것은 종류마다 다르다 — 포스터는 사진과 2쪽 이하 PDF, 계획서는 **글자가 있는 PDF**다.
 
 차례: 20MB까지 읽기 → 바이트로 형식·쪽수 보기 → 같은 파일인지 보기 → 하루 한도 보기 →
@@ -15,27 +16,39 @@ DB 연결은 읽을 때와 쓸 때만 빌린다. 저장소에 올리는 동안 �
 """
 
 import logging
+from datetime import timedelta
 from typing import Annotated
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, File, Form, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 
 from app.auth import CurrentUserDep
 from app.clock import NowDep
+from app.config import Settings, get_settings
+from app.eligibility.dates import KST
 from app.errors import ApiError
-from app.repositories.files import FileReposDep, StoredFile
-from app.schemas.files import FileUploadResult
+from app.repositories.files import DOCUMENTS_SCOPE, FileReposDep, StoredFile
+from app.repositories.opportunities import decode_cursor
+from app.schemas.files import FileDownloadUrl, FileUploadResult, MyFileList
 from app.uploads import (
     DAILY_UPLOAD_LIMIT,
     clean_name,
     day_reset,
     day_start,
+    document_name,
     inspect_poster,
     inspect_syllabus,
     read_upload,
     storage_path,
 )
-from app.uploads.storage import StorageDep, StorageError, SupabaseStorage
+from app.uploads.storage import (
+    SIGNED_SECONDS,
+    StorageDep,
+    StorageError,
+    StorageMissing,
+    SupabaseStorage,
+    storage_settings_problem,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/files", tags=["업로드"])
@@ -44,6 +57,12 @@ POSTER = "poster"
 SYLLABUS = "syllabus"
 # 종류마다 받는 파일이 다르다. 여기 없는 종류(lecture_material)는 그 기능과 함께 연다
 INSPECT = {POSTER: inspect_poster, SYLLABUS: inspect_syllabus}
+DOCUMENTS_LIMIT = 50  # 문서함 한 쪽 상한(명세 1장 목록 규칙: 1–50, 기본 20)
+# 기록은 있는데 저장소에 파일이 없을 때. 다시 눌러도 같으니 어디서 다시 받는지 알려 준다
+GONE = {
+    "lms_attachment": "저장한 파일이 없어졌어요. LMS 공지에서 받아 주세요.",
+    "upload": "저장한 파일이 없어졌어요. 파일을 다시 올려 주세요.",
+}
 
 
 @router.post(
@@ -116,6 +135,74 @@ async def upload_file(
         await _discard(storage, path)
         return _reused(winner, response)
     return FileUploadResult(file_id=file_id, kind=kind, page_count=found.page_count)
+
+
+@router.get("", response_model=MyFileList)
+async def list_documents(
+    user: CurrentUserDep,
+    repos: FileReposDep,
+    limit: Annotated[int, Query(ge=1, le=DOCUMENTS_LIMIT)] = 20,
+    cursor: Annotated[str | None, Query(description="앞 응답의 next_cursor")] = None,
+) -> MyFileList:
+    """문서함(F-44): 내 강의자료(공지 첨부 포함)·강의계획서를 최신순으로."""
+    after = None
+    if cursor:
+        try:
+            after = decode_cursor(cursor)
+        except ValueError:
+            after = None
+        if after is None or after.scope != DOCUMENTS_SCOPE or after.value is None:
+            raise ApiError(
+                422,
+                "VALIDATION_FAILED",
+                "입력값을 확인해 주세요.",
+                {"fields": {"cursor": "문서함을 처음부터 다시 불러와 주세요."}},
+            )
+    async with repos() as repo:
+        return await repo.documents(user.id, limit=limit, after=after)
+
+
+@router.get("/{file_id}/url", response_model=FileDownloadUrl)
+async def download_url(
+    file_id: UUID,
+    user: CurrentUserDep,
+    repos: FileReposDep,
+    storage: StorageDep,
+    now: NowDep,
+    response: Response,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> FileDownloadUrl:
+    """5분 동안 열리는 받기 주소(F-44). 열면 원래 이름으로 내려받는다.
+
+    남의 파일·문서함에 없는 종류(포스터)·기록만 남고 저장소에 없는 파일은 404, 저장소가 주소를 주지
+    않으면 502다. "없는 파일"은 저장소 설정에 고칠 점이 없을 때만 믿는다 — publishable key처럼 권한이
+    모자란 키에도 저장소는 같은 `NoSuchKey`로 답해서, 그때 404를 주면 설정 문제가 "파일이 없다"로 숨는다. DB 연결은 파일을 찾을 때만 빌린다 — 저장소를 기다리는 동안 쥐고 있지 않는다(업로드와
+    같다). 주소는 열쇠라 로그에 남기지 않고 브라우저도 저장해 두지 않게 한다(`Cache-Control: no-store`).
+    """
+    async with repos() as repo:
+        found = await repo.document(user.id, str(file_id))
+    if found is None:
+        raise ApiError(404, "NOT_FOUND", "파일을 찾을 수 없어요.")
+    name = document_name(found.original_name, found.storage_path)
+    try:
+        url = await storage.signed_url(found.storage_path, download_name=name)
+    except StorageMissing as exc:
+        if storage_settings_problem(settings) is None:
+            logger.warning("기록은 있는데 저장소에 없는 파일이에요(%s): %s", file_id, exc)
+            raise ApiError(404, "NOT_FOUND", GONE.get(found.origin, GONE["upload"])) from None
+        logger.warning("받기 주소를 만들지 못했어요(저장소 설정 확인): %s", exc)
+        raise ApiError(
+            502, "STORAGE_API_ERROR", "파일을 열지 못했어요. 잠시 후 다시 시도해 주세요."
+        ) from exc
+    except StorageError as exc:
+        logger.warning("받기 주소를 만들지 못했어요: %s", exc)
+        raise ApiError(
+            502, "STORAGE_API_ERROR", "파일을 열지 못했어요. 잠시 후 다시 시도해 주세요."
+        ) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return FileDownloadUrl(
+        url=url, expires_at=(now + timedelta(seconds=SIGNED_SECONDS)).astimezone(KST)
+    )
 
 
 def _reused(found: StoredFile, response: Response) -> FileUploadResult:

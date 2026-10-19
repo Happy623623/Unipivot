@@ -131,6 +131,7 @@ export default function Course({
             <CourseAnnouncements
               announcements={course.announcements}
               navigate={navigate}
+              onToast={showToast}
             />
           )}
           {tab === "syllabus" && (

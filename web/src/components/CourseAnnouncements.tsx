@@ -1,4 +1,5 @@
 import Badge from "@/components/Badge";
+import DownloadButton from "@/components/DownloadButton";
 import { formatFileSize } from "@/lib/format";
 import type {
   AnnouncementAttachment,
@@ -11,6 +12,7 @@ import type { Route, Tone } from "@/types/route";
 interface CourseAnnouncementsProps {
   announcements: CourseDetail["announcements"];
   navigate: (route: Route) => void;
+  onToast: (message: string) => void; // 첨부를 받지 못했을 때
 }
 
 const categoryMeta: Record<
@@ -23,7 +25,7 @@ const categoryMeta: Record<
   general: { label: "일반", tone: "gray" },
 };
 
-// 공지 첨부의 내 저장 상태(F-54). 동기화가 내 문서함에 받는다
+// 공지 첨부의 내 저장 상태(F-54). 동기화가 내 문서함에 받는다. 저장된 첨부는 여기서 바로 받는다(F-44)
 const attachmentMeta: Record<
   AttachmentStatus,
   { label: string; tone: Tone; note?: string }
@@ -39,8 +41,10 @@ const attachmentMeta: Record<
 
 function AnnouncementAttachments({
   attachments,
+  onToast,
 }: {
   attachments: AnnouncementAttachment[];
+  onToast: (message: string) => void;
 }) {
   if (attachments.length === 0) return null;
   return (
@@ -60,6 +64,9 @@ function AnnouncementAttachments({
             {size && <span className="text-[#a0a4ab]">{size}</span>}
             <Badge tone={meta.tone}>{meta.label}</Badge>
             {meta.note && <span className="text-[#667085]">{meta.note}</span>}
+            {file.status === "saved" && file.file_id && (
+              <DownloadButton fileId={file.file_id} fileName={file.name} onError={onToast} compact />
+            )}
           </li>
         );
       })}
@@ -70,6 +77,7 @@ function AnnouncementAttachments({
 export default function CourseAnnouncements({
   announcements,
   navigate,
+  onToast,
 }: CourseAnnouncementsProps) {
   return (
     <div className="flex flex-col gap-3">
@@ -87,7 +95,7 @@ export default function CourseAnnouncements({
             <p className="mt-2 truncate text-[12px] text-[#667085]">
               {announcement.summary ?? "공지 내용을 LMS에서 확인해 주세요."}
             </p>
-            <AnnouncementAttachments attachments={announcement.attachments} />
+            <AnnouncementAttachments attachments={announcement.attachments} onToast={onToast} />
             {announcement.category === "opportunity" &&
               announcement.opportunity_id && (
                 <button
