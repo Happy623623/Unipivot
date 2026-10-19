@@ -5,7 +5,7 @@
 
 - 올리기: POST {base}/object/{bucket}/{path} (본문은 파일 바이트 그대로)
 - 받기: GET {base}/object/{bucket}/{path} (서버가 포스터를 모델에 넘길 때 쓴다)
-- 지우기: DELETE {base}/object/{bucket}/{path}
+- 지우기: DELETE {base}/object/{bucket}/{path} (이미 없는 파일은 400 `NoSuchKey`로 온다 — 지나간다)
 
 저장소 키(`SUPABASE_SERVICE_ROLE_KEY`)는 두 모양이 있고 싣는 곳이 다르다.
 - **secret key `sb_secret_…`**: 2025년 11월 뒤 만든 프로젝트에는 이것만 있다. `apikey` 머리값에만
@@ -20,7 +20,7 @@
 """
 
 import re
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import quote
 
 import httpx
@@ -76,7 +76,8 @@ class SupabaseStorage:
         return body
 
     async def remove(self, path: str) -> None:
-        """올려 둔 파일을 지운다(기록을 남기지 못했을 때 되돌리기용). 없으면 그냥 지나간다."""
+        """올려 둔 파일을 지운다(되돌리기·탈퇴). 이미 없으면 그냥 지나간다 — 탈퇴를 다시 누르면 앞서
+        지운 파일부터 다시 지우기 때문이다."""
         await self._send("DELETE", path, gone_is_ok=True)
 
     async def _send(
@@ -106,7 +107,7 @@ class SupabaseStorage:
             # 머리값(LMS가 준 Content-Type 등)에 ASCII가 아닌 글자가 있었다. 원래 오류는 그 값을
             # 통째로 들고 있어서 잇지 않는다
             raise StorageError("파일 저장소에 보낼 머리값에 쓸 수 없는 글자가 있어요.") from None
-        if gone_is_ok and response.status_code in (404, 410):
+        if gone_is_ok and _gone(response):
             return b""
         if response.status_code >= 400:
             reason = _reason(response, self.service_key)
@@ -115,18 +116,34 @@ class SupabaseStorage:
         return response.content
 
 
+def _body(response: httpx.Response) -> dict[str, Any]:
+    """오류 본문(JSON 객체). JSON이 아니거나 객체가 아니면 빈 dict다."""
+    try:
+        body = response.json()
+    except (ValueError, RecursionError):  # JSON이 아니거나, 너무 깊게 겹쳐 있다
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _gone(response: httpx.Response) -> bool:
+    """지우려던 파일이 이미 없다. Supabase는 404가 아니라 400에 `code: NoSuchKey`로 답한다(10/19 실제).
+
+    버킷이 없을 때(`NoSuchBucket`)는 없는 것으로 보지 않는다. 버킷 이름이 틀렸는데 "지웠다"고 하면
+    탈퇴한 사람의 파일이 남는다.
+    """
+    code = _body(response).get("code")
+    if response.status_code in (404, 410):
+        return code != "NoSuchBucket"
+    return response.status_code == 400 and code == "NoSuchKey"
+
+
 def _reason(response: httpx.Response, key: str) -> str:
     """Supabase가 준 거절 이유(JSON의 `code`·`message`). JSON이 아니면 빈 문자열이다.
 
     오류 문구를 거쳐 로그에만 남는다(사용자에게는 정해 둔 문구가 간다). 키가 섞여 있으면 가리고,
     줄바꿈을 펴고, 길이를 자른다.
     """
-    try:
-        body = response.json()
-    except (ValueError, RecursionError):  # JSON이 아니거나, 너무 깊게 겹쳐 있다
-        return ""
-    if not isinstance(body, dict):
-        return ""
+    body = _body(response)
     parts = [body.get("code"), body.get("message")]
     text = ": ".join(part for part in parts if isinstance(part, str) and part.strip())
     if key:

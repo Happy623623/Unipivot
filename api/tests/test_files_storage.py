@@ -3,7 +3,8 @@
 키 모양에 따라 싣는 곳이 다르다(10/19 실제 프로젝트에서 확인). 새 secret key(`sb_secret_…`)는
 `apikey`에만 싣고, 예전 service_role 키(JWT)는 `apikey`와 `Authorization` 둘 다에 싣는다. 거절되면
 Supabase가 준 이유를 오류 문구에 남기되 키는 넣지 않는다. 머리값에 못 싣는 글자가 섞인 키는 보내지
-않는다(보내다 깨지면 그 오류에 키가 실린다). 시작할 때는 키 모양을 보고 고칠 점을 알린다.
+않는다(보내다 깨지면 그 오류에 키가 실린다). 시작할 때는 키 모양을 보고 고칠 점을 알린다. 지우기는
+이미 없는 파일(Supabase는 404가 아니라 400 `NoSuchKey`로 답한다)을 지나가지만, 버킷이 없으면 실패다.
 """
 
 import logging
@@ -54,6 +55,19 @@ REFUSED = {
     "error": "Unauthorized",
     "message": "Invalid Compact JWS",
     "code": "AccessDenied",
+}
+# 10/19 실제 프로젝트가 이미 지운 파일을 또 지울 때 준 본문(HTTP 400)
+NO_SUCH_KEY = {
+    "statusCode": "404",
+    "error": "not_found",
+    "message": "Object not found",
+    "code": "NoSuchKey",
+}
+NO_SUCH_BUCKET = {
+    "statusCode": "404",
+    "error": "Bucket not found",
+    "message": "Bucket not found",
+    "code": "NoSuchBucket",
 }
 
 
@@ -192,17 +206,49 @@ async def test_not_reaching_the_storage_is_a_storage_error() -> None:
         await storage().upload(PATH, b"x", "image/jpeg")
 
 
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(404, None), (410, None), (404, NO_SUCH_KEY), (400, NO_SUCH_KEY)],
+    ids=["404", "410", "404-no-such-key", "supabase-400-no-such-key"],
+)
 @respx.mock
-async def test_remove_passes_over_a_file_that_is_already_gone() -> None:
-    respx.delete(OBJECT).mock(return_value=httpx.Response(404))
-    await storage().remove(PATH)
+async def test_remove_passes_over_a_file_that_is_already_gone(
+    status: int, body: dict[str, str] | None
+) -> None:
+    """탈퇴를 다시 누르면 앞서 지운 파일부터 다시 지운다. Supabase는 그때 400 `NoSuchKey`로 답한다."""
+    response = httpx.Response(status, json=body) if body else httpx.Response(status)
+    respx.delete(OBJECT).mock(return_value=response)
+    await storage(service_key=SECRET).remove(PATH)
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "shown"),
+    [
+        (500, None, "(500)"),
+        (400, NO_SUCH_BUCKET, "NoSuchBucket"),  # 버킷 이름이 틀렸다 — 지웠다고 하면 파일이 남는다
+        (404, NO_SUCH_BUCKET, "NoSuchBucket"),
+        (400, REFUSED, "Invalid Compact JWS"),  # 키 문제
+    ],
+    ids=["500", "400-no-such-bucket", "404-no-such-bucket", "400-access-denied"],
+)
+@respx.mock
+async def test_remove_raises_on_anything_else(
+    status: int, body: dict[str, str] | None, shown: str
+) -> None:
+    response = httpx.Response(status, json=body) if body else httpx.Response(status)
+    respx.delete(OBJECT).mock(return_value=response)
+    with pytest.raises(StorageError) as caught:
+        await storage(service_key=SECRET).remove(PATH)
+    assert shown in str(caught.value)
 
 
 @respx.mock
-async def test_remove_raises_on_anything_else() -> None:
-    respx.delete(OBJECT).mock(return_value=httpx.Response(500))
-    with pytest.raises(StorageError):
-        await storage().remove(PATH)
+async def test_download_of_a_missing_file_is_still_an_error() -> None:
+    """ "이미 없음"은 지우기에서만 받아 준다. 받기에서 없는 파일은 오류다(포스터를 모델에 못 넘긴다)."""
+    respx.get(OBJECT).mock(return_value=httpx.Response(400, json=NO_SUCH_KEY))
+    with pytest.raises(StorageError) as caught:
+        await storage(service_key=SECRET).download(PATH)
+    assert "NoSuchKey: Object not found" in str(caught.value)
 
 
 @respx.mock
