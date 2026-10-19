@@ -152,7 +152,7 @@ export default function Notifications({ navigate }: { navigate: (route: Route) =
       )}
       {hasMore && (
         <div className="flex justify-center">
-          <Button secondary onClick={loadMore} disabled={loadingMore}>
+          <Button secondary onClick={loadMore} busy={loadingMore}>
             {loadingMore ? "불러오는 중…" : "더 보기"}
           </Button>
         </div>

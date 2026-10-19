@@ -5,7 +5,8 @@ interface ButtonProps {
   type?: "button" | "submit";
   secondary?: boolean;
   onClick?: () => void;
-  disabled?: boolean;
+  disabled?: boolean; // 지금은 할 수 없는 일(입력이 덜 됐다 등). 초점을 받지 않는다
+  busy?: boolean; // 누른 일이 아직 진행 중. 눌러도 지나가지만 초점은 남는다(아래). disabled와 같이 주지 않는다
   title?: string;
 }
 
@@ -21,21 +22,34 @@ export function ButtonLink({ href, children }: { href: string; children: ReactNo
   );
 }
 
+// 진행 중(busy)인 버튼은 disabled로 막지 않는다. disabled가 되면 키보드 초점이 버튼에서 빠져 문서 맨 위로 튀고,
+// 일이 끝난 뒤 같은 버튼을 다시 누르려면(더 보기) 처음부터 Tab으로 찾아와야 한다. 대신 aria-disabled·aria-busy로
+// 알리고 누름을 취소한다(components/DownloadButton.tsx와 같은 방식). 누름을 취소해야 type="submit"일 때 폼 제출
+// (입력란에서 Enter도 이 버튼의 click이다)까지 막힌다
 export default function Button({
   children,
   type = "button",
   secondary = false,
   onClick,
   disabled = false,
+  busy = false,
   title,
 }: ButtonProps) {
   return (
     <button
       type={type}
-      onClick={onClick}
+      onClick={(event) => {
+        if (busy) {
+          event.preventDefault();
+          return;
+        }
+        onClick?.();
+      }}
       disabled={disabled}
+      aria-disabled={busy || undefined}
+      aria-busy={busy || undefined}
       title={title}
-      className={`${BASE} disabled:cursor-not-allowed disabled:opacity-45 ${
+      className={`${BASE} disabled:cursor-not-allowed disabled:opacity-45 aria-disabled:cursor-wait aria-disabled:opacity-45 aria-disabled:active:scale-100 ${
         secondary ? "border-[#e5e7eb] bg-white text-[#181a20] hover:bg-[#f7f8fa]" : PRIMARY
       }`}
     >

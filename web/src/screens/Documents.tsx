@@ -114,7 +114,7 @@ export default function Documents({ navigate }: { navigate: (route: Route) => vo
       {error !== null && items.length > 0 && <p className="text-[13px] text-[#c53030]">{error}</p>}
       {hasMore && (
         <div className="flex justify-center">
-          <Button secondary onClick={loadMore} disabled={loadingMore}>
+          <Button secondary onClick={loadMore} busy={loadingMore}>
             {loadingMore ? "불러오는 중…" : "더 보기"}
           </Button>
         </div>
