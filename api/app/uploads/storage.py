@@ -24,7 +24,7 @@ API가 만드는 5분짜리 서명 URL로만 한다(문서함, F-44). 그 주소
 import json
 import re
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 import jwt
@@ -212,12 +212,15 @@ def storage_settings_problem(settings: Settings) -> str | None:
     믿기 전에도 본다(받기 주소의 404, 탈퇴의 지우기).
 
     키 값은 보여 주지 않고 모양만 본다. 프로젝트 ID나 publishable key를 넣으면 올릴 때마다 400으로
-    거절되는데, 그때는 원인이 잘 안 보인다(10/19에 둘 다 겪었다). 어떤 값이 와도 예외를 내지 않는다 —
-    여기서 터지면 서버가 뜨지 않는다.
+    거절되는데, 그때는 원인이 잘 안 보인다(10/19에 둘 다 겪었다). 주소도 모양만 본다 — 경로가 붙은
+    `SUPABASE_URL`(`…/rest/v1`)이면 저장소가 아닌 곳(API 게이트웨이)이 404로 답해서 역시 원인이 안 보인다.
+    어떤 값이 와도 예외를 내지 않는다 — 여기서 터지면 서버가 뜨지 않는다.
     """
     key = settings.supabase_service_role_key.strip()
     if not key or not settings.storage_base_url:
         return MISSING
+    if problem := _url_problem(settings):
+        return problem
     if not settings.supabase_storage_bucket.strip():
         return "SUPABASE_STORAGE_BUCKET이 비어 있어요. 대시보드 Storage에서 만든 비공개 버킷 이름을 넣으세요"
     if not KEY_SHAPE.fullmatch(key):
@@ -240,6 +243,39 @@ def storage_settings_problem(settings: Settings) -> str | None:
         return f"SUPABASE_SERVICE_ROLE_KEY가 키 모양이 아니에요(값은 보여 주지 않음). {WHERE}"
     if claims.get("role") != "service_role":
         return f"SUPABASE_SERVICE_ROLE_KEY가 service_role 키가 아니에요(anon 키 같은 것). {WHERE}"
+    return None
+
+
+def _url_problem(settings: Settings) -> str | None:
+    """저장소 주소에서 고칠 점. 값은 보여 주지 않는다(DB 주소를 잘못 넣으면 비밀번호가 들어 있다).
+
+    `SUPABASE_STORAGE_BASE`를 따로 넣었으면(시험·개발용 가짜 저장소, 경로가 필요한 자체 호스팅) 그 값을,
+    아니면 `SUPABASE_URL`을 본다. `SUPABASE_URL`은 프로젝트 주소(`https://<ref>.supabase.co`)여야 해서 경로가
+    붙어 있으면 틀린 것이다 — `/storage/v1`은 서버가 붙인다. 따로 넣은 저장소 주소는 경로가 있을 수 있어
+    경로는 보지 않는다.
+    """
+    base = settings.supabase_storage_base.strip()
+    name = "SUPABASE_STORAGE_BASE" if base else "SUPABASE_URL"
+    url = base or settings.supabase_url.strip()
+    if "@" in url:
+        return (
+            f"{name} 값에 계정 정보(@)가 들어 있어요(값은 보여 주지 않음). DB 주소 대신 Supabase 프로젝트"
+            " 주소(https://….supabase.co)를 넣으세요"
+        )
+    if "<" in url or ">" in url:
+        return f"{name} 값에 예시 값이 남아 있어요(값은 보여 주지 않음). Supabase 프로젝트 주소로 바꾸세요"
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return f"{name} 값이 주소 모양이 아니에요(값은 보여 주지 않음). Supabase 프로젝트 주소를 넣으세요"
+    if parts.scheme.lower() not in ("https", "http") or not parts.netloc:
+        return f"{name} 값이 https://로 시작하지 않아요(값은 보여 주지 않음). Supabase 프로젝트 주소를 넣으세요"
+    if name == "SUPABASE_URL" and (parts.path.strip("/") or parts.query or parts.fragment):
+        return (
+            "SUPABASE_URL 값에 경로가 붙어 있어요(…/rest/v1 같은 것. 값은 보여 주지 않음). 프로젝트 주소"
+            "(https://<ref>.supabase.co)만 넣으세요 — 저장소 경로는 서버가 붙여요. 경로가 꼭 필요한 자체"
+            " 호스팅이면 SUPABASE_STORAGE_BASE에 저장소 주소(…/storage/v1)를 따로 넣으세요"
+        )
     return None
 
 

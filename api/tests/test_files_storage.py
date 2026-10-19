@@ -418,6 +418,22 @@ def test_spaces_around_the_key_are_dropped() -> None:
         (SECRET[:16], PROJECT_URL, "너무 짧아요"),  # 가려진 화면 글자만 옮겨 적었다
         *[(dirty, PROJECT_URL, "키에 없는 글자가 섞여 있어요") for dirty in DIRTY],
         ("abc\udcff", PROJECT_URL, "키에 없는 글자가 섞여 있어요"),  # UTF-8이 아닌 환경 변수
+        # 주소 모양. 경로가 붙으면 저장소가 아닌 곳(게이트웨이·PostgREST)이 404로 답한다
+        (SECRET, f"{PROJECT_URL}/", None),  # 끝의 /는 괜찮다
+        (SECRET, "HTTPS://abcdefghijklmnopqrst.supabase.co", None),  # 대문자 스킴
+        (SECRET, "https://abcdefghijklmnopqrst.supabase.co:443", None),  # 포트
+        (SECRET, "https://supabase.my-school.ac.kr", None),  # 자체 도메인
+        (SECRET, "http://127.0.0.1:54321", None),  # 로컬 Supabase CLI
+        (SECRET, "https://[::1]:8000", None),  # IPv6
+        (SECRET, f"{PROJECT_URL}/rest/v1", "경로가 붙어 있어요"),
+        (SECRET, f"{PROJECT_URL}/storage/v1", "경로가 붙어 있어요"),  # 서버가 붙이는 경로다
+        (SECRET, f"{PROJECT_URL}?x=1", "경로가 붙어 있어요"),
+        (SECRET, "abcdefghijklmnopqrst.supabase.co", "https://로 시작하지 않아요"),
+        (SECRET, "ftp://abcdefghijklmnopqrst.supabase.co", "https://로 시작하지 않아요"),
+        (SECRET, "https://", "https://로 시작하지 않아요"),
+        (SECRET, "https://<project-ref>.supabase.co", "예시 값이 남아 있어요"),
+        (SECRET, "postgresql://postgres:pw-1234@db.ref.supabase.co:5432/postgres", "계정 정보(@)"),
+        (SECRET, "https://[::1", "주소 모양이 아니에요"),
     ],
 )
 def test_storage_settings_problem(key: str, url: str, problem: str | None) -> None:
@@ -430,6 +446,42 @@ def test_storage_settings_problem(key: str, url: str, problem: str | None) -> No
         assert key.strip() not in found  # 키 값은 보여 주지 않는다
     if problem in ("publishable key가 들어 있어요", "키 모양이 아니에요", "너무 짧아요"):
         assert WHERE in found  # 어디서 무엇을 가져올지 알려 준다
+    assert (
+        "abcdefghijklmnopqrst" not in found and "pw-1234" not in found
+    )  # 주소 값도 보여 주지 않는다
+
+
+@pytest.mark.parametrize(
+    ("base", "problem"),
+    [
+        (BASE, None),
+        ("http://127.0.0.1:54321/storage/v1", None),  # 가짜 저장소(시험)
+        (
+            "http://127.0.0.1:9999",
+            None,
+        ),  # 경로 없는 가짜 저장소도 된다 — 경로는 서버가 정하지 않는다
+        ("127.0.0.1:54321/storage/v1", "https://로 시작하지 않아요"),
+        ("https://user:pw@storage.test/storage/v1", "계정 정보(@)"),
+        ("https://<storage>/storage/v1", "예시 값이 남아 있어요"),
+        ("  ", "경로가 붙어 있어요"),  # 빈칸뿐이면 없는 것이라 SUPABASE_URL을 본다(틀린 값)
+    ],
+)
+def test_a_separate_storage_base_is_checked_by_shape_but_may_have_a_path(
+    base: str, problem: str | None
+) -> None:
+    """시험·개발용 저장소 주소(SUPABASE_STORAGE_BASE)를 넣었으면 그것을 본다. SUPABASE_URL은 안 본다."""
+    settings = Settings(
+        supabase_url=f"{PROJECT_URL}/rest/v1",  # 틀렸지만 저장소 주소를 따로 넣었으니 상관없다
+        supabase_service_role_key=SECRET,
+        supabase_storage_base=base,
+    )
+    found = storage_settings_problem(settings)
+    if problem is None:
+        assert found is None
+    else:
+        assert found is not None and problem in found
+        assert found.startswith("SUPABASE_URL" if base.strip() == "" else "SUPABASE_STORAGE_BASE")
+        assert "user:pw" not in found and "storage.test" not in found
 
 
 def test_an_empty_bucket_is_named_at_startup() -> None:
@@ -442,23 +494,29 @@ def test_an_empty_bucket_is_named_at_startup() -> None:
 
 
 @pytest.mark.parametrize(
-    ("key", "shown"),
+    ("key", "url", "shown"),
     [
         (
             PUBLISHABLE,
+            PROJECT_URL,
             "파일 저장소 설정 확인: SUPABASE_SERVICE_ROLE_KEY에 publishable key가 들어 있어요",
         ),
-        ("", f"파일 저장소 설정 확인: {MISSING}"),
-        (SECRET, None),
+        ("", PROJECT_URL, f"파일 저장소 설정 확인: {MISSING}"),
+        (SECRET, PROJECT_URL, None),
+        (
+            SECRET,
+            f"{PROJECT_URL}/rest/v1",
+            "파일 저장소 설정 확인: SUPABASE_URL 값에 경로가 붙어 있어요",
+        ),
     ],
 )
 def test_startup_says_what_to_fix_in_the_storage_settings(
-    caplog: pytest.LogCaptureFixture, key: str, shown: str | None
+    caplog: pytest.LogCaptureFixture, key: str, url: str, shown: str | None
 ) -> None:
-    """서버를 켤 때 바로 알린다(.env를 고치면 다시 켠다). 키 값은 로그에 남기지 않는다."""
+    """서버를 켤 때 바로 알린다(.env를 고치면 다시 켠다). 키 값·주소 값은 로그에 남기지 않는다."""
     settings = Settings(
         database_url="",
-        supabase_url=PROJECT_URL,
+        supabase_url=url,
         supabase_jwt_secret="legacy-secret-legacy-secret-legacy-secret",
         supabase_service_role_key=key,
     )
@@ -470,6 +528,7 @@ def test_startup_says_what_to_fix_in_the_storage_settings(
         assert shown in caplog.text
     if key:
         assert key not in caplog.text
+    assert "abcdefghijklmnopqrst" not in caplog.text
 
 
 def test_the_hint_survives_log_redaction_but_a_real_secret_does_not() -> None:

@@ -89,6 +89,7 @@ class World:
         fail_on: str | None = None,
         key: str = SECRET,
         url: str = PROJECT_URL,
+        storage_base: str = "",
     ):
         self.profiles = FakeProfileRepository()
         self.files = FakeFileRepository(paths)
@@ -100,6 +101,7 @@ class World:
                 "google_revoke_url": REVOKE_URL,
                 "supabase_url": url,
                 "supabase_service_role_key": key,
+                "supabase_storage_base": storage_base,
             }
         )
         app = create_app(tuned)
@@ -210,9 +212,12 @@ def test_a_wrong_storage_key_stops_before_any_file_is_removed(
 def test_a_404_that_is_not_from_the_storage_stops_everything(
     settings: Settings, auth: dict[str, str]
 ) -> None:
-    """주소에 경로가 붙으면(`….supabase.co/rest/v1`) 저장소가 아닌 곳이 `code` 없는 404로 답한다. 그것을
-    "이미 지웠다"로 받으면 파일이 남은 채 탈퇴가 끝난다. 지우기 실패로 보고 첫 파일에서 502로 멈춘다."""
-    world = World(settings, paths=PATHS, connected=True, url=f"{PROJECT_URL}/rest/v1")
+    """저장소 주소가 틀리면(여기서는 시험용 저장소 주소 `SUPABASE_STORAGE_BASE`에 다른 경로) 저장소가 아닌
+    곳이 `code` 없는 404로 답한다. 그것을 "이미 지웠다"로 받으면 파일이 남은 채 탈퇴가 끝난다. 지우기 실패로
+    보고 첫 파일에서 502로 멈춘다. (경로가 붙은 `SUPABASE_URL`은 모양 검사가 먼저 잡는다 — 아래 시험)"""
+    world = World(
+        settings, paths=PATHS, connected=True, storage_base=f"{PROJECT_URL}/rest/v1/storage/v1"
+    )
     del world.app.dependency_overrides[get_storage]  # 실제 저장소 코드로 지운다
     gateway = respx.delete(url__startswith=f"{PROJECT_URL}/rest/v1/storage/v1/object/").mock(
         return_value=httpx.Response(404, json={"message": "no Route matched with those values"})
@@ -226,6 +231,25 @@ def test_a_404_that_is_not_from_the_storage_stops_everything(
     assert not revoke.called
     assert world.calendar.tokens_row is not None
     assert USER_ID in world.profiles.profiles
+
+
+@respx.mock
+def test_a_project_url_with_a_path_stops_before_any_file_is_removed(
+    settings: Settings, auth: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """경로가 붙은 `SUPABASE_URL`(`…/rest/v1`)은 키처럼 모양으로 잡는다. 저장소를 부르지 않고 502다."""
+    world = World(settings, paths=PATHS, connected=True, url=f"{PROJECT_URL}/rest/v1")
+    revoke = respx.post(REVOKE_URL).mock(return_value=httpx.Response(200, json={}))
+    for client in _signed_in(world):
+        response = client.delete(ME, headers=auth)
+        assert response.status_code == 502
+        assert response.json()["error"]["code"] == "STORAGE_API_ERROR"
+        assert "rest/v1" not in response.text
+    assert world.storage.removed == [] and not revoke.called
+    assert USER_ID in world.profiles.profiles
+    stopped = [r.getMessage() for r in caplog.records if r.name == "app.account"]
+    assert len(stopped) == 1 and "SUPABASE_URL 값에 경로가 붙어 있어요" in stopped[0]
+    assert "abcdefghijklmnopqrst" not in stopped[0]  # 주소 값은 남기지 않는다
 
 
 @respx.mock
