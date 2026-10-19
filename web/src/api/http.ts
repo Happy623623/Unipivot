@@ -33,7 +33,8 @@ function networkMessage(): string {
     : "서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.";
 }
 
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+// 응답을 받기까지. 로그인 전·세션 만료(401)면 로그인 화면으로 보내고 끝나지 않는 Promise를 둔다
+async function apiResponse(path: string, init: RequestInit = {}): Promise<Response> {
   const base = process.env.NEXT_PUBLIC_API_BASE_URL;
   if (!base) {
     throw new ApiError("CONFIG_MISSING", "API 주소(NEXT_PUBLIC_API_BASE_URL)가 설정되지 않았어요.", 0);
@@ -59,7 +60,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   // 페이지가 바뀌므로 화면에 오류를 넘기지 않고 기다리게 둔다
   if (response.status === 401 && typeof window !== "undefined") {
     window.location.assign(token ? "/login?error=session" : "/login");
-    return new Promise<T>(() => {});
+    return new Promise<Response>(() => {});
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null);
@@ -70,7 +71,17 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
       body?.error?.details,
     );
   }
+  return response;
+}
+
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await apiResponse(path, init);
   return (response.status === 204 ? undefined : await response.json()) as T;
+}
+
+// JSON이 아닌 응답(.ics 파일 같은 글)을 그대로 받는다
+export async function apiFetchText(path: string): Promise<string> {
+  return (await apiResponse(path)).text();
 }
 
 // 화면에 띄울 오류 문구. 서버(13장)와 프론트 코드가 준 문구는 그대로 쓰고,

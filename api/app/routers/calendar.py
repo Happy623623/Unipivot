@@ -1,10 +1,12 @@
-"""마감일 캘린더 등록 (F-32·F-51, API 명세 7장).
+"""마감일 캘린더 등록 (F-32·F-51, API 명세 7장)과 .ics 내려받기 (F-34).
 
 대상은 공고 마감이나 LMS 과제 마감 하나다. 일정은 마감 시각으로 끝나는 1시간짜리이고, 일정 번호는
-우리 행 id에서 만들어 보내므로 다시 눌러도 캘린더에 하나만 들어간다.
+우리 행 id에서 만들어 보내므로 다시 눌러도 캘린더에 하나만 들어간다. .ics 내려받기는 같은 대상을
+여럿 받아 파일 하나로 주고, 기록은 남기지 않는다.
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -13,6 +15,7 @@ from fastapi import APIRouter, Response
 
 from app.auth import CurrentUserDep
 from app.calendar import EVENT_MINUTES, assignment_title, event_id_for, event_title
+from app.calendar.ics import IcsEvent, event_uid, render_calendar
 from app.calendar.service import CalendarServiceDep
 from app.clock import NowDep
 from app.eligibility import KST
@@ -25,6 +28,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/calendar", tags=["캘린더"])
 
 NOT_FOUND = "캘린더 일정을 찾을 수 없어요."
+NOTHING_TO_DOWNLOAD = "내려받을 일정이 없어요."
+ICS_LIMIT = 200  # 한 번에 받는 대상 수 상한. 주소 길이와 조회 횟수를 묶어 둔다
 
 
 @router.post("/events", status_code=201, response_model=CalendarEventView)
@@ -41,7 +46,7 @@ async def add_event(
     일정은 마감 시각으로 끝나는 1시간짜리다. 연결이 없거나 만료면 409 CALENDAR_NOT_CONNECTED,
     Google이 거절하면 502 GOOGLE_API_ERROR다.
     """
-    if body.provider != "google":  # .ics 내려받기는 F-34(P1)다
+    if body.provider != "google":  # .ics는 등록이 아니라 내려받기다(GET /calendar/ics)
         raise ApiError(
             422,
             "VALIDATION_FAILED",
@@ -188,3 +193,79 @@ def _invalid(reason: str, *, field: str = "opportunity_id") -> ApiError:
     return ApiError(
         422, "VALIDATION_FAILED", "입력값을 확인해 주세요.", {"fields": {field: reason}}
     )
+
+
+@router.get("/ics")
+async def download_ics(
+    user: CurrentUserDep,
+    repo: CalendarRepoDep,
+    now: NowDep,
+    opportunity_ids: str = "",
+    lms_assignment_ids: str = "",
+    syllabus_item_ids: str = "",
+) -> Response:
+    """고른 마감·일정을 .ics 파일 하나로 준다(F-34). Google 캘린더를 쓰지 않는 학생용이다.
+
+    대상과 일정 모양은 `POST /calendar/events`와 같다. 넣을 수 없는 대상(준비하지 않은 공고,
+    마감·날짜가 없는 것, 이미 지난 것, 남의 것·없는 것)은 건너뛰고, 하나도 남지 않으면 404다.
+    `calendar_events`에는 기록하지 않는다(PRD F-34).
+    """
+    wanted = _ics_targets(opportunity_ids, lms_assignment_ids, syllabus_item_ids)
+    events: list[IcsEvent] = []
+    for kind, resolve, target_id in wanted:
+        try:
+            target = await resolve(repo, user.id, target_id, now)
+        except ApiError as exc:
+            if exc.status not in (404, 409, 422):
+                raise
+            continue  # 넣을 수 없는 대상은 건너뛴다
+        events.append(
+            IcsEvent(
+                uid=event_uid(kind, target_id),
+                title=target.title,
+                starts_at=target.ends_at - timedelta(minutes=EVENT_MINUTES),
+                ends_at=target.ends_at,
+            )
+        )
+    if not events:
+        raise ApiError(404, "NOT_FOUND", NOTHING_TO_DOWNLOAD)
+    filename = f"unipivot-{now.astimezone(KST):%Y%m%d}.ics"
+    return Response(
+        render_calendar(events, now=now),
+        media_type="text/calendar",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+_Resolve = Callable[[CalendarRepository, str, str, datetime], Awaitable[_Target]]
+_ICS_KINDS: list[tuple[str, str, _Resolve]] = [
+    ("opportunity_ids", "opportunity", _opportunity_target),
+    ("lms_assignment_ids", "lms_assignment", _assignment_target),
+    ("syllabus_item_ids", "syllabus_item", _syllabus_target),
+]
+
+
+def _ics_targets(*given: str) -> list[tuple[str, _Resolve, str]]:
+    """쉼표로 나눈 uuid 목록 셋을 (종류, 조회 함수, id)로 편다. 같은 id는 한 번만 둔다.
+
+    uuid가 아닌 값이 있으면 그 파라미터 이름으로 422, 합쳐서 하나도 없거나 상한을 넘어도 422다.
+    """
+    targets: list[tuple[str, _Resolve, str]] = []
+    seen: set[str] = set()
+    for (param, kind, resolve), raw in zip(_ICS_KINDS, given, strict=True):
+        for value in raw.split(","):
+            value = value.strip()
+            if not value:
+                continue
+            try:
+                target_id = str(UUID(value))
+            except ValueError:
+                raise _invalid("uuid가 아닌 값이 있어요.", field=param) from None
+            if target_id not in seen:
+                seen.add(target_id)
+                targets.append((kind, resolve, target_id))
+    if not targets:
+        raise _invalid("공고·LMS 과제·계획서 일정 id를 하나 이상 주세요.", field="ids")
+    if len(targets) > ICS_LIMIT:
+        raise _invalid(f"한 번에 {ICS_LIMIT}개까지 받을 수 있어요.", field="ids")
+    return targets

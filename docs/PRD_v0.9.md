@@ -450,7 +450,7 @@ P0 18개, P1 5개다. v0.8 번호는 대조용으로 남긴다.
 | 스케줄러 | **FastAPI 안 스케줄러**(`SCHEDULER_ENABLED`, `app/scheduler.py`) | 알림 발송(5분)·LMS 동기화(30분)·공고 알림 예약(KST 08:30)·청년정책 수집(KST 04:00)을 서버가 직접 돈다. 10/18 결정 — 바깥 크론(GitHub Actions·Supabase pg_cron)은 공개 주소가 있어야 해서 배포 뒤에 다시 본다. `POST /internal/jobs/*`와 **같은 함수**를 부르고, 둘을 같이 켜지 않는다. 워커는 하나로 둔다 |
 | 크롤링 | requests + BeautifulSoup, 필요 시 Playwright | JS 렌더링 페이지만 Playwright |
 | 문서 처리 | PDF·HWPX·HWP 텍스트 추출, 이미지와 글자 없는 스캔본만 Vision | LLM 비용 절감. 구형 HWP 변환 방법은 장학 공지 30건 샘플로 확인해 정한다 |
-| ICS 처리 | Python icalendar 라이브러리 등 | .ics 내려받기 파일 생성 |
+| ICS 처리 | 표준 라이브러리로 직접 생성(RFC 5545, `app/calendar/ics.py`) | .ics 내려받기 파일 생성. 일정 몇 개뿐이라 줄 접기·글자 피하기만 있으면 된다 |
 | LLM | Gemini 3.8 Flash · 3.5 Flash-Lite | 공통 래퍼로 공급사·모델 교체 가능. Cloud 무료 체험 크레딧으로 0원 운영(docs/LLM_모델_선정.md). Claude는 자금이 생기면 비교에 더한다 |
 
 ```mermaid

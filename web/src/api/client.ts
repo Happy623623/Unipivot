@@ -1,8 +1,11 @@
-import { ApiError, apiFetch, USE_MOCKS, waitForRun } from "@/api/http";
+import { ApiError, apiFetch, apiFetchText, USE_MOCKS, waitForRun } from "@/api/http";
 import * as mock from "@/api/mockClient";
 import { MockApiError, respond } from "@/api/mockClient";
 import { getKstDateKey } from "@/lib/format";
+import { daysLater, ICS_DAYS, icsQuery } from "@/lib/ics";
+import { saveTextFile } from "@/lib/saveFile";
 import { mockNow, mockToday } from "@/mocks";
+import { mockIcs } from "@/mocks/ics";
 import {
   getStoredPlanner,
   addStoredManualTask,
@@ -118,6 +121,19 @@ export function getPlanner(from: string, to: string): Promise<PlannerResponse> {
   }
   const query = new URLSearchParams({ from, to });
   return apiFetch<PlannerResponse>(`/planner/tasks?${query}`);
+}
+
+// GET /calendar/ics (F-34). 오늘부터 1년 안의 준비한 공고 마감·LMS 과제·계획서 일정을 .ics 파일 하나로
+// 내려받는다. Google 캘린더를 쓰지 않는 학생이 iPhone·삼성·Outlook 캘린더에 넣는 파일이다.
+// 서버에 기록은 남지 않는다. 받을 일정이 없으면 파일을 만들지 않고 false다
+export async function downloadPlannerIcs(): Promise<boolean> {
+  const today = todayKst();
+  const planner = await getPlanner(today, daysLater(today, ICS_DAYS));
+  const query = icsQuery(planner, today);
+  if (query === null) return false;
+  const text = USE_MOCKS ? await respond(mockIcs(planner, today)) : await apiFetchText(`/calendar/ics?${query}`);
+  saveTextFile(`unipivot-${today.replace(/-/g, "")}.ics`, text, "text/calendar");
+  return true;
 }
 
 // PATCH /planner/tasks/{id}. 완료 체크는 어느 출처든 할 수 있다

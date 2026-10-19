@@ -28,6 +28,8 @@
 >
 > v0.4 보강(10/19, 탈퇴): `DELETE /me`를 만들었다(F-06). 파일 → Google 권한 → profiles 순서, 파일을 못 지우면 502로 멈춤, 로그인 계정은 남김
 >
+> v0.4 보강(10/19, .ics 내려받기): `GET /calendar/ics`를 만들었다(F-34). 대상에 `syllabus_item_ids`를 더했고, 넣을 수 없는 대상은 건너뛰며, 기록은 남기지 않는다(PRD와 맞춤 — "provider = ics로 기록" 문장을 지웠다)
+>
 > v0.4 보강(10/13, 시·군·구 선택): 프로필 region_sigungu 값
 >
 > v0.4 보강(10/13, 관심 공고): PUT·DELETE /opportunities/{id}/mark, 피드 include_not_interested, my_mark, counts에서 관심 없음 공고 제외, 알림 규칙
@@ -803,7 +805,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 ### `POST /calendar/events`
 
 - 연결이 없거나 만료됐으면 `409 CALENDAR_NOT_CONNECTED`(`details.reason`)를 돌려준다
-- 대상은 공고 마감일(`opportunity_id`)·LMS 과제 마감(`lms_assignment_id`)·계획서 일정(`syllabus_item_id`) 셋이다. **정확히 하나만** 보낸다(둘 이상 보내거나 모두 비우면 `422`). `provider`는 `google`만 받는다(`ics`는 F-34)
+- 대상은 공고 마감일(`opportunity_id`)·LMS 과제 마감(`lms_assignment_id`)·계획서 일정(`syllabus_item_id`) 셋이다. **정확히 하나만** 보낸다(둘 이상 보내거나 모두 비우면 `422`). `provider`는 `google`만 받는다(.ics는 등록이 아니라 내려받기다 — `GET /calendar/ics`)
 - 과제는 **내 과제**이고 LMS에서 사라지지 않았고 수강 중인 과목의 것이어야 한다(아니면 `404 NOT_FOUND`). 마감이 없으면 `422`(`details.fields.lms_assignment_id`), 마감이 지났으면 `409 DEADLINE_PASSED`다. 제출했는지는 보지 않는다(학생이 직접 누른 것이다). 제목은 `[과제] 과목 이름 · 과제 제목`이다
 - 계획서 일정은 **확인을 마친 일정**(`is_confirmed` true)만 넣을 수 있다. 확인 전 일정·남의 계획서는 `404 NOT_FOUND`, 날짜가 없으면 `422`(`details.fields.syllabus_item_id`), 이미 지난 일정은 `409 DEADLINE_PASSED`다. 계획서 일정은 마감이 아니라 **시작 시각**이라, 그 시각에 시작해 1시간 뒤에 끝난다(10:30 시험이면 10:30~11:30). 제목은 `[시험] 과목 이름 · 일정 제목`이고 종류에 따라 앞머리가 `[시험]`(midterm·final)·`[발표]`(presentation)·`[과제]`(assignment)·`[일정]`(etc)이다
 - **준비를 마친** 공고만 넣을 수 있다(공고 상세의 `prep.prepared`와 같은 기준). 아니면 `422`이고 `details.fields.opportunity_id`에 이유를 담는다. 마감일이 없는 상시 공고도 `422`, 마감이 지난 공고는 `409 DEADLINE_PASSED`다
@@ -830,9 +832,14 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 ### `GET /calendar/ics` (P1)
 
-- 내려받기는 `calendar_events`에 기록하지 않는다
+`?opportunity_ids=uuid,uuid&lms_assignment_ids=uuid&syllabus_item_ids=uuid` → `200`, `Content-Type: text/calendar; charset=utf-8`, `Content-Disposition: attachment; filename="unipivot-YYYYMMDD.ics"`(KST 오늘). Google 캘린더를 쓰지 않는 학생이 iPhone·삼성·Outlook 캘린더에 넣는 파일이다(F-34).
 
-`?opportunity_ids=uuid,uuid&lms_assignment_ids=uuid` → `Content-Type: text/calendar`, 파일 다운로드. 동시에 `calendar_events`에 `provider = ics`로 기록.
+- 대상은 `POST /calendar/events`와 같다 — 준비를 마친 공고의 마감(`opportunity_ids`), LMS 과제 마감(`lms_assignment_ids`), 확인한 계획서 일정(`syllabus_item_ids`). 각 파라미터는 쉼표로 나눈 uuid 목록이고 셋을 합쳐 하나 이상, 200개까지다. uuid가 아닌 값이 있으면 `422 VALIDATION_FAILED`(`details.fields`에 그 파라미터 이름), 하나도 없거나 200개를 넘으면 `422`(`details.fields.ids`)
+- 일정 하나는 Google에 넣을 때와 같다: 제목이 같고(`[마감] …`, `[과제] 과목 · 제목`, `[시험] 과목 · 제목`), 마감 시각으로 끝나는 1시간(계획서 일정은 시작 시각부터 1시간)이다. 시각은 UTC(`Z`)로 적는다
+- 넣을 수 없는 대상은 **건너뛴다** — 준비하지 않은 공고, 마감·날짜가 없는 것, 이미 지난 것, 남의 것이거나 없는 것. 하나도 남지 않으면 `404 NOT_FOUND`("내려받을 일정이 없어요."). 같은 id를 두 번 주면 한 번만 넣는다
+- `UID`는 `<종류>-<id>@unipivot`(`opportunity`·`lms_assignment`·`syllabus_item`)이다. 같은 파일을 두 번 넣어도 캘린더 앱이 하나로 합친다
+- 내려받기는 `calendar_events`에 **기록하지 않는다**(PRD F-34). 공고 상세·과목 화면의 "캘린더에 넣음"은 Google 등록만 뜻한다
+- 화면은 플래너에서 오늘부터 1년 안의 대상(마감 마커, 끝내지 않은 LMS 과제·계획서 할 일)을 모아 한 번에 받는다
 
 ## 8. 강의계획서 · 강의자료
 

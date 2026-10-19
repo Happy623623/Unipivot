@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   addManualPlannerTask,
   deleteManualPlannerTask,
+  downloadPlannerIcs,
   errorMessage,
   getMe,
   getPlanner,
@@ -52,6 +53,7 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
   const [selectedDate, setSelectedDate] = useState(todayKst);
   const [plannerOverride, setPlannerOverride] =
     useState<PlannerResponse | null>(null);
+  const [downloading, setDownloading] = useState(false);
   const [toast, showToast] = useToast();
   const range = monthRange(view.year, view.month);
   const request = useAsyncData(
@@ -103,6 +105,23 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
       () => setPlannerTaskDone(task.id, !task.is_done),
       "할 일을 체크하지 못했어요. 잠시 후 다시 눌러 주세요.",
     ).catch(() => {});
+
+  // Google 캘린더를 쓰지 않는 학생용(F-34). 오늘부터 1년 안의 마감·일정을 .ics 파일 하나로 받는다
+  const downloadIcs = async () => {
+    setDownloading(true);
+    try {
+      const saved = await downloadPlannerIcs();
+      showToast(
+        saved
+          ? ".ics 파일을 내려받았어요. 캘린더 앱에서 열면 일정이 들어가요."
+          : "내려받을 일정이 없어요. 준비한 공고나 LMS 과제가 생기면 받을 수 있어요.",
+      );
+    } catch (error) {
+      showToast(errorMessage(error, "파일을 내려받지 못했어요. 잠시 후 다시 눌러 주세요."));
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <>
@@ -167,6 +186,18 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
             설정에서 연결
           </Button>
         )}
+      </section>
+      {/* Google 캘린더를 쓰지 않는 학생은 파일로 받아 기본 캘린더 앱에 넣는다(F-34) */}
+      <section className="flex items-center justify-between gap-4 rounded-[14px] border border-[#e5e7eb] bg-white p-[18px]">
+        <div>
+          <p className="text-[14px] font-semibold">.ics 파일로 내려받기</p>
+          <p className="mt-1 text-[12px] text-[#667085]">
+            Google 캘린더를 쓰지 않으면 다가오는 마감일과 수업 일정을 파일로 받아 iPhone·삼성·Outlook 캘린더에 넣을 수 있어요.
+          </p>
+        </div>
+        <Button secondary onClick={downloadIcs} disabled={downloading}>
+          {downloading ? "파일 만드는 중…" : ".ics 내려받기"}
+        </Button>
       </section>
       <Toast toast={toast} />
     </>
