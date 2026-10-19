@@ -34,6 +34,8 @@
 >
 > v0.4 보강(10/19, 문서함): `GET /files`(내 강의자료·계획서 목록)와 `GET /files/{file_id}/url`(5분짜리 받기 주소, 원래 이름으로 내려받기)을 만들었다(F-44). `GET /materials`는 강의자료 요약 목록이다(문서함은 `GET /files`)
 >
+> v0.4 보강(10/20, 문서함 받기): 화면이 받기 주소를 여는 대신 fetch로 받아 `file_name`으로 저장한다(저장소 CORS `*` 확인). 저장소가 파일을 주지 않으면 프론트 코드 `DOWNLOAD_FAILED`로 안내
+>
 > v0.4 보강(10/19, 탈퇴 저장소 가드): 파일이 있는데 서버의 저장소 설정에 고칠 점이 있으면 `DELETE /me`가 파일을 지우기 전에 `502 STORAGE_API_ERROR`로 멈춘다(publishable key로 지우면 저장소가 "없는 파일"로 답해 파일이 남는다). 지우기의 "이미 없음"은 저장소가 `NoSuchKey`로 답할 때만이다(`code` 없는 404는 실패)
 >
 > v0.4 보강(10/13, 시·군·구 선택): 프로필 region_sigungu 값
@@ -673,13 +675,13 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 ### `GET /files/{file_id}/url` (P1)
 
-그 파일을 5분 동안 받을 수 있는 주소(F-44). 화면은 "받기"를 누를 때마다 부르고 받은 주소를 바로 연다.
+그 파일을 5분 동안 받을 수 있는 주소(F-44). 화면은 "받기"를 누를 때마다 부르고, 받은 주소에서 바로 파일을 받아(fetch, 저장소 CORS `*`) `file_name`(공지 탭은 첨부의 `name`)으로 저장한다. 저장소가 파일을 주지 않으면(그새 지워짐·저장소 오류·2분 넘게 걸림) 프론트 코드 `DOWNLOAD_FAILED`로 안내하고, 다시 누르면 이 API를 다시 부른다.
 
 ```json
 { "url": "https://{project}.supabase.co/storage/v1/object/sign/uploads/{경로}?token=…&download=%EC%A4%91%EA%B0%84…pdf", "expires_at": "2026-10-15T12:05:00+09:00" }
 ```
 
-- 주소를 열면 파일 저장소가 `Content-Disposition: attachment`와 원래 이름(`file_name`)으로 내려보낸다(주소의 `download`). 공지 첨부는 형식을 가리지 않고 받아서(HTML·SVG도 올 수 있다) 브라우저에서 그대로 열지 않는다
+- 화면은 받은 파일을 중립 타입(`application/octet-stream`)의 Blob으로 `<a download>`에 넣어 저장만 한다 — 공지 첨부는 형식을 가리지 않고 받아서(HTML·SVG도 올 수 있다) 브라우저에서 그대로 열지 않는다. 서버는 주소에 `download=<원래 이름>`을 붙여 두어, 주소를 직접 열어도 저장소가 `Content-Disposition: attachment`와 원래 이름으로 내려보낸다(저장만 된다)
 - 주소는 그 자체로 열쇠다. 화면은 들고 있지 않고 서버는 로그에 남기지 않으며, 응답에 `Cache-Control: no-store`를 붙인다. `expires_at`은 주소를 만든 시각 + 5분이다(1장 파일 URL)
 - 내 강의자료·계획서만 된다. 남의 파일·포스터·없는 번호는 `404 NOT_FOUND`, `file_id`가 UUID가 아니면 `422 VALIDATION_FAILED`다
 - 기록은 있는데 저장소에 파일이 없으면(저장소가 `NoSuchKey`) `404 NOT_FOUND`이고, 다시 눌러도 같으니 어디서 다시 받는지 알려 준다: 공지 첨부는 "저장한 파일이 없어졌어요. LMS 공지에서 받아 주세요.", 올린 파일은 "…파일을 다시 올려 주세요." 단 서버의 저장소 설정에 고칠 점이 있으면(publishable key 등 — 그런 키에도 저장소는 `NoSuchKey`로 답한다) 이 답을 믿지 않고 `502 STORAGE_API_ERROR`다. 그 밖에 저장소가 주소를 주지 않으면(설정·연결 문제) `502 STORAGE_API_ERROR`다
@@ -1469,7 +1471,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `AUTH_UNAVAILABLE` | 503 | 서버가 로그인을 확인할 수 없음(공개키를 받지 못함, `SUPABASE_URL`이 비었거나 틀림). 토큰 문제가 아니다 | 잠시 후 재시도. 로그인 화면으로 보내지 않는다 |
 | `INTERNAL_ERROR` | 500 | 처리하지 못한 예외 | 에러 화면 |
 
-프론트만 쓰는 코드(서버는 주지 않는다, web/src/api/http.ts): NETWORK_ERROR(응답을 받지 못함), CONFIG_MISSING(API 주소 없음), NOT_READY(아직 API가 없는 기능), CALENDAR_CONNECT_FAILED(Google 화면을 열지 못함), RUN_TIMEOUT(실행 확인 시간 초과). 처리하지 못한 예외의 500 INTERNAL_ERROR에도 CORS 헤더가 붙어 브라우저가 문구를 읽을 수 있다.
+프론트만 쓰는 코드(서버는 주지 않는다, web/src/api/http.ts): NETWORK_ERROR(응답을 받지 못함), CONFIG_MISSING(API 주소 없음), NOT_READY(아직 API가 없는 기능), CALENDAR_CONNECT_FAILED(Google 화면을 열지 못함), RUN_TIMEOUT(실행 확인 시간 초과), DOWNLOAD_FAILED(받기 주소에서 파일을 받지 못함 — 저장소가 거절했거나 닿지 못함). 처리하지 못한 예외의 500 INTERNAL_ERROR에도 CORS 헤더가 붙어 브라우저가 문구를 읽을 수 있다.
 
 ## 14. 결정이 필요한 것
 

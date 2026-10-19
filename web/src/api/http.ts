@@ -4,7 +4,8 @@ import type { Run } from "@/types/api";
 // 실제 FastAPI 호출 (API 명세 1·2·13장). 화면은 이 파일을 직접 쓰지 않고 client.ts 함수만 쓴다.
 // code는 서버가 준 13장 코드를 그대로 쓴다. 서버에 닿지 못한 경우만 프론트 코드를 쓴다:
 // NETWORK_ERROR(서버 연결 실패), CONFIG_MISSING(API 주소 없음), NOT_READY(아직 API가 없는 기능),
-// CALENDAR_CONNECT_FAILED(Google 화면을 열지 못함), RUN_TIMEOUT(실행 확인 시간 초과)
+// CALENDAR_CONNECT_FAILED(Google 화면을 열지 못함), RUN_TIMEOUT(실행 확인 시간 초과),
+// DOWNLOAD_FAILED(받기 주소에서 파일을 받지 못함, documentsClient.ts)
 export class ApiError extends Error {
   constructor(
     public code: string,

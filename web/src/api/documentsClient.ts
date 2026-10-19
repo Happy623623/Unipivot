@@ -1,6 +1,6 @@
 import { ApiError, apiFetch, USE_MOCKS } from "@/api/http";
 import { rejectAfter, respond } from "@/api/mockClient";
-import { openDownload, saveTextFile } from "@/lib/saveFile";
+import { DownloadFailed, fetchDownload, saveTextFile } from "@/lib/saveFile";
 import { findMockDocument, mockDocumentPage, mockPdf } from "@/mocks/documents";
 import type { FileDownloadUrl, MyFileList } from "@/types/api";
 
@@ -16,16 +16,22 @@ export function getDocuments(cursor: string | null = null): Promise<MyFileList> 
   return apiFetch<MyFileList>(`/files?${query}`);
 }
 
-// 파일 하나를 내려받는다. 누를 때마다 5분짜리 받기 주소(GET /files/{id}/url)를 새로 받아 바로 연다 —
-// 주소는 그 자체로 열쇠라 들고 있지 않는다. 목 모드는 한 쪽짜리 예시 PDF를 같은 이름으로 준다
-export async function downloadDocument(fileId: string): Promise<void> {
+// 파일 하나를 `fileName`으로 내려받는다. 누를 때마다 5분짜리 받기 주소(GET /files/{id}/url)를 새로 받아 바로
+// 그 주소에서 파일을 받는다(fetch) — 주소는 그 자체로 열쇠라 들고 있지 않는다. 저장소가 파일을 주지 않으면
+// 프론트 코드 DOWNLOAD_FAILED(13장)로, 안내 문구는 그대로 화면에 간다. 목 모드는 한 쪽짜리 예시 PDF를 같은 이름으로 준다
+export async function downloadDocument(fileId: string, fileName: string): Promise<void> {
   if (USE_MOCKS) {
     const found = findMockDocument(fileId);
     if (!found) return rejectAfter(new ApiError("NOT_FOUND", "파일을 찾을 수 없어요.", 404));
     await respond(null);
-    saveTextFile(found.file_name, mockPdf(), "application/pdf");
+    saveTextFile(fileName, mockPdf(), "application/pdf");
     return;
   }
   const { url } = await apiFetch<FileDownloadUrl>(`/files/${encodeURIComponent(fileId)}/url`);
-  openDownload(url);
+  try {
+    await fetchDownload(url, fileName);
+  } catch (error) {
+    if (error instanceof DownloadFailed) throw new ApiError("DOWNLOAD_FAILED", error.message, 0);
+    throw error;
+  }
 }

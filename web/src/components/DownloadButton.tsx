@@ -10,15 +10,15 @@ interface DownloadButtonProps {
 
 const FAILED = "파일을 받지 못했어요. 잠시 후 다시 눌러 주세요.";
 
-// 문서함 파일 받기 (F-44). 누를 때마다 5분짜리 받기 주소를 새로 받아 바로 연다. 받는 동안은 눌러도 지나간다 —
-// disabled로 막으면 키보드 초점이 버튼에서 빠져 문서 맨 위로 튄다
+// 문서함 파일 받기 (F-44). 누를 때마다 5분짜리 받기 주소를 새로 받아 그 주소에서 파일을 받아 저장한다(화면은
+// 그대로). 받는 동안은 눌러도 지나간다 — disabled로 막으면 키보드 초점이 버튼에서 빠져 문서 맨 위로 튄다
 export default function DownloadButton({ fileId, fileName, onError, compact = false }: DownloadButtonProps) {
   const [busy, setBusy] = useState(false);
   const download = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      await downloadDocument(fileId);
+      await downloadDocument(fileId, fileName);
     } catch (error) {
       onError(errorMessage(error, FAILED));
     } finally {
