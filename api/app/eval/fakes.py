@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Any
+from urllib.parse import quote
 
 import http_ece
 import httpx
@@ -38,7 +39,7 @@ from app.lms.client import (
 from app.posters.prompt import SUBMIT
 from app.push.keys import b64u
 from app.syllabi.extract import SEMESTER_DAYS
-from app.uploads.storage import StorageError, SupabaseStorage
+from app.uploads.storage import SIGNED_SECONDS, StorageError, StorageMissing, SupabaseStorage
 from app.youth.regions import region_table
 
 _KST = timezone(timedelta(hours=9), "KST")
@@ -153,12 +154,14 @@ class RecordedPush:
 
 
 class RecordedStorage(SupabaseStorage):
-    """메모리에 담는 파일 저장소. 올린 파일을 그대로 내려준다."""
+    """메모리에 담는 파일 저장소. 올린 파일을 그대로 내려주고, 받기 주소(F-44)는 실제처럼 서명 경로 모양으로
+    만든다(열리지는 않는다 — 시나리오는 주소 모양과 만료만 본다)."""
 
     def __init__(self) -> None:
         super().__init__(base_url=f"{RECORDED}://storage", bucket="uploads", service_key=RECORDED)
         self.files: dict[str, bytes] = {}
         self.removed: list[str] = []
+        self.signed: list[tuple[str, str, int]] = []  # (경로, 받을 이름, 수명 초)
 
     async def upload(self, path: str, data: bytes, content_type: str) -> None:
         self.files[path] = data
@@ -171,6 +174,23 @@ class RecordedStorage(SupabaseStorage):
     async def remove(self, path: str) -> None:
         self.files.pop(path, None)
         self.removed.append(path)
+
+    async def signed_url(
+        self, path: str, *, download_name: str, seconds: int = SIGNED_SECONDS
+    ) -> str:
+        """실제 저장소처럼 없는 파일은 서명할 때 StorageMissing이다(저장소 설정이 맞으면 문서함 받기가 404,
+        시나리오 설정은 저장소 설정이 비어 있어 502다 — app/routers/files.py). 주소는 열쇠라(명세 6장) 시나리오의
+        check에 주소 자체를 넣지 않는다 — 모양만 본다."""
+        if path not in self.files:
+            raise StorageMissing(
+                "파일 저장소가 요청을 거절했어요(400, NoSuchKey: Object not found)."
+            )
+        self.signed.append((path, download_name, seconds))
+        token = secrets.token_urlsafe(16)
+        return (
+            f"{self.base_url}/object/sign/{self.bucket}/{quote(path, safe='/')}"
+            f"?token={token}&download={quote(download_name, safe='')}"
+        )
 
 
 class RecordedCalendar(GoogleCalendarClient):

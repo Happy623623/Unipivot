@@ -47,7 +47,7 @@ from app.llm import Blob, UserTurn
 from app.posters.prompt import SUBMIT
 from app.syllabi.extract import SEMESTER_DAYS
 from app.uploads import inspect_syllabus, pdf_text
-from app.uploads.storage import StorageError
+from app.uploads.storage import StorageError, StorageMissing
 
 pytestmark = pytest.mark.anyio
 
@@ -265,6 +265,24 @@ async def test_the_recorded_storage_gives_back_what_was_uploaded() -> None:
     assert storage.removed == ["u/poster/1.jpg"]
     with pytest.raises(StorageError):
         await storage.download("u/poster/1.jpg")
+
+
+async def test_the_recorded_storage_signs_a_download_link_like_the_real_one() -> None:
+    """문서함 받기(F-44)가 시나리오에서 돌 수 있게 서명 주소를 준다. 실제처럼 없는 파일은 서명할 때 거절이다."""
+    storage = RecordedStorage()
+    await storage.upload("u/lecture_material/f.pdf", b"%PDF-1.4", "application/pdf")
+    url = await storage.signed_url("u/lecture_material/f.pdf", download_name="3주차 예제 & 답.pdf")
+    assert url.startswith("recorded://storage/object/sign/uploads/u/lecture_material/f.pdf?token=")
+    assert url.endswith("&download=3%EC%A3%BC%EC%B0%A8%20%EC%98%88%EC%A0%9C%20%26%20%EB%8B%B5.pdf")
+    assert storage.signed == [("u/lecture_material/f.pdf", "3주차 예제 & 답.pdf", 300)]
+    again = await storage.signed_url(
+        "u/lecture_material/f.pdf", download_name="3주차 예제 & 답.pdf"
+    )
+    assert again != url  # 같은 파일·같은 이름이어도 부를 때마다 새 토큰이다(실제와 같다)
+    await storage.signed_url("u/lecture_material/f.pdf", download_name="a.pdf", seconds=60)
+    assert storage.signed[-1] == ("u/lecture_material/f.pdf", "a.pdf", 60)
+    with pytest.raises(StorageMissing):
+        await storage.signed_url("u/lecture_material/none.pdf", download_name="x.pdf")
 
 
 async def test_the_recorded_calendar_keeps_one_event_per_number() -> None:
