@@ -10,6 +10,10 @@
 | 알림 발송 | 5분 | **바로 한 번** 돈다(서버가 꺼져 있던 동안 밀린 알림을 바로 보낸다) |
 | LMS 동기화 | 30분 | 안 돈다(첫 30분은 기다린다) |
 | 공고 알림 예약 | 하루 한 번 KST 08:30 | 안 돈다 |
+| 청년정책 수집 | 하루 한 번 KST 04:00 | 안 돈다. `YOUTH_API_KEY`가 없으면 목록에 넣지 않는다 |
+
+청년정책 수집이 **04:00**인 것은 예약(08:30) 전에 끝나 그날 새 정책이 그날 예약에 들어가게 하려는
+것이다. 처음 넣을 때 1~3분 걸리는 일이라 새벽에 둔다(온통청년 호출 600번 상한).
 
 지키는 것:
 - **일 하나가 터져도 로그만 남기고 다음 차례에 다시 돈다.** 한 번 실패로 스케줄러가 죽지 않는다
@@ -29,18 +33,20 @@ from typing import Any
 
 from app.clock import current_time
 from app.eligibility import KST
-from app.jobs import lms_sync, schedule_notifications, send_notifications
+from app.jobs import fetch_policies_fresh, lms_sync, schedule_notifications, send_notifications
 from app.llm.deps import llm_for
 from app.lms.sync import lms_sync_service_for
 from app.push.deps import push_sender_for
 from app.repositories.notifications import NotificationRepository
 from app.repositories.push import PushRepository
+from app.youth.client import YouthPolicyClient
 
 logger = logging.getLogger(__name__)
 
 SEND_EVERY = timedelta(minutes=5)
 LMS_EVERY = timedelta(minutes=30)
 SCHEDULE_AT = time(8, 30)  # KST. 알림 시각(09:00)보다 앞이어야 한다
+FETCH_AT = time(4, 0)  # KST. 예약(08:30) 전에 끝나야 그날 새 정책이 예약에 들어간다
 
 
 @dataclass(frozen=True)
@@ -150,8 +156,23 @@ def app_jobs(app: Any, *, now: Callable[[], datetime] = current_time) -> list[Jo
         )
         return await lms_sync(service, now=now())
 
-    return [
+    async def fetch() -> Any:
+        settings = state.settings
+        return await fetch_policies_fresh(
+            database_url=settings.database_url,
+            api_key=settings.youth_api_key,
+            log_connect=state.log_pool.connection,
+            make_client=YouthPolicyClient,
+            today=now().astimezone(KST).date(),
+        )
+
+    jobs = [
         Job(name="알림 발송", run=send, every=SEND_EVERY, at_start=True),
         Job(name="LMS 동기화", run=sync, every=LMS_EVERY),
         Job(name="공고 알림 예약", run=schedule, daily_at=SCHEDULE_AT),
     ]
+    if state.settings.youth_api_key.strip():
+        jobs.append(Job(name="청년정책 수집", run=fetch, daily_at=FETCH_AT))
+    else:
+        logger.warning("청년정책 수집은 YOUTH_API_KEY가 없어 돌리지 않아요(api/.env)")
+    return jobs

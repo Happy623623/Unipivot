@@ -22,6 +22,8 @@
 >
 > v0.4 보강(10/13, 청년정책): 처리 과정 단계 이름 2개, 청년정책 판정 기준일, fetch-policies는 배포 때
 >
+> v0.4 보강(10/19, 청년정책 정기 수집): `POST /internal/jobs/fetch-policies`가 생겼다(명령과 같은 함수, 응답 모양은 12장). 서버 안 스케줄러가 매일 KST 04:00에 돌린다
+>
 > v0.4 보강(10/13, 시·군·구 선택): 프로필 region_sigungu 값
 >
 > v0.4 보강(10/13, 관심 공고): PUT·DELETE /opportunities/{id}/mark, 피드 include_not_interested, my_mark, counts에서 관심 없음 공고 제외, 알림 규칙
@@ -1330,7 +1332,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | 경로 | 호출 주체 | 설명 |
 | --- | --- | --- |
 | `POST /internal/jobs/crawl-notices` | 스케줄러 | 학교 공지 수집 → 요건 추출 → 전체 판정 |
-| `POST /internal/jobs/fetch-policies` | 스케줄러 | 온통청년 정책 수집 (담당 Dev 2). 지금은 사람이 `python -m app.youth.cli fetch`로 돌린다. 배포 때 같은 수집 함수(`app/youth/importer.collect`)를 부른다 |
+| `POST /internal/jobs/fetch-policies` | 스케줄러(매일) | 온통청년 정책 수집(F-11). 명령 `python -m app.youth.cli fetch`와 **같은 함수**(`app/youth/importer.collect`)를 부른다. 정책마다 트랜잭션이라 중간에 멈춰도 넣은 정책은 남고, 다시 돌리면 같은 정책은 건너뛴다. 처음 넣을 때는 1~3분 걸린다. 응답은 `{run_id, fetched, total, complete, stopped, new, updated, unchanged, expired, hidden, skipped, gone_kept}`다 — `fetched`는 받은 정책 수, `total`은 온통청년이 말한 전체 수, `complete`가 false면 빠짐없이 받지 못해 목록에서 사라진 정책을 숨기지 않은 것, `skipped`는 범위 밖(마감·수도권 밖 등)이라 가져오지 않은 수, `gone_kept`는 한 번에 너무 많이 사라져 숨기지 않고 둔 수다. `YOUTH_API_KEY`가 비었거나 온통청년이 막히면 502 `YOUTH_API_ERROR`다 |
 | `POST /internal/jobs/crawl-contests` | 스케줄러 | 공모전 수집 (P1) |
 | `POST /internal/jobs/lms-sync` | 스케줄러(30분) | LMS 연결된 사용자의 과목·과제 동기화(F-51). 오래 안 한 사람부터 한 번에 50명까지 보고, 최근 5분 안에 동기화를 시작한 사람은 건너뛴다. 한 사람이 실패해도 다음 사람을 계속하고(실패는 그 사람의 실행 기록에 남는다), 토큰이 막힌 사람만 연결을 `error`로 바꾼다. 응답은 `{users, synced, failed, skipped, new_assignments, due_changed, submitted}`이고 `skipped`는 그새 대시보드가 동기화를 시작했거나 연결이 사라진 사람 수다 |
 | `POST /internal/jobs/schedule-notifications` | 스케줄러(매일) | 공고 알림 예약(새 적격·마감 임박 D-3·D-1·정보 필요). 사용자당 `dedupe_key` 1행으로 upsert하고, 마감이 바뀌면 아직 보내지 않은 행의 시각만 고치며, 보낼 이유가 없어진 pending 행은 지운다. 응답은 `{created, rescheduled, removed, by_type}` |
@@ -1350,8 +1352,10 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | 알림 발송 | 5분 | 바로 한 번 돈다(꺼져 있던 동안 밀린 알림을 보낸다) |
 | LMS 동기화 | 30분 | 안 돈다 |
 | 공고 알림 예약 | 하루 한 번 KST 08:30 | 안 돈다 |
+| 청년정책 수집 | 하루 한 번 KST 04:00 | 안 돈다. `YOUTH_API_KEY`가 없으면 목록에 넣지 않는다(경고 한 줄) |
 
 - 예약이 **KST 08:30**인 것은 알림 시각이 09:00이고 지난 시각은 만들지 않기 때문이다(PRD F-33)
+- 청년정책 수집이 **KST 04:00**인 것은 예약(08:30) 전에 끝나 그날 새 정책이 그날 예약에 들어가게 하려는 것이다
 - 작업 하나가 실패해도 로그만 남기고 다음 차례에 다시 돈다. 주기보다 오래 걸려도 겹쳐 돌지 않는다
 - **바깥 크론과 같이 켜지 않는다.** 바깥에서 부르려면 이 값을 꺼 둔다
 - **워커는 하나여야 한다.** 여러 프로세스로 띄우면 같은 일이 여러 번 돈다

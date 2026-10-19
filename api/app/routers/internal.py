@@ -5,6 +5,7 @@
 - `POST /internal/jobs/lms-sync` LMS 연결된 사용자 동기화(30분마다)
 - `POST /internal/jobs/schedule-notifications` 공고 알림 예약(하루 한 번)
 - `POST /internal/jobs/send-notifications` 예약된 알림 발송(5분마다)
+- `POST /internal/jobs/fetch-policies` 온통청년 정책 수집(하루 한 번)
 
 키가 틀렸을 때와 서버에 키가 없을 때 모두 403이다. 부른 쪽에 서버 설정 상태를 알려 주지 않는다.
 키 값은 응답·로그에 남기지 않는다.
@@ -18,8 +19,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, Query
 
 from app import jobs
+from app.agent_log import LogConnect
 from app.clock import NowDep
 from app.config import Settings, get_settings
+from app.db import get_log_connect
 from app.eligibility import KST
 from app.errors import ApiError
 from app.lms.sync import LmsSyncServiceDep
@@ -37,6 +40,8 @@ from app.schemas.metrics import (
     Metrics,
 )
 from app.schemas.notifications import ScheduleResult, SendResult
+from app.schemas.youth import FetchPoliciesResult
+from app.youth.deps import YouthClientFactoryDep
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/internal", tags=["내부"])
@@ -110,6 +115,27 @@ async def send_notifications(
 ) -> SendResult:
     """보낼 때가 된 알림을 보낸다(알림함 → 푸시). 5분마다 도는 작업이다."""
     return await jobs.send_notifications(repo, push_repo, sender, now=now)
+
+
+@router.post("/jobs/fetch-policies", response_model=FetchPoliciesResult)
+async def fetch_policies(
+    settings: Annotated[Settings, Depends(get_settings)],
+    log_connect: Annotated[LogConnect, Depends(get_log_connect)],
+    make_client: YouthClientFactoryDep,
+    now: NowDep,
+    _: InternalKeyDep,
+) -> FetchPoliciesResult:
+    """온통청년 정책을 받아 공고로 넣는다(F-11). 하루 한 번 도는 작업이다.
+
+    명령 `python -m app.youth.cli fetch`와 같은 함수를 부른다. 처음 넣을 때는 1~3분 걸린다.
+    """
+    return await jobs.fetch_policies_fresh(
+        database_url=settings.database_url,
+        api_key=settings.youth_api_key,
+        log_connect=log_connect,
+        make_client=make_client,
+        today=now.astimezone(KST).date(),
+    )
 
 
 @router.post("/eval/run", response_model=EvalRunResult)

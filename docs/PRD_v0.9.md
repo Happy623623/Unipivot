@@ -305,7 +305,7 @@ flowchart LR
 | 트리거 | 에이전트 작업 | 호출 도구 |
 | --- | --- | --- |
 | 공지 가져오기(사람이 실행, A안) | 저장한 공지 확인 → 새 글·수정된 글만 요건 추출 에이전트 → 전체 사용자 판정 | 공지 가져오기(app/crawl), 요건 추출 에이전트 도구, check_eligibility |
-| 청년정책 수집(지금은 사람이 실행, 정기 실행은 배포 때) | 정책 목록 받기 → 가져올 정책을 골라 온통청년 칸으로 요건 만들기(코드) → 판정은 피드를 읽을 때 | fetch_youth_policies, build_youth_requirements |
+| 청년정책 수집(매일 KST 04:00, 서버 안 스케줄러. 명령으로도 돌린다) | 정책 목록 받기 → 가져올 정책을 골라 온통청년 칸으로 요건 만들기(코드) → 판정은 피드를 읽을 때 | fetch_youth_policies, build_youth_requirements |
 | 포스터 업로드 | 이미지 → 공고 생성 → 판정 | extract_from_image, extract_requirements, check_eligibility |
 | 준비하기 버튼 | 서류 안내 → 역산 일정 → 마감일 등록 | get_document_guide, build_prep_plan, create_calendar_event |
 | 강의계획서 업로드 | 일정 추출 → 확인 → 등록 | parse_syllabus, create_calendar_event |
@@ -447,7 +447,7 @@ P0 18개, P1 5개다. v0.8 번호는 대조용으로 남긴다.
 | 프론트 | Next.js | 대시보드·플래너 UI, 서비스 워커로 웹 푸시, 배포 간편 |
 | 백엔드 | FastAPI (Python) | 에이전트 루프, 크롤러, PDF 파싱, LLM SDK 모두 Python 생태계가 유리 |
 | DB · 인증 · 스토리지 | Supabase | Postgres + Google OAuth + 파일 저장, RLS로 개인정보 접근 제어, 필요 시 pgvector |
-| 스케줄러 | **FastAPI 안 스케줄러**(`SCHEDULER_ENABLED`, `app/scheduler.py`) | 알림 발송(5분)·LMS 동기화(30분)·공고 알림 예약(KST 08:30)을 서버가 직접 돈다. 10/18 결정 — 바깥 크론(GitHub Actions·Supabase pg_cron)은 공개 주소가 있어야 해서 배포 뒤에 다시 본다. `POST /internal/jobs/*`와 **같은 함수**를 부르고, 둘을 같이 켜지 않는다. 워커는 하나로 둔다 |
+| 스케줄러 | **FastAPI 안 스케줄러**(`SCHEDULER_ENABLED`, `app/scheduler.py`) | 알림 발송(5분)·LMS 동기화(30분)·공고 알림 예약(KST 08:30)·청년정책 수집(KST 04:00)을 서버가 직접 돈다. 10/18 결정 — 바깥 크론(GitHub Actions·Supabase pg_cron)은 공개 주소가 있어야 해서 배포 뒤에 다시 본다. `POST /internal/jobs/*`와 **같은 함수**를 부르고, 둘을 같이 켜지 않는다. 워커는 하나로 둔다 |
 | 크롤링 | requests + BeautifulSoup, 필요 시 Playwright | JS 렌더링 페이지만 Playwright |
 | 문서 처리 | PDF·HWPX·HWP 텍스트 추출, 이미지와 글자 없는 스캔본만 Vision | LLM 비용 절감. 구형 HWP 변환 방법은 장학 공지 30건 샘플로 확인해 정한다 |
 | ICS 처리 | Python icalendar 라이브러리 등 | .ics 내려받기 파일 생성 |
@@ -549,7 +549,7 @@ LLM이 필요 없는 연동은 Dev 2가 맡는다. Dev 1은 정확도 지표가 
 - [ ] 취업 상태를 프로필에 둘지 — 청년정책 410건 중 77건에 취업 상태 조건이 있다. 지금은 원문 확인 필요 (10/13)
 - [ ] 청년정책 서술형 자격(추가 자격·참여 제한)을 요건 추출 에이전트로 요건화할지(F-11b) — 지금은 글 그대로 원문 확인이고 서류 목록도 없다 (10/13)
 - [ ] 2026-07 행정구역 개편 반영 — 프로필 시·군·구 목록에는 인천 제물포·영종·서해·검단구와 화성시 구가 들어갔고(10/13), 판정 엔진·프로필 시·도에 전남광주통합특별시를 넣었다(10/14, ENGINE_VERSION 4). 남은 것: 옛 이름(인천 서구·중구·동구)이 저장된 프로필은 원문 확인으로 (10/13)
-- [ ] 청년정책 정기 수집 — /internal/jobs/fetch-policies와 스케줄러, 배포 때 (10/13)
+- [x] 청년정책 정기 수집 — `POST /internal/jobs/fetch-policies`와 서버 안 스케줄러(매일 KST 04:00)로 넣었다 (10/19). `YOUTH_API_KEY`가 있는 서버에서만 돈다
 - [ ] "대학 재학"만 고른 청년정책 — 지금은 학적만 봐서 대학원생도 지원 가능이다 (10/13)
 - [x] 판정 세부 규칙 — 병역 연장 상한, 평점 만점이 다를 때 → `docs/판정엔진_규칙.md` 0장에서 확정
 - [ ] ERICA 성적 백분위 환산식 (국가장학 "B학점(백분위 80)" 판정용)
