@@ -28,7 +28,8 @@ class Settings(BaseSettings):
     extraction_max_reads: int = 4  # 요건 추출 읽기 도구 상한(PRD 14장 미결, W2–3에 확정)
     extraction_max_tokens: int = 150_000
     youth_api_key: str = ""  # 온통청년 OPEN API 인증키(청년정책 수집, app/youth)
-    # 포스터·계획서 업로드 파일을 두는 Supabase Storage(F-13). 버킷은 대시보드에서 비공개로 만든다
+    # 포스터·계획서 업로드(F-13)와 공지 첨부(F-54) 파일을 두는 Supabase Storage. 버킷은 대시보드에서
+    # 비공개로 만든다. 키는 API Keys의 secret key(sb_secret_…)다. 이름은 예전 service_role 키 시절 그대로 둔다
     supabase_service_role_key: str = ""
     supabase_storage_bucket: str = "uploads"
     # 마감일 캘린더 등록(F-32). Supabase Google 로그인에 쓰는 OAuth 앱의 값과 같아야 한다.

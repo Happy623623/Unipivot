@@ -1,10 +1,10 @@
 """로그에서 토큰을 가린다 (PRD 7장 토큰 보안). 앱을 만들 때 install_log_redaction()을 한 번 부른다.
 
 가리는 것: Authorization 헤더, Bearer 토큰, token=… 값, JWT, Google access·refresh token,
-LearningX(Canvas) 개인 액세스 토큰, Fernet 암호문, Anthropic·Google API 키, 주소에 붙은 API 키
-(온통청년 apiKeyNm=… 등), 공지 첨부 주소의 열쇠(Canvas `verifier=…`, 파일 저장소 서명
-`X-Amz-Signature=…`·`X-Amz-Credential=…`). 요청 주소처럼 문자열이 아닌 인자도 문자열로 바꿔 보고
-가릴 것이 있으면 가린다.
+LearningX(Canvas) 개인 액세스 토큰, Fernet 암호문, Anthropic·Google API 키, Supabase secret key
+(`sb_secret_…`), 주소에 붙은 API 키(온통청년 apiKeyNm=… 등), 공지 첨부 주소의 열쇠(Canvas
+`verifier=…`, 파일 저장소 서명 `X-Amz-Signature=…`·`X-Amz-Credential=…`). 요청 주소처럼 문자열이
+아닌 인자도 문자열로 바꿔 보고 가릴 것이 있으면 가린다.
 """
 
 import logging
@@ -31,6 +31,8 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"gAAAAA[A-Za-z0-9_=-]{20,}"), _REDACTED),
     (re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}"), _REDACTED),
     (re.compile(r"AIza[0-9A-Za-z_-]{35}"), _REDACTED),
+    # Supabase secret key(파일 저장소 키, F-13·F-54). publishable key는 공개용이라 두지 않는다
+    (re.compile(r"sb_secret_[A-Za-z0-9_-]{8,}"), _REDACTED),
     # 주소에 붙은 키: apiKeyNm=…, api_key=…, x_api_key=…, serviceKey=…
     (
         re.compile(r"(?i)(?<![A-Za-z0-9])((?:apiKeyNm|api_?key|service_?key)=)[^&\s'\"]+"),

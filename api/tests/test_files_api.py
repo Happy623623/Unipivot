@@ -71,8 +71,11 @@ class FakeStorage:
 
     async def upload(self, path: str, data: bytes, content_type: str) -> None:
         self.open_while_uploading.append(self.repo.open)
-        if self.broken:
-            raise StorageError("거절")
+        if self.broken:  # 실제 거절 문구처럼 Supabase의 이유가 붙어 있다(로그용)
+            raise StorageError(
+                "파일 저장소가 요청을 거절했어요(400, AccessDenied: new row violates row-level"
+                " security policy)."
+            )
         self.objects[path] = (data, content_type)
 
     async def remove(self, path: str) -> None:
@@ -308,6 +311,12 @@ def test_a_storage_refusal_leaves_no_record(
     response = upload(client)
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "STORAGE_API_ERROR"
+    # 저장소가 준 이유는 로그에만 남고 응답은 정해 둔 문구다
+    assert (
+        response.json()["error"]["message"]
+        == "파일을 저장하지 못했어요. 잠시 후 다시 시도해 주세요."
+    )
+    assert "AccessDenied" not in response.text
     assert not files_repo.rows
 
 

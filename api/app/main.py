@@ -30,6 +30,7 @@ from app.routers import (
     syllabi,
 )
 from app.scheduler import Scheduler, app_jobs
+from app.uploads.storage import storage_settings_problem
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if problem := auth_settings_problem(settings):
         logger.warning("로그인 설정 확인: %s", problem)
     # 파일 업로드(F-13)·공지 첨부 저장(F-54)은 Supabase Storage가 있어야 한다. 비었으면 첫 업로드에서
-    # 502가 나고, 동기화는 공지 첨부를 받지 않는다
-    if not settings.supabase_service_role_key or not settings.storage_base_url:
-        logger.warning(
-            "파일 저장소 설정 확인: SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL이 있어야 포스터를 올리고"
-            " 공지 첨부를 저장할 수 있어요"
-        )
+    # 502가 나고, 동기화는 공지 첨부를 받지 않는다. 키 모양이 틀렸으면(publishable key 등) 올릴 때마다
+    # 거절된다
+    if problem := storage_settings_problem(settings):
+        logger.warning("파일 저장소 설정 확인: %s", problem)
     app.state.pool = app.state.log_pool = None
     if settings.database_url:
         app.state.pool, app.state.log_pool = create_pools(settings.database_url)

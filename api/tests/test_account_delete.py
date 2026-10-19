@@ -47,8 +47,10 @@ class FakeStorage(SupabaseStorage):
         self.fail_on = fail_on
 
     async def remove(self, path: str) -> None:
-        if path == self.fail_on:
-            raise StorageError("파일 저장소가 요청을 거절했어요(503).")
+        if path == self.fail_on:  # 실제 거절 문구처럼 Supabase의 이유가 붙어 있다(로그용)
+            raise StorageError(
+                "파일 저장소가 요청을 거절했어요(400, AccessDenied: Invalid Compact JWS)."
+            )
         self.removed.append(path)
 
 
@@ -132,6 +134,7 @@ def test_a_file_that_cannot_be_removed_stops_everything(
         assert response.status_code == 502
         assert response.json()["error"]["code"] == "STORAGE_API_ERROR"
         assert "다시 시도" in response.json()["error"]["message"]
+        assert "AccessDenied" not in response.text  # 저장소가 준 이유는 로그에만 남는다
     assert world.storage.removed == PATHS[:1]  # 첫 파일은 지워졌다(다시 누르면 404라 지나간다)
     assert not revoke.called
     assert world.calendar.tokens_row is not None

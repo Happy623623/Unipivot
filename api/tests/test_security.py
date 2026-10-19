@@ -34,15 +34,18 @@ def test_redact_patterns() -> None:
         "secret123",
         "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv",
         "AIza" + "B" * 35,
+        "sb_secret_" + "Tq7" * 10 + "x",  # Supabase 파일 저장소 키(F-13·F-54)
     )
     text = (
         f"Authorization: Bearer {secrets[0]} google={secrets[1]} refresh={secrets[2]}"
         f" lms={secrets[3]} stored={secrets[4]} access_token={secrets[5]} key={secrets[6]}"
-        f" gemini={secrets[7]}"
+        f" gemini={secrets[7]} apikey: {secrets[8]}"
     )
     cleaned = redact(text)
     assert not [secret for secret in secrets if secret in cleaned]
     assert redact("input_tokens=1200, 장학금 3건") == "input_tokens=1200, 장학금 3건"
+    # publishable key는 브라우저에 두는 공개 값이라 가리지 않는다
+    assert redact("sb_publishable_Pk4Pk4Pk4Pk4") == "sb_publishable_Pk4Pk4Pk4Pk4"
     # LearningX 토큰은 접두 자릿수와 뒤 길이·글자가 제각각이다(명세 8장 예시는 짧다)
     for token in ("18742~xxxxxxxx", "18742~abc_def-ghi0000", "1234567~" + "a" * 30):
         assert token not in redact(f"lms={token}")
