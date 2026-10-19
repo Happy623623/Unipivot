@@ -1,13 +1,17 @@
 """탈퇴 (API 명세 4장 `DELETE /me`, F-06). 저장소·Google은 가짜·respx다. SQL은 test_account_delete_db.py가 본다.
 
 보는 것: 파일 → Google 권한 → 프로필 순서, 파일을 못 지우면 502로 멈추고 아무것도 안 바꾼다,
-파일이 없으면 저장소를 부르지 않는다, 캘린더 연결이 없으면 Google을 부르지 않는다, 두 번 눌러도 204.
+파일이 있는데 저장소 설정에 고칠 점이 있으면 지우기 전에 502로 멈춘다, 저장소가 아닌 곳의 404는 "이미
+없음"이 아니다, 파일이 없으면 저장소를 부르지 않는다(설정도 보지 않는다), 캘린더 연결이 없으면 Google을
+부르지 않는다, 두 번 눌러도 204.
 """
 
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import jwt
 import pytest
 import respx
 from fastapi.testclient import TestClient
@@ -26,6 +30,10 @@ ME = "/api/v1/me"
 REVOKE_URL = "https://oauth.test/revoke"
 NOW = datetime(2026, 10, 19, 0, 0, tzinfo=UTC)
 PATHS = [f"{USER_ID}/poster/one.png", f"{USER_ID}/syllabus/two.pdf"]
+PROJECT_URL = "https://abcdefghijklmnopqrst.supabase.co"
+SECRET = "sb_secret_" + "Tq7" * 10 + "x"  # 새 키 모양. 시험용 값이다
+PUBLISHABLE = "sb_publishable_" + "Pk4" * 10 + "y"
+ANON = jwt.encode({"iss": "supabase", "role": "anon"}, "x" * 32, algorithm="HS256")
 
 
 class FakeFileRepository:
@@ -73,13 +81,27 @@ class FakeCalendarRepository:
 
 class World:
     def __init__(
-        self, settings: Settings, *, paths: list[str], connected: bool, fail_on: str | None = None
+        self,
+        settings: Settings,
+        *,
+        paths: list[str],
+        connected: bool,
+        fail_on: str | None = None,
+        key: str = SECRET,
+        url: str = PROJECT_URL,
     ):
         self.profiles = FakeProfileRepository()
         self.files = FakeFileRepository(paths)
         self.storage = FakeStorage(fail_on=fail_on)
         self.calendar = FakeCalendarRepository(settings.token_encryption_key, connected=connected)
-        tuned = settings.model_copy(update={"google_revoke_url": REVOKE_URL})
+        # 저장소 설정(기본은 맞는 secret key). 고칠 점이 있으면 파일을 지우기 전에 멈춘다
+        tuned = settings.model_copy(
+            update={
+                "google_revoke_url": REVOKE_URL,
+                "supabase_url": url,
+                "supabase_service_role_key": key,
+            }
+        )
         app = create_app(tuned)
         app.dependency_overrides[get_settings] = lambda: tuned
         app.dependency_overrides[get_profile_repo] = lambda: self.profiles
@@ -142,11 +164,77 @@ def test_a_file_that_cannot_be_removed_stops_everything(
 
 
 @respx.mock
-def test_without_files_or_calendar_nothing_outside_is_called(
+@pytest.mark.parametrize(
+    ("key", "shown"),
+    [
+        (PUBLISHABLE, "publishable key가 들어 있어요"),
+        (ANON, "service_role 키가 아니에요"),
+        (SECRET[:16], "너무 짧아요"),  # 가려진 화면 글자만 옮겨 적었다
+        ("", "SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL이 있어야"),
+    ],
+    ids=["publishable", "anon", "short", "empty"],
+)
+def test_a_wrong_storage_key_stops_before_any_file_is_removed(
+    settings: Settings,
+    auth: dict[str, str],
+    caplog: pytest.LogCaptureFixture,
+    key: str,
+    shown: str,
+) -> None:
+    """publishable·anon 키로 지우면 저장소는 파일을 못 보고 "없는 파일"로 답한다. 지우기는 그 답을 "이미
+    지웠다"로 받아서, 그대로 가면 파일은 저장소에 남고 기록만 사라진다. 그래서 설정에 고칠 점이 있으면
+    (잘린 키·빈 설정도) 파일이 하나뿐이어도 저장소를 부르기 전에 502로 멈추고 이유를 로그에 남긴다."""
+    world = World(settings, paths=PATHS[:1], connected=True, key=key)
+    revoke = respx.post(REVOKE_URL).mock(return_value=httpx.Response(200, json={}))
+    for client in _signed_in(world):
+        response = client.delete(ME, headers=auth)
+        assert response.status_code == 502
+        error = response.json()["error"]
+        assert error["code"] == "STORAGE_API_ERROR"
+        # 파일을 못 지울 때와 같은 문구다. 무엇을 고칠지는 서버 로그에만 남는다
+        assert error["message"] == "파일을 지우지 못해 탈퇴를 멈췄어요. 잠시 후 다시 시도해 주세요."
+        assert shown not in response.text
+    assert world.storage.removed == []  # 저장소를 부르지 않았다
+    assert not revoke.called
+    assert world.calendar.tokens_row is not None
+    assert USER_ID in world.profiles.profiles
+    # 서버를 켤 때도 같은 경고가 뜨므로, 탈퇴가 남긴 줄만 본다. 운영에서 원인을 알 단서라 경고로 남긴다
+    stopped = [r for r in caplog.records if r.name == "app.account"]
+    assert len(stopped) == 1 and stopped[0].levelno == logging.WARNING
+    assert "탈퇴를 멈췄어요" in stopped[0].getMessage() and shown in stopped[0].getMessage()
+    if key:
+        assert key not in caplog.text  # 키 값은 남기지 않는다
+
+
+@respx.mock
+def test_a_404_that_is_not_from_the_storage_stops_everything(
     settings: Settings, auth: dict[str, str]
 ) -> None:
-    """파일 저장소 설정이 없는 로컬에서도 파일이 없으면 탈퇴가 된다."""
-    world = World(settings, paths=[], connected=False)
+    """주소에 경로가 붙으면(`….supabase.co/rest/v1`) 저장소가 아닌 곳이 `code` 없는 404로 답한다. 그것을
+    "이미 지웠다"로 받으면 파일이 남은 채 탈퇴가 끝난다. 지우기 실패로 보고 첫 파일에서 502로 멈춘다."""
+    world = World(settings, paths=PATHS, connected=True, url=f"{PROJECT_URL}/rest/v1")
+    del world.app.dependency_overrides[get_storage]  # 실제 저장소 코드로 지운다
+    gateway = respx.delete(url__startswith=f"{PROJECT_URL}/rest/v1/storage/v1/object/").mock(
+        return_value=httpx.Response(404, json={"message": "no Route matched with those values"})
+    )
+    revoke = respx.post(REVOKE_URL).mock(return_value=httpx.Response(200, json={}))
+    for client in _signed_in(world):
+        response = client.delete(ME, headers=auth)
+        assert response.status_code == 502
+        assert response.json()["error"]["code"] == "STORAGE_API_ERROR"
+    assert gateway.call_count == 1  # 첫 파일에서 멈췄다
+    assert not revoke.called
+    assert world.calendar.tokens_row is not None
+    assert USER_ID in world.profiles.profiles
+
+
+@respx.mock
+@pytest.mark.parametrize("key", ["", PUBLISHABLE], ids=["no-settings", "publishable"])
+def test_without_files_or_calendar_nothing_outside_is_called(
+    settings: Settings, auth: dict[str, str], key: str
+) -> None:
+    """파일이 없으면 저장소를 부르지 않으니 설정도 보지 않는다. 저장소 설정이 없는 로컬에서도 탈퇴된다."""
+    world = World(settings, paths=[], connected=False, key=key)
     revoke = respx.post(REVOKE_URL).mock(return_value=httpx.Response(200, json={}))
     for client in _signed_in(world):
         assert client.delete(ME, headers=auth).status_code == 204

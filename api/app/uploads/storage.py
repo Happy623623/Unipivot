@@ -5,7 +5,8 @@
 
 - 올리기: POST {base}/object/{bucket}/{path} (본문은 파일 바이트 그대로)
 - 받기: GET {base}/object/{bucket}/{path} (서버가 포스터를 모델에 넘길 때 쓴다)
-- 지우기: DELETE {base}/object/{bucket}/{path} (이미 없는 파일은 400 `NoSuchKey`로 온다 — 지나간다)
+- 지우기: DELETE {base}/object/{bucket}/{path} (이미 없는 파일은 400 `NoSuchKey`로 온다 — 지나간다.
+  `code` 없는 404는 저장소의 답이 아닐 수 있어 지나가지 않는다)
 - 받기 주소: POST {base}/object/sign/{bucket}/{path} → 5분짜리 서명 경로(문서함 받기, F-44)
 
 저장소 키(`SUPABASE_SERVICE_ROLE_KEY`)는 두 모양이 있고 싣는 곳이 다르다.
@@ -84,8 +85,9 @@ class SupabaseStorage:
         return body
 
     async def remove(self, path: str) -> None:
-        """올려 둔 파일을 지운다(되돌리기·탈퇴). 이미 없으면 그냥 지나간다 — 탈퇴를 다시 누르면 앞서
-        지운 파일부터 다시 지우기 때문이다."""
+        """올려 둔 파일을 지운다(되돌리기·탈퇴). 이미 없으면(`NoSuchKey`) 그냥 지나간다 — 탈퇴를 다시
+        누르면 앞서 지운 파일부터 다시 지우기 때문이다. 권한이 모자란 키(publishable 등)에도 저장소는 같은
+        "없는 파일"로 답해서, 탈퇴는 지우기 전에 `storage_settings_problem`을 본다(app/account.py)."""
         await self._send("DELETE", path, gone_is_ok=True)
 
     async def signed_url(
@@ -156,15 +158,14 @@ def _body(response: httpx.Response) -> dict[str, Any]:
 
 
 def _gone(response: httpx.Response) -> bool:
-    """지우려던 파일이 이미 없다. Supabase는 404가 아니라 400에 `code: NoSuchKey`로 답한다(10/19 실제).
+    """지우려던 파일이 이미 없다. 본문 `code`가 `NoSuchKey`일 때만이다. Supabase는 404가 아니라 400에
+    `code: NoSuchKey`로 답한다(10/19 실제). 나중에 제대로 된 상태 번호(404·410)로 와도 같은 `code`면 받는다.
 
-    버킷이 없을 때(`NoSuchBucket`)는 없는 것으로 보지 않는다. 버킷 이름이 틀렸는데 "지웠다"고 하면
+    `code`가 없는 404·410은 없는 것으로 보지 않는다. 주소가 틀려 저장소가 아닌 곳(API 게이트웨이·
+    PostgREST·웹 서버)이 답한 것일 수 있다. 버킷이 없을 때(`NoSuchBucket`)도 같다. 그때 "지웠다"고 하면
     탈퇴한 사람의 파일이 남는다.
     """
-    code = _body(response).get("code")
-    if response.status_code in (404, 410):
-        return code != "NoSuchBucket"
-    return response.status_code == 400 and code == "NoSuchKey"
+    return response.status_code in (400, 404, 410) and _missing(response)
 
 
 def _missing(response: httpx.Response) -> bool:
@@ -207,7 +208,8 @@ def _reason(response: httpx.Response, key: str) -> str:
 
 
 def storage_settings_problem(settings: Settings) -> str | None:
-    """파일 저장소 설정에서 고칠 점. 없으면 None이다. 앱을 시작할 때 본다.
+    """파일 저장소 설정에서 고칠 점. 없으면 None이다. 앱을 시작할 때 보고, 저장소의 "없는 파일" 답을
+    믿기 전에도 본다(받기 주소의 404, 탈퇴의 지우기).
 
     키 값은 보여 주지 않고 모양만 본다. 프로젝트 ID나 publishable key를 넣으면 올릴 때마다 400으로
     거절되는데, 그때는 원인이 잘 안 보인다(10/19에 둘 다 겪었다). 어떤 값이 와도 예외를 내지 않는다 —

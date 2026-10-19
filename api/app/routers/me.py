@@ -1,10 +1,14 @@
-from fastapi import APIRouter, Response
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Response
 from pydantic import ValidationError
 
 from app.account import delete_account
 from app.auth import CurrentUserDep
 from app.calendar.service import CalendarServiceDep
 from app.clock import NowDep
+from app.config import Settings as AppSettings  # 아래 Settings는 알림 설정 응답 모델이다
+from app.config import get_settings
 from app.errors import ApiError
 from app.repositories.files import FileRepoDep
 from app.repositories.meta import MetaRepoDep
@@ -196,12 +200,19 @@ async def delete_me(
     storage: StorageDep,
     calendar: CalendarServiceDep,
     profiles: ProfileRepoDep,
+    settings: Annotated[AppSettings, Depends(get_settings)],
 ) -> Response:
     """탈퇴 (API 4장, F-06). 파일 → Google 권한 → profiles 순으로 지운다(app/account.py).
 
-    파일을 지우지 못하면 502 `STORAGE_API_ERROR`로 멈추고 아무것도 바꾸지 않는다.
+    파일을 지우지 못하면 502 `STORAGE_API_ERROR`로 멈추고 아무것도 바꾸지 않는다. 파일이 있는데
+    저장소 설정에 고칠 점이 있으면 지우기 전에 같은 502로 멈춘다.
     """
     await delete_account(
-        user.id, files=files, storage=storage, calendar=calendar, profiles=profiles
+        user.id,
+        files=files,
+        storage=storage,
+        calendar=calendar,
+        profiles=profiles,
+        settings=settings,
     )
     return Response(status_code=204)

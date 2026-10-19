@@ -73,6 +73,15 @@ NO_SUCH_BUCKET = {
     "message": "Bucket not found",
     "code": "NoSuchBucket",
 }
+# 주소가 틀려 저장소가 아닌 곳이 답한 404(흉내 낸 본문, 실측 아님). 경로가 붙은 SUPABASE_URL이면
+# 게이트웨이나 PostgREST가 답한다. 이것을 "이미 없음"으로 받으면 탈퇴가 파일을 남긴 채 끝난다
+NO_ROUTE = {"message": "no Route matched with those values"}
+POSTGREST_PATH = {
+    "code": "PGRST125",
+    "details": None,
+    "hint": None,
+    "message": "Invalid path specified in request URL",
+}
 
 
 def storage(**over: str) -> SupabaseStorage:
@@ -212,15 +221,16 @@ async def test_not_reaching_the_storage_is_a_storage_error() -> None:
 
 @pytest.mark.parametrize(
     ("status", "body"),
-    [(404, None), (410, None), (404, NO_SUCH_KEY), (400, NO_SUCH_KEY)],
-    ids=["404", "410", "404-no-such-key", "supabase-400-no-such-key"],
+    [(404, NO_SUCH_KEY), (400, NO_SUCH_KEY)],
+    ids=["404-no-such-key", "supabase-400-no-such-key"],
 )
 @respx.mock
 async def test_remove_passes_over_a_file_that_is_already_gone(
-    status: int, body: dict[str, str] | None
+    status: int, body: dict[str, str]
 ) -> None:
-    """탈퇴를 다시 누르면 앞서 지운 파일부터 다시 지운다. Supabase는 그때 400 `NoSuchKey`로 답한다."""
-    response = httpx.Response(status, json=body) if body else httpx.Response(status)
+    """탈퇴를 다시 누르면 앞서 지운 파일부터 다시 지운다. Supabase는 그때 400 `NoSuchKey`로 답한다.
+    나중에 404로 바뀌어도 같은 `code`면 지나간다."""
+    response = httpx.Response(status, json=body)
     respx.delete(OBJECT).mock(return_value=response)
     await storage(service_key=SECRET).remove(PATH)
 
@@ -232,14 +242,33 @@ async def test_remove_passes_over_a_file_that_is_already_gone(
         (400, NO_SUCH_BUCKET, "NoSuchBucket"),  # 버킷 이름이 틀렸다 — 지웠다고 하면 파일이 남는다
         (404, NO_SUCH_BUCKET, "NoSuchBucket"),
         (400, REFUSED, "Invalid Compact JWS"),  # 키 문제
+        # code 없는 404·410: 저장소가 아닌 곳의 답일 수 있다 — "지웠다"고 하면 파일이 남는다
+        (404, None, "(404)"),
+        (410, None, "(410)"),
+        (404, NO_ROUTE, "no Route matched"),
+        (404, POSTGREST_PATH, "PGRST125"),
+        (404, "<html><body>404 Not Found</body></html>", "(404)"),
     ],
-    ids=["500", "400-no-such-bucket", "404-no-such-bucket", "400-access-denied"],
+    ids=[
+        "500",
+        "400-no-such-bucket",
+        "404-no-such-bucket",
+        "400-access-denied",
+        "404",
+        "410",
+        "404-gateway",
+        "404-postgrest",
+        "404-html",
+    ],
 )
 @respx.mock
 async def test_remove_raises_on_anything_else(
-    status: int, body: dict[str, str] | None, shown: str
+    status: int, body: dict[str, str | None] | str | None, shown: str
 ) -> None:
-    response = httpx.Response(status, json=body) if body else httpx.Response(status)
+    if isinstance(body, str):
+        response = httpx.Response(status, text=body, headers={"Content-Type": "text/html"})
+    else:
+        response = httpx.Response(status, json=body) if body else httpx.Response(status)
     respx.delete(OBJECT).mock(return_value=response)
     with pytest.raises(StorageError) as caught:
         await storage(service_key=SECRET).remove(PATH)
