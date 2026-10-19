@@ -24,6 +24,8 @@
 >
 > v0.4 보강(10/19, 청년정책 정기 수집): `POST /internal/jobs/fetch-policies`가 생겼다(명령과 같은 함수, 응답 모양은 12장). 서버 안 스케줄러가 매일 KST 04:00에 돌린다
 >
+> v0.4 보강(10/19, 캘린더 연결 해제): `DELETE /auth/google/tokens`가 생겼다(F-06). Google 쪽 권한을 거두고 저장한 토큰을 지운다. 이미 넣은 일정은 캘린더에 그대로 둔다
+>
 > v0.4 보강(10/13, 시·군·구 선택): 프로필 region_sigungu 값
 >
 > v0.4 보강(10/13, 관심 공고): PUT·DELETE /opportunities/{id}/mark, 피드 include_not_interested, my_mark, counts에서 관심 없음 공고 제외, 알림 규칙
@@ -155,7 +157,7 @@ sequenceDiagram
 
 | 분류 | 메서드 · 경로 | 설명 | 기능 | 우선 |
 | --- | --- | --- | --- | --- |
-| 인증 | `POST /auth/google/tokens` | 캘린더를 연결할 때 Google 토큰 저장 (로그인 때는 부르지 않음) | F-01, F-32 | P0 |
+| 인증 | `POST /auth/google/tokens` · `DELETE /auth/google/tokens` | 캘린더를 연결할 때 Google 토큰 저장 (로그인 때는 부르지 않음) · 연결 해제 | F-01, F-32, F-06 | P0 |
 | 인증 | `GET /auth/hyin/start` · `GET /auth/hyin/callback` | HY-in 인증 | F-05 | P2 |
 | 내 정보 | `GET /me` | 내 계정·연동 상태 요약 | F-01 | P0 |
 | 내 정보 | `GET /me/profile` · `PATCH /me/profile` | 판정용 프로필 조회·수정(수정 시 재판정) | F-02–F-04 | P0 |
@@ -225,6 +227,15 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 ```
 
 에러: `GOOGLE_REFRESH_TOKEN_MISSING`(422, 재로그인 필요)
+
+### `DELETE /auth/google/tokens`
+
+`204`. 캘린더 연결을 해제한다(F-06). 설정의 "연결 해제"가 부른다.
+
+- **Google 쪽 권한도 거둔다**(`https://oauth2.googleapis.com/revoke`에 refresh token을 보낸다 — 그 승인 전체가 풀린다). 거두지 못해도(Google이 막힘) 저장한 토큰은 지운다. 못 거둔 권한은 학생이 Google 계정 설정에서 직접 거둘 수 있다. 이미 풀린 토큰(Google이 400)은 성공으로 본다
+- 저장한 토큰(`oauth_tokens`)을 지운다. 그 뒤 `GET /me`의 `calendar_connected`는 false이고, 캘린더가 필요한 API는 `409 CALENDAR_NOT_CONNECTED`(`not_connected`)다
+- **이미 넣은 일정은 학생의 캘린더에 그대로 둔다**(설정의 LMS 자동 등록을 끌 때와 같다). `calendar_events` 기록도 남겨서 다시 연결하면 그 일정을 그대로 다룬다
+- 연결이 없어도 `204`다(두 번 눌러도 같다). 설정의 `calendar_auto_lms`는 바꾸지 않는다 — 연결이 없는 동안 동기화는 캘린더만 건너뛴다
 
 ### `GET /auth/hyin/start` · `GET /auth/hyin/callback` (P1)
 

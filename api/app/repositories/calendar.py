@@ -112,6 +112,13 @@ class CalendarRepository:
             return None
         return GoogleTokens(row["access_token"], row["refresh_token"], row["expires_at"])
 
+    async def delete_tokens(self, user_id: str) -> bool:
+        """저장한 Google 토큰을 지운다(연결 해제). 지운 행이 있었으면 True다."""
+        cursor = await self.conn.execute(
+            "delete from oauth_tokens where user_id = %s and provider = 'google'", (user_id,)
+        )
+        return cursor.rowcount > 0
+
     async def save_access_token(self, user_id: str, encrypted: str, expires_in: int) -> None:
         """갱신한 access token. refresh token은 그대로 둔다(Google이 다시 주지 않는다)."""
         await self.conn.execute(

@@ -108,6 +108,11 @@ export function reconnectStoredCalendar(): Me {
   return meState;
 }
 
+export function disconnectStoredCalendar(): Me {
+  meState.calendar_connected = false;
+  return meState;
+}
+
 export function deleteStoredAccount(): void {
   meState.consented = false;
   consentGiven = false;

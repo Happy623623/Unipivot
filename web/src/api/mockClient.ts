@@ -14,6 +14,7 @@ import {
 import {
   connectStoredLms,
   deleteStoredAccount,
+  disconnectStoredCalendar,
   disconnectStoredLms,
   getStoredLmsConnection,
   getStoredMe,
@@ -119,6 +120,10 @@ export function getDepartments(): Promise<Department[]> {
 
 export function reconnectCalendar(): Promise<Me> {
   return respond(reconnectStoredCalendar());
+}
+
+export function disconnectCalendar(): Promise<Me> {
+  return respond(disconnectStoredCalendar());
 }
 
 export function getSettings(): Promise<Settings> {

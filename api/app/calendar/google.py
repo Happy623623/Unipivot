@@ -68,10 +68,17 @@ def assignment_title(course: str, assignment: str) -> str:
 
 class GoogleCalendarClient:
     def __init__(
-        self, *, api_base: str, token_url: str, client_id: str, client_secret: str
+        self,
+        *,
+        api_base: str,
+        token_url: str,
+        client_id: str,
+        client_secret: str,
+        revoke_url: str = "https://oauth2.googleapis.com/revoke",
     ) -> None:
         self.api_base = api_base.rstrip("/")
         self.token_url = token_url
+        self.revoke_url = revoke_url
         self.client_id = client_id
         self.client_secret = client_secret
 
@@ -102,6 +109,19 @@ class GoogleCalendarClient:
         if not token:
             raise GoogleCalendarError("캘린더 권한을 갱신하지 못했어요.", 401)
         return str(token), int(payload.get("expires_in") or 3600)
+
+    async def revoke(self, token: str) -> None:
+        """권한을 Google 쪽에서도 거둔다(연결 해제, F-06). refresh token을 주면 그 승인 전체가 풀린다.
+
+        이미 풀린 토큰이면 Google이 400을 주는데, 거두려던 것이 거둬진 상태라 성공으로 본다.
+        그 밖의 실패는 GoogleCalendarError로 올린다 — 부르는 쪽이 로그만 남기고 저장한 토큰을 지운다.
+        """
+        try:
+            await self._send("POST", self.revoke_url, data={"token": token})
+        except GoogleCalendarError as exc:
+            if exc.status == 400:
+                return
+            raise
 
     async def insert(
         self, access_token: str, *, event_id: str, title: str, ends_at: datetime

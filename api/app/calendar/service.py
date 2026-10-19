@@ -5,6 +5,7 @@ Google 연결(증분 승인)로 보낸다. Google이 거절하거나 닿지 못�
 토큰 값은 오류 문구·로그에 넣지 않는다.
 """
 
+import logging
 from datetime import datetime
 from typing import Annotated
 
@@ -15,6 +16,8 @@ from app.config import Settings, get_settings
 from app.crypto import decrypt, encrypt
 from app.errors import ApiError
 from app.repositories.calendar import CalendarRepoDep, CalendarRepository, GoogleTokens
+
+logger = logging.getLogger(__name__)
 
 NOT_CONNECTED = "Google 캘린더를 연결해 주세요."
 EXPIRED = "캘린더 권한이 만료됐어요. 다시 연결해 주세요."
@@ -45,6 +48,26 @@ class CalendarService:
         self.repo = repo
         self.client = client
         self.key = encryption_key
+
+    async def disconnect(self, user_id: str) -> bool:
+        """연결을 해제한다(F-06): Google 쪽 권한을 거두고(되는 만큼), 저장한 토큰을 지운다.
+
+        Google에 닿지 못해도 토큰은 지운다 — 우리 쪽에서는 그 순간부터 캘린더를 쓰지 않는다.
+        거두지 못한 권한은 학생이 Google 계정 설정에서 직접 거둘 수 있다. 이미 넣은 일정은
+        학생의 캘린더에 그대로 둔다(설정의 자동 등록을 끌 때와 같다). 연결이 없었으면 False다.
+        """
+        tokens = await self.repo.tokens(user_id)
+        if tokens is None:
+            return False
+        if tokens.refresh_token:
+            try:
+                await self.client.revoke(self._decrypt(tokens.refresh_token))
+            except ApiError:
+                # 복호화가 안 되는 토큰이다(키를 바꿨다). 거둘 수 없으니 지우기만 한다
+                logger.warning("캘린더 토큰을 읽지 못해 Google 쪽 권한은 거두지 못했어요")
+            except GoogleCalendarError as exc:
+                logger.warning("Google 쪽 권한을 거두지 못했어요(%s). 저장한 토큰은 지워요", exc)
+        return await self.repo.delete_tokens(user_id)
 
     async def access_token(self, user_id: str, now: datetime) -> str:
         """쓸 수 있는 access token. 만료가 가까우면 갱신해 저장한다."""
@@ -107,6 +130,7 @@ def get_calendar_service(
         token_url=settings.google_token_url,
         client_id=settings.google_oauth_client_id,
         client_secret=settings.google_oauth_client_secret,
+        revoke_url=settings.google_revoke_url,
     )
     return CalendarService(repo, client, settings.token_encryption_key)
 

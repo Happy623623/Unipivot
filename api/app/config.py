@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     google_oauth_client_secret: str = ""
     # 시험용으로만 바꾼다(가짜 Google로 E2E를 돌릴 때)
     google_token_url: str = "https://oauth2.googleapis.com/token"
+    google_revoke_url: str = "https://oauth2.googleapis.com/revoke"  # 연결 해제 때 권한 폐기(F-06)
     google_calendar_api_base: str = "https://www.googleapis.com/calendar/v3"
     # 비우면 SUPABASE_URL에서 만든다(https://<ref>.supabase.co/storage/v1)
     supabase_storage_base: str = ""

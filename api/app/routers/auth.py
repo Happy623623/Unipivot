@@ -1,8 +1,9 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
 from app.auth import CurrentUserDep
+from app.calendar.service import CalendarServiceDep
 from app.config import Settings, get_settings
 from app.crypto import encrypt
 from app.errors import ApiError
@@ -33,3 +34,13 @@ async def save_google_tokens(
         encrypt(body.provider_refresh_token, settings.token_encryption_key),
     )
     return GoogleTokensResponse(calendar_connected=True, scope="calendar.events")
+
+
+@router.delete("/google/tokens", status_code=204, response_class=Response)
+async def delete_google_tokens(user: CurrentUserDep, service: CalendarServiceDep) -> Response:
+    """캘린더 연결을 해제한다 (API 4장, F-06). Google 쪽 권한을 거두고 저장한 토큰을 지운다.
+
+    연결이 없어도 204다(두 번 눌러도 같다). 이미 넣은 일정은 학생의 캘린더에 그대로 둔다.
+    """
+    await service.disconnect(user.id)
+    return Response(status_code=204)

@@ -76,6 +76,14 @@ export async function reconnectCalendar(): Promise<Me> {
   return new Promise<Me>(() => {}); // 페이지가 Google로 넘어가므로 끝나지 않는다
 }
 
+// DELETE /auth/google/tokens (F-06). Google 쪽 권한을 거두고 저장한 토큰을 지운다. 이미 넣은 일정은
+// 캘린더에 그대로 남는다. 연결이 없어도 204라 두 번 눌러도 같다. 바뀐 내 정보는 다시 받는다
+export async function disconnectCalendar(): Promise<Me> {
+  if (USE_MOCKS) return mock.disconnectCalendar();
+  await apiFetch<void>("/auth/google/tokens", { method: "DELETE" });
+  return getMe();
+}
+
 // 설정 밖(공고 상세의 "캘린더에 넣기")에서 캘린더 권한을 받으러 갈 때. 끝나면 next로 돌아온다.
 // 목 모드는 Google로 가지 않고 그 자리에서 연결한 것으로 친다(부르는 쪽이 이어서 등록한다)
 export async function connectCalendar(next: string): Promise<void> {
