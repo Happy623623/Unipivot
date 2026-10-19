@@ -4,7 +4,8 @@
 LearningX(Canvas) 개인 액세스 토큰, Fernet 암호문, Anthropic·Google API 키, Supabase secret key
 (`sb_secret_…`), 주소에 붙은 API 키(온통청년 apiKeyNm=… 등), 공지 첨부 주소의 열쇠(Canvas
 `verifier=…`, 파일 저장소 서명 `X-Amz-Signature=…`·`X-Amz-Credential=…`). 요청 주소처럼 문자열이
-아닌 인자도 문자열로 바꿔 보고 가릴 것이 있으면 가린다.
+아닌 인자도 `str()`·`repr()`로 바꿔 보고 가릴 것이 있으면 가린다 — 예외를 `%r`로 찍는 로그가 많고,
+`repr()`에만 나오는 값(요청 주소·헤더를 든 예외)도 있다.
 """
 
 import logging
@@ -56,6 +57,29 @@ def redact(text: str) -> str:
     return text
 
 
+class _Redacted:
+    """가릴 것이 있던 인자의 자리. `%s`로 찍든 `%r`로 찍든 가린 글이 나온다(원래 값은 들고 있지 않는다).
+
+    예외 인자는 보통 `%r`로 찍는데(`logger.warning("실패: %r", exc)`), 어떤 예외는 `str()`에는 없는
+    값이 `repr()`에 나온다(주소·헤더가 든 인자). 그래서 둘을 따로 가려 둔다.
+    """
+
+    __slots__ = ("_shown", "_text")
+
+    def __init__(self, text: str, shown: str) -> None:
+        self._text = text
+        self._shown = shown
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __repr__(self) -> str:
+        return self._shown
+
+    def __format__(self, spec: str) -> str:
+        return format(self._text, spec)
+
+
 _installed = False
 
 
@@ -81,12 +105,18 @@ def install_log_redaction() -> None:
                     return _REDACTED if mask_all else redact(item)
                 if item is None or isinstance(item, int | float):
                     return item
-                try:
-                    text = str(item)  # httpx 요청 로그의 주소(httpx.URL) 같은 객체
+                try:  # httpx 요청 로그의 주소(httpx.URL) 같은 객체, `%r`로 찍는 예외
+                    text = str(item)
                 except Exception:
                     return item  # 문자열로 못 바꾸는 값은 로그 쪽이 알아서 처리한다(부른 곳을 멈추지 않는다)
-                cleaned = redact(text)
-                return cleaned if cleaned != text else item
+                try:
+                    shown = repr(item)
+                except Exception:
+                    shown = text  # repr만 깨진 값은 str로 찍은 것처럼 본다(가릴 것은 가린다)
+                cleaned, cleaned_shown = redact(text), redact(shown)
+                if cleaned == text and cleaned_shown == shown:
+                    return item
+                return _Redacted(cleaned, cleaned_shown)
 
             if isinstance(record.args, Mapping):
                 record.args = {key: clean(item) for key, item in record.args.items()}

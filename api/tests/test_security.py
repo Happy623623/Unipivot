@@ -109,6 +109,82 @@ def test_api_key_in_request_url_is_redacted(caplog: pytest.LogCaptureFixture) ->
     assert redact("rapikey=abc") == "rapikey=abc"  # 다른 낱말 속의 apikey는 아니다
 
 
+def test_a_secret_that_only_shows_in_repr_is_redacted(caplog: pytest.LogCaptureFixture) -> None:
+    """예외는 보통 `%r`로 찍는다. `str()`에는 없고 `repr()`에만 나오는 값(요청 주소를 든 예외)도 가린다."""
+    install_log_redaction()
+
+    class RequestFailed(Exception):
+        def __init__(self, url: str) -> None:
+            super().__init__("요청 실패")
+            self.url = url
+
+        def __repr__(self) -> str:
+            return f"RequestFailed(url={self.url!r})"
+
+    secret = "AKIAEXAMPLE0123"
+    error = RequestFailed(
+        f"https://s.example/f.pdf?X-Amz-Credential={secret}%2F2026&X-Amz-Expires=300"
+    )
+    logger = logging.getLogger("unipivot.test")
+    with caplog.at_level(logging.INFO, logger="unipivot.test"):
+        logger.warning("첨부 글자 추출 실패(%s): %r", "a.pdf", error)
+        logger.warning("같은 예외를 %%s로: %s", error)
+        logger.warning("이름 붙인 인자로: %(error)r", {"error": error})
+    assert secret not in caplog.text
+    assert (
+        "이름 붙인 인자로: RequestFailed(url='https://s.example/f.pdf?X-Amz-Credential=[REDACTED]"
+        in caplog.text
+    )
+    assert (
+        "RequestFailed(url='https://s.example/f.pdf?X-Amz-Credential=[REDACTED]&X-Amz-Expires=300')"
+        in caplog.text
+    )
+    assert "같은 예외를 %s로: 요청 실패" in caplog.text  # str()은 그대로다
+    record = caplog.records[0]
+    stand_in = record.args[1]
+    assert stand_in is not error  # 바꿔 넣은 자리다. str()·repr()·format()을 따로 낸다
+    assert str(stand_in) == "요청 실패"
+    assert "[REDACTED]" in repr(stand_in) and secret not in repr(stand_in)
+    assert f"{stand_in}" == "요청 실패" and format(stand_in, ">6") == " 요청 실패"
+    assert f"{stand_in!r}" == repr(stand_in)
+
+
+def test_an_argument_with_nothing_to_hide_is_passed_through_untouched(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """가릴 것이 없으면 인자 객체를 그대로 둔다(인자를 직접 꺼내 쓰는 포매터를 위해)."""
+    install_log_redaction()
+    url = httpx.URL("https://www.youthcenter.go.kr/go/ythip/getPlcy?pageNum=1")
+    error = ValueError("읽을 수 없는 값")
+    logger = logging.getLogger("unipivot.test")
+    with caplog.at_level(logging.INFO, logger="unipivot.test"):
+        logger.info("HTTP Request: %s %r", url, error)
+    assert caplog.records[0].args[0] is url
+    assert caplog.records[0].args[1] is error
+    assert "ValueError('읽을 수 없는 값')" in caplog.text
+
+
+def test_a_value_whose_repr_is_broken_is_still_redacted_by_str(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """repr()만 깨진 값은 str()로 찍은 것처럼 본다 — 전처럼 str()의 비밀은 가린다(회귀 방지)."""
+    install_log_redaction()
+
+    class BrokenRepr:
+        def __str__(self) -> str:
+            return f"Authorization: Bearer {JWT_LIKE}"
+
+        def __repr__(self) -> str:
+            raise RuntimeError("repr 없음")
+
+    logger = logging.getLogger("unipivot.test")
+    with caplog.at_level(logging.INFO, logger="unipivot.test"):
+        logger.info("값 %s", BrokenRepr())
+        logger.info("값 %r", BrokenRepr())
+    assert JWT_LIKE not in caplog.text
+    assert caplog.text.count("Authorization: Bearer [REDACTED]") == 2
+
+
 def test_log_argument_that_cannot_be_stringified_does_not_break_the_caller() -> None:
     """가릴 것을 찾으려고 인자를 문자열로 바꾸다 실패해도 로그를 부른 곳(요청 처리)은 멈추지 않는다."""
     install_log_redaction()
