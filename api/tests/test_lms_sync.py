@@ -55,6 +55,7 @@ from app.repositories.opportunities import Cursor
 from app.repositories.runs import get_run_repo
 from app.schemas.calendar import CalendarEventView
 from app.schemas.lms import (
+    AnnouncementAttachment,
     AssignmentCourse,
     AssignmentItem,
     CourseAnnouncement,
@@ -83,8 +84,10 @@ from tests.lms_samples import (
     MODULE_WITHOUT_ITEMS,
     RESEARCH_TITLE,
     RESEARCH_TOPIC_ID,
+    attachment,
 )
 from tests.prepare_fakes import FakeRunRepository, run_row
+from tests.test_lms_files import FakeFiles, FakeStorage
 
 SYNC = "/api/v1/lms/sync"
 ASSIGNMENTS = "/api/v1/lms/assignments"
@@ -238,6 +241,14 @@ class FakeLms:
                     category="schedule_change",
                     posted_at=NOW.astimezone(KST),
                     opportunity_id=None,
+                    attachments=[
+                        AnnouncementAttachment(
+                            name="자리 배치도.pdf",
+                            size_bytes=2048,
+                            status="saved",
+                            file_id="f-9",
+                        )
+                    ],
                 )
             ],
             syllabus_items=[
@@ -511,6 +522,20 @@ def log() -> FakeLogConnection:
 
 
 @pytest.fixture
+def storage(request: pytest.FixtureRequest) -> FakeStorage | None:
+    """파일 저장소(F-54). 기본은 설정이 없는 서버라 첨부를 받지 않는다.
+
+    받는 것을 보는 시험은 `@pytest.mark.parametrize("storage", ["on"], indirect=True)`로 켠다.
+    """
+    return FakeStorage() if getattr(request, "param", None) == "on" else None
+
+
+@pytest.fixture
+def attachment_files() -> FakeFiles:
+    return FakeFiles()
+
+
+@pytest.fixture
 def client(
     settings: Settings,
     lms: FakeLms,
@@ -519,6 +544,8 @@ def client(
     announcements_repo: FakeAnnouncements,
     llm: ScriptedLlm,
     log: FakeLogConnection,
+    storage: FakeStorage | None,
+    attachment_files: FakeFiles,
 ) -> Iterator[TestClient]:
     # 배치(`/internal/jobs/lms-sync`)를 부르려면 서비스 키가 있어야 한다
     settings = Settings(**{**settings.model_dump(), "internal_api_key": INTERNAL_KEY})
@@ -557,6 +584,8 @@ def client(
         repos=lambda conn: Repos(  # type: ignore[arg-type]
             lms=lms, notes=notes, calendar=calendar, announcements=announcements_repo
         ),
+        storage=storage,
+        files=lambda conn: attachment_files,  # type: ignore[arg-type,return-value]
     )
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_lms_sync_service] = lambda: service
@@ -1211,7 +1240,11 @@ def test_it_opens_a_course(client: TestClient, lms: FakeLms, settings: Settings)
         "category",
         "posted_at",
         "opportunity_id",
+        "attachments",  # F-54
     }
+    assert body["announcements"][0]["attachments"] == [
+        {"name": "자리 배치도.pdf", "size_bytes": 2048, "status": "saved", "file_id": "f-9"}
+    ]
     assert set(body["syllabus_items"][0]) == {
         "id",
         "item_type",
@@ -1682,6 +1715,118 @@ def test_the_result_counts_the_new_announcements(
     assert log.outputs()["save_lms_sync"]["new_announcements"] == 4
 
 
+# ── 공지 첨부 (F-54) ────────────────────────────────────────────────────────
+
+GUIDE_URL = attachment()["url"]
+GUIDE_STORE = "https://kr.object.storage.test/canvas/11637886/guide.json?X-Amz-Signature=sig"
+GUIDE_BODY = b'{"projects": []}'
+
+
+def _guide_route(canvas: respx.MockRouter) -> respx.Route:
+    """녹화한 흐름: 첨부 주소 → 302 → 파일 저장소 → 200."""
+    canvas.get(GUIDE_URL).mock(return_value=httpx.Response(302, headers={"Location": GUIDE_STORE}))
+    return canvas.get(GUIDE_STORE).mock(
+        return_value=httpx.Response(
+            200, content=GUIDE_BODY, headers={"Content-Type": "application/json"}
+        )
+    )
+
+
+def test_announcements_carry_their_attachment_list(
+    client: TestClient, announcements_repo: FakeAnnouncements
+) -> None:
+    """공지 저장에 첨부 목록이 같이 간다(과목 상세가 이름·크기를 보여 준다)."""
+    client.post(SYNC)
+    material = announcements_repo.saved[0][1][2]
+    assert [one.stored() for one in material.attachments] == [
+        {
+            "id": 11637886,
+            "name": "ERICA-projects-guide-v2.json",
+            "size": 86169,
+            "content_type": "application/json",
+        }
+    ]
+
+
+def test_without_a_file_store_no_attachment_is_fetched(
+    client: TestClient,
+    canvas: respx.MockRouter,
+    attachment_files: FakeFiles,
+    log: FakeLogConnection,
+) -> None:
+    """저장소 설정(SUPABASE_SERVICE_ROLE_KEY)이 없는 서버는 첨부를 받지 않는다. 동기화는 그대로다."""
+    route = _guide_route(canvas)
+    response = client.post(SYNC)
+    assert response.status_code == 202
+    assert not route.called and attachment_files.rows == {}
+    assert "save_lms_attachments" not in log.tools()
+
+
+@pytest.mark.parametrize("storage", ["on"], indirect=True)
+def test_a_sync_saves_the_attachments_into_my_files(
+    client: TestClient,
+    canvas: respx.MockRouter,
+    storage: FakeStorage,
+    attachment_files: FakeFiles,
+    log: FakeLogConnection,
+) -> None:
+    """동기화가 공지 첨부를 받아 내 문서함에 넣는다. 토큰은 첨부 주소로 가지 않는다."""
+    route = _guide_route(canvas)
+    client.post(SYNC)
+    assert route.called
+    for call in canvas.calls:
+        if "/files/" in str(call.request.url):
+            assert "authorization" not in call.request.headers
+    (row,) = attachment_files.rows.values()
+    assert (row["ref"], row["course_id"], row["original_name"]) == (
+        "11637886",
+        "course-db",
+        "ERICA-projects-guide-v2.json",
+    )
+    assert storage.objects[row["path"]] == (GUIDE_BODY, "application/json")
+    assert log.outputs()["save_lms_attachments"] == {"saved": 1, "failed": 0}
+    # 저장은 동기화 결과(GET /runs)를 바꾸지 않는다
+    assert "attachments" not in json.dumps(log.outputs()["save_lms_sync"])
+
+
+@pytest.mark.parametrize("storage", ["on"], indirect=True)
+def test_a_failed_attachment_does_not_fail_the_sync(
+    client: TestClient,
+    canvas: respx.MockRouter,
+    lms: FakeLms,
+    attachment_files: FakeFiles,
+    log: FakeLogConnection,
+) -> None:
+    """첨부를 못 받아도(로그인 화면으로 감) 동기화는 성공이고, 연결도 그대로다(토큰 문제가 아니다)."""
+    canvas.get(GUIDE_URL).mock(return_value=httpx.Response(302, headers={"Location": "/login"}))
+    client.post(SYNC)
+    assert attachment_files.rows == {}
+    assert log.outputs()["save_lms_attachments"] == {"saved": 0, "failed": 1}
+    assert lms.error is None and lms.synced_at is not None
+
+
+@pytest.mark.parametrize("storage", ["on"], indirect=True)
+def test_a_broken_file_table_does_not_fail_the_sync(
+    client: TestClient,
+    canvas: respx.MockRouter,
+    attachment_files: FakeFiles,
+    lms: FakeLms,
+    log: FakeLogConnection,
+) -> None:
+    """이미 저장한 첨부를 묻는 조회가 터져도 동기화는 성공이다(다음 동기화가 다시 본다)."""
+    _guide_route(canvas)
+
+    async def broken(user_id: str, refs: list[str]) -> set[str]:
+        raise RuntimeError("DB가 멈췄다")
+
+    attachment_files.lms_attachment_refs = broken  # type: ignore[method-assign]
+    response = client.post(SYNC)
+    assert response.status_code == 202
+    assert lms.error is None and attachment_files.rows == {}
+    # 동기화가 끝까지 갔다 — 마지막 단계(결과 저장)가 남았다(GET /runs가 이것으로 결과를 만든다)
+    assert "save_lms_sync" in log.outputs()
+
+
 def test_it_does_not_call_the_model_when_there_is_nothing_to_classify(
     client: TestClient, llm: ScriptedLlm
 ) -> None:
@@ -1914,3 +2059,19 @@ def test_the_service_gets_a_classifier_only_when_a_model_is_set(settings: Settin
     without_model = lms_sync_service_for(FakeState(), settings=settings, llm=None, runner=runner)
     assert with_model.announcer is not None
     assert without_model.announcer is None
+
+
+def test_the_service_gets_a_file_store_only_when_it_is_set(settings: Settings) -> None:
+    """저장소 설정이 있어야 공지 첨부를 받는다(F-54). 없으면 서버는 그대로 뜨고 첨부만 건너뛴다."""
+
+    class FakeState:
+        pool = log_pool = _FakePools()
+
+    runner = InlineRunner()
+    bare = lms_sync_service_for(FakeState(), settings=settings, llm=None, runner=runner)
+    assert bare.storage is None
+    configured = settings.model_copy(
+        update={"supabase_url": "https://ref.supabase.co", "supabase_service_role_key": "k"}
+    )
+    ready = lms_sync_service_for(FakeState(), settings=configured, llm=None, runner=runner)
+    assert ready.storage is not None and ready.storage.ready

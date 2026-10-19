@@ -49,6 +49,21 @@ def test_redact_patterns() -> None:
     assert redact("12~short") == "12~short"  # 토큰 모양이 아닌 글자는 그대로 둔다
 
 
+def test_attachment_keys_in_addresses_are_redacted() -> None:
+    """공지 첨부 주소(F-54): verifier와 저장소 서명은 그 자체로 열쇠다. 경로·다른 값은 남긴다."""
+    url = (
+        "https://lms.test/files/11637886/download?download_frd=1&verifier=Ab12Cd34Ef "
+        "→ https://kr.object.test/x.json?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+        "&X-Amz-Credential=AKIAEXAMPLE%2F20261019&x-amz-signature=0a1b2c3d&X-Amz-Expires=300"
+    )
+    cleaned = redact(url)
+    for secret in ("Ab12Cd34Ef", "AKIAEXAMPLE", "0a1b2c3d"):
+        assert secret not in cleaned
+    for kept in ("/files/11637886/download", "download_frd=1", "X-Amz-Expires=300"):
+        assert kept in cleaned
+    assert redact("unverifier=3") == "unverifier=3"  # 낱말 가운데는 건드리지 않는다
+
+
 def test_log_records_are_redacted(caplog: pytest.LogCaptureFixture) -> None:
     install_log_redaction()
     logger = logging.getLogger("unipivot.test")

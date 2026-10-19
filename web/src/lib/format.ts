@@ -126,3 +126,12 @@ export function formatRelativeTime(
   if (hours < 24) return `${hours}시간 전`;
   return `${Math.floor(hours / 24)}일 전`;
 }
+
+// 파일 크기 "84KB" · "1.2MB". 크기를 모르면 빈 글자다(공지 첨부, F-54)
+export function formatFileSize(bytes: number | null): string {
+  if (bytes === null) return "";
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
+  const megabytes = bytes / (1024 * 1024);
+  return `${megabytes < 10 ? megabytes.toFixed(1) : Math.round(megabytes)}MB`;
+}

@@ -7,16 +7,18 @@
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from psycopg.types.json import Jsonb
 
 from app.eligibility import KST
 from app.extraction.models import ExtractionResult, RequirementDraft
-from app.lms.announcements import CanvasAnnouncement
+from app.lms.announcements import CanvasAnnouncement, CanvasAttachment
 from app.lms.assignments import CanvasAssignment, assignments
 from app.lms.modules import CanvasModuleItem, module_items
 from app.repositories.announcements import AnnouncementRepository
+from app.repositories.files import FileRepository
 from app.repositories.lms import AssignmentChanges, LmsRepository, SavedAssignment
 from app.repositories.notifications import (
     AssignmentNotice,
@@ -27,6 +29,7 @@ from app.repositories.notifications import (
 from app.repositories.planner import PlannerRepository
 from app.repositories.runs import RunRepository
 from app.schemas.lms import SAVE_TOOL
+from app.uploads import MAX_BYTES
 from tests.db_world import DATABASE_URL, connect, make_user
 from tests.lms_samples import (
     DATABASE,
@@ -1135,6 +1138,9 @@ async def test_the_steps_have_korean_labels(world: dict[str, Any]) -> None:
     run_id = await _run_with(world, "fetch_lms_assignments", {"courses": 2})
     steps = await RunRepository(world["conn"]).steps(run_id)
     assert [(one.tool, one.label) for one in steps] == [("fetch_lms_assignments", "과제·제출 받기")]
+    saved = await _run_with(world, "save_lms_attachments", {"saved": 1, "failed": 0})
+    steps = await RunRepository(world["conn"]).steps(saved)
+    assert [(one.tool, one.label) for one in steps] == [("save_lms_attachments", "공지 첨부 저장")]
 
 
 # ── 주차 항목 (F-52) ────────────────────────────────────────────────────────
@@ -1886,14 +1892,26 @@ def _announcement(
     posted_at: Any = None,
     attachments: int = 0,
     section: bool = False,
+    files: tuple[CanvasAttachment, ...] = (),
 ) -> CanvasAnnouncement:
     return CanvasAnnouncement(
         canvas_topic_id=topic_id,
         title=title,
         message=message,
         posted_at=posted_at,
-        attachment_count=attachments,
+        attachment_count=attachments or len(files),
         is_section_specific=section,
+        attachments=files,
+    )
+
+
+def _file(number: int, name: str = "안내.pdf", *, size: int | None = 1024) -> CanvasAttachment:
+    return CanvasAttachment(
+        canvas_file_id=number,
+        name=name,
+        size=size,
+        content_type="application/pdf",
+        url=f"https://lms.test/files/{number}/download?download_frd=1&verifier=secret{number}",
     )
 
 
@@ -2201,6 +2219,180 @@ async def test_the_course_detail_shows_the_announcements(world: dict[str, Any]) 
         "자료를 올렸다",
     )
     assert detail.announcements[1].category is None  # 아직 분류 전
+
+
+# ── 공지 첨부 (F-54) ────────────────────────────────────────────────────────
+
+
+async def test_the_attachment_list_is_stored_without_addresses(world: dict[str, Any]) -> None:
+    """공지 표에 첨부 목록이 들어가고, 다시 받으면 바뀐 목록으로 맞춘다. 주소(verifier)는 없다."""
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+    await repo.save(
+        DATABASE["id"], [_announcement(7, posted_at=now, files=(_file(70), _file(71)))], now=now
+    )
+    await repo.save(
+        DATABASE["id"],
+        [_announcement(7, posted_at=now, files=(_file(71, "고친 안내.pdf"),))],
+        now=now,
+    )
+    row = await (
+        await conn.execute(
+            "select attachments, attachment_count, attachments::text as raw"
+            " from lms_announcements where canvas_topic_id = 7"
+        )
+    ).fetchone()
+    assert row["attachments"] == [
+        {"id": 71, "name": "고친 안내.pdf", "size": 1024, "content_type": "application/pdf"}
+    ]
+    assert row["attachment_count"] == 1
+    assert "verifier" not in row["raw"] and "secret" not in row["raw"]
+    # 첨부가 없는 공지는 빈 목록이다(마이그레이션 기본값과 같다)
+    await repo.save(DATABASE["id"], [_announcement(8, posted_at=now)], now=now)
+    bare = await (
+        await conn.execute("select attachments from lms_announcements where canvas_topic_id = 8")
+    ).fetchone()
+    assert bare["attachments"] == []
+
+
+async def _course_id_of(world: dict[str, Any], user: str) -> str:
+    row = await (
+        await world["conn"].execute(
+            "select id from lms_courses where user_id = %s and canvas_course_id = %s",
+            (user, DATABASE["id"]),
+        )
+    ).fetchone()
+    return str(row["id"])
+
+
+async def _attachment_row(
+    world: dict[str, Any], user: str, course: str, ref: str, *, path: str = "p"
+) -> str | None:
+    return await FileRepository(world["conn"]).add_lms_attachment(
+        user,
+        file_id=str(uuid4()),
+        course_id=course,
+        ref=ref,
+        path=f"{user}/lecture_material/{path}",
+        mime_type="application/pdf",
+        size_bytes=1024,
+        sha256="abc",
+        original_name="안내.pdf",
+    )
+
+
+async def test_an_attachment_is_saved_once_per_student(world: dict[str, Any]) -> None:
+    """같은 첨부는 한 번만(PRD F-54). 다른 학생은 자기 것을 따로 갖는다(교수 저작물, 나누지 않는다)."""
+    repo, me, other, now, conn = (
+        world["repo"],
+        world["me"],
+        world["other"],
+        world["now"],
+        world["conn"],
+    )
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_courses(other, [DATABASE], now=now)
+    mine, theirs = await _course_id(world), await _course_id_of(world, other)
+    files = FileRepository(conn)
+
+    first = await _attachment_row(world, me, mine, "70", path="a")
+    again = await _attachment_row(world, me, mine, "70", path="b")
+    other_one = await _attachment_row(world, other, theirs, "70", path="c")
+    assert first is not None and again is None and other_one is not None
+
+    row = await (await conn.execute("select * from files where id = %s", (first,))).fetchone()
+    assert (row["kind"], row["origin"], row["external_ref"], str(row["lms_course_id"])) == (
+        "lecture_material",
+        "lms_attachment",
+        "70",
+        mine,
+    )
+    assert await files.lms_attachment_refs(me, ["70", "71"]) == {"70"}
+    assert await files.lms_attachment_refs(me, []) == set()
+    # 남의 과목 행으로는 넣지 못한다(과목 번호가 아니라 내 과목 행이어야 한다)
+    assert await _attachment_row(world, me, theirs, "72") is None
+
+
+async def test_an_upload_with_the_same_number_is_not_an_attachment(world: dict[str, Any]) -> None:
+    """올린 파일(origin = upload)은 첨부 번호 조회에 걸리지 않는다."""
+    me, conn = world["me"], world["conn"]
+    await conn.execute(
+        "insert into files (user_id, kind, origin, external_ref, storage_path, sha256)"
+        " values (%s, 'lecture_material', 'upload', '73', 'u/1', 'x')",
+        (me,),
+    )
+    assert await FileRepository(conn).lms_attachment_refs(me, ["73"]) == set()
+
+
+async def test_the_course_detail_shows_each_attachment_and_my_status(
+    world: dict[str, Any],
+) -> None:
+    """공지마다 첨부 이름·크기와 **내** 저장 상태: 저장됨(내 파일 번호), 커서 안 받음, 저장 전.
+
+    다른 학생이 저장한 것은 내 상태를 바꾸지 않는다. 내 자료 목록(materials)에는 첨부가 들어가지 않는다.
+    """
+    repo, notices, me, other, now = (
+        world["repo"],
+        world["announcements"],
+        world["me"],
+        world["other"],
+        world["now"],
+    )
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_courses(other, [DATABASE], now=now)
+    mine, theirs = await _course_id(world), await _course_id_of(world, other)
+    await notices.save(
+        DATABASE["id"],
+        [
+            _announcement(
+                9,
+                title="자료 공지",
+                posted_at=now,
+                files=(
+                    _file(90, "1주차.pdf"),
+                    _file(91, "녹화본.mp4", size=MAX_BYTES + 1),
+                    _file(92, "크기 모름.zip", size=None),
+                ),
+            ),
+            _announcement(10, title="첨부 없는 공지", posted_at=now - timedelta(days=1)),
+        ],
+        now=now,
+    )
+    saved = await _attachment_row(world, me, mine, "90")
+    await _attachment_row(world, other, theirs, "92")  # 남이 저장한 것
+
+    detail = await repo.course_detail(me, mine, now=now, lms_base=LMS_BASE)
+
+    assert detail is not None
+    first, second = detail.announcements
+    assert [(one.name, one.size_bytes, one.status, one.file_id) for one in first.attachments] == [
+        ("1주차.pdf", 1024, "saved", saved),
+        ("녹화본.mp4", MAX_BYTES + 1, "too_large", None),
+        ("크기 모름.zip", None, "pending", None),
+    ]
+    assert second.attachments == []
+    assert detail.materials == []  # 첨부는 공지 탭에서 보여 준다(내가 올린 자료만 여기)
+
+
+async def test_a_broken_attachment_list_is_read_as_far_as_it_goes(world: dict[str, Any]) -> None:
+    """jsonb 원소가 어긋나면(번호·이름 없음) 그 원소만 버린다 — 화면 전체가 깨지지 않게."""
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await conn.execute(
+        "insert into lms_announcements (canvas_course_id, canvas_topic_id, title, posted_at,"
+        " attachments) values (%s, 11, '손으로 넣은 공지', %s, %s)",
+        (
+            DATABASE["id"],
+            now,
+            Jsonb(
+                [{"id": 110, "name": "멀쩡.pdf", "size": 5}, {"name": "번호 없음"}, {"id": 111}, 3]
+            ),
+        ),
+    )
+    detail = await repo.course_detail(me, course, now=now, lms_base=LMS_BASE)
+    assert detail is not None
+    (notice,) = [one for one in detail.announcements if one.title == "손으로 넣은 공지"]
+    assert [one.name for one in notice.attachments] == ["멀쩡.pdf"]
 
 
 async def test_announcements_are_stored_in_the_order_they_were_posted(

@@ -1,5 +1,11 @@
 import Badge from "@/components/Badge";
-import type { AnnouncementCategory, CourseDetail } from "@/types/api";
+import { formatFileSize } from "@/lib/format";
+import type {
+  AnnouncementAttachment,
+  AnnouncementCategory,
+  AttachmentStatus,
+  CourseDetail,
+} from "@/types/api";
 import type { Route, Tone } from "@/types/route";
 
 interface CourseAnnouncementsProps {
@@ -16,6 +22,50 @@ const categoryMeta: Record<
   opportunity: { label: "기회", tone: "green" },
   general: { label: "일반", tone: "gray" },
 };
+
+// 공지 첨부의 내 저장 상태(F-54). 동기화가 내 문서함에 받는다
+const attachmentMeta: Record<
+  AttachmentStatus,
+  { label: string; tone: Tone; note?: string }
+> = {
+  saved: { label: "저장됨", tone: "green" },
+  too_large: {
+    label: "저장 안 함",
+    tone: "gray",
+    note: "20MB가 넘어 저장하지 않았어요. LMS에서 받아 주세요.",
+  },
+  pending: { label: "저장 전", tone: "gray", note: "다음 동기화 때 저장해요." },
+};
+
+function AnnouncementAttachments({
+  attachments,
+}: {
+  attachments: AnnouncementAttachment[];
+}) {
+  if (attachments.length === 0) return null;
+  return (
+    <ul className="mt-3 flex flex-col gap-2" aria-label="첨부 파일">
+      {attachments.map((file, index) => {
+        const meta = attachmentMeta[file.status];
+        const size = formatFileSize(file.size_bytes);
+        return (
+          <li
+            key={`${index}-${file.name}`}
+            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]"
+          >
+            <span className="text-[#667085]">첨부</span>
+            <span className="break-all font-medium text-[#344054]">
+              {file.name}
+            </span>
+            {size && <span className="text-[#a0a4ab]">{size}</span>}
+            <Badge tone={meta.tone}>{meta.label}</Badge>
+            {meta.note && <span className="text-[#667085]">{meta.note}</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 export default function CourseAnnouncements({
   announcements,
@@ -37,6 +87,7 @@ export default function CourseAnnouncements({
             <p className="mt-2 truncate text-[12px] text-[#667085]">
               {announcement.summary ?? "공지 내용을 LMS에서 확인해 주세요."}
             </p>
+            <AnnouncementAttachments attachments={announcement.attachments} />
             {announcement.category === "opportunity" &&
               announcement.opportunity_id && (
                 <button

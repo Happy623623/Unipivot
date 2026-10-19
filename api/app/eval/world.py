@@ -593,6 +593,7 @@ async def open_app(
                 agent_for=partial(extraction_agent, llm, settings),
                 lms_base=settings.lms_api_base,
             ),
+            storage=storage,  # 공지 첨부(F-54)는 메모리 저장소에 받는다
         )
 
     def recorded_push() -> PushSender:

@@ -109,6 +109,63 @@ class FileRepository:
         ).fetchone()
         return None if row is None else row["id"]
 
+    # ── 공지 첨부 자동 저장 (F-54) ─────────────────────────────────────────────
+
+    async def lms_attachment_refs(self, user_id: str, refs: list[str]) -> set[str]:
+        """이 중 이미 저장한 공지 첨부(Canvas 첨부 번호)."""
+        if not refs:
+            return set()
+        rows = await (
+            await self.conn.execute(
+                "select external_ref from files where user_id = %s"
+                " and origin = 'lms_attachment' and external_ref = any(%s)",
+                (user_id, refs),
+            )
+        ).fetchall()
+        return {row["external_ref"] for row in rows}
+
+    async def add_lms_attachment(
+        self,
+        user_id: str,
+        *,
+        file_id: str,
+        course_id: str,
+        ref: str,
+        path: str,
+        mime_type: str,
+        size_bytes: int,
+        sha256: str,
+        original_name: str,
+    ) -> str | None:
+        """받은 공지 첨부를 남긴다. 넣지 않았으면 None이다 — 부른 쪽이 올린 것을 지운다.
+
+        넣지 않는 때: 같은 첨부 번호가 이미 있다(유니크), 또는 `course_id`가 **내** 과목 행이 아니다
+        (과목 공통 번호가 아니라 `lms_courses.id`다).
+        """
+        row = await (
+            await self.conn.execute(
+                "insert into files (id, user_id, lms_course_id, kind, origin, external_ref,"
+                " storage_path, mime_type, size_bytes, sha256, original_name)"
+                " select %(id)s, %(uid)s, c.id, 'lecture_material', 'lms_attachment', %(ref)s,"
+                " %(path)s, %(mime)s, %(size)s, %(sha)s, %(name)s"
+                " from lms_courses c where c.id = %(course)s and c.user_id = %(uid)s"
+                " on conflict (user_id, external_ref) do nothing"
+                " returning id::text as id",
+                {
+                    "id": file_id,
+                    "uid": user_id,
+                    "course": course_id,
+                    "ref": ref,
+                    "path": path,
+                    "mime": mime_type,
+                    "size": size_bytes,
+                    "sha": sha256,
+                    "name": original_name,
+                },
+            )
+        ).fetchone()
+        return None if row is None else row["id"]
+
 
 # 한 번 부를 때마다 연결을 빌려 저장소를 만들고, 블록이 끝나면 커밋하고 돌려준다
 FileRepos = Callable[[], AbstractAsyncContextManager[FileRepository]]

@@ -16,13 +16,19 @@
 녹화에서 확인한 것(2026-10-16): 수강 과목 응답은 8과목이 한 쪽에 들어왔고(per_page=100), 과제·모듈·공지는
 6과목에서 받았다. `include[]=items`로 모듈 항목이 함께 왔다(항목이 없는 주차는 `items: []`).
 함께 오지 않는 과목이 있을 수 있어 항목만 따로 받는 경로도 둔다.
+
+공지 첨부 받기(F-54, 10/19 녹화)는 API가 아니라 웹 경로 `/files/{id}/download`다. 공지 응답의 첨부
+`url`에 든 `verifier`가 열쇠라 **토큰을 보내지 않는다**(토큰만으로는 로그인 화면으로 302). 그 주소는
+파일 저장소(네이버 클라우드)의 서명 주소로 302를 주고, 거기서 파일이 온다. 그래서 첨부만은 리다이렉트를
+따라가되 `https`로만, 세 번까지만 가고, 우리 LearningX의 다른 경로(로그인 화면)로 보내면 실패로 본다.
 """
 
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -42,6 +48,29 @@ ALLOWED_PATHS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/v1/courses/\d+/modules/\d+/items$"),
     re.compile(r"^/api/v1/courses/\d+/discussion_topics$"),
 )
+
+
+# 공지 첨부 받기(F-54). API 경로가 아니어서 ALLOWED_PATHS와 따로 둔다
+ALLOWED_DOWNLOADS: tuple[re.Pattern[str], ...] = (re.compile(r"^/files/\d+/download$"),)
+MAX_REDIRECTS = 3  # 녹화에서는 한 번(LearningX → 파일 저장소)이었다
+DOWNLOAD_BUDGET_SECONDS = 120.0  # 20MB 하나를 받는 데 쓸 수 있는 전체 시간
+
+
+class AttachmentUnavailable(Exception):
+    """공지 첨부를 받지 못했다. **토큰 문제가 아니다** — 연결 상태를 바꾸지 않고 다음 동기화에 다시 본다.
+
+    문구에 주소를 넣지 않는다(verifier·서명이 들어 있다).
+    """
+
+
+class AttachmentTooLarge(AttachmentUnavailable):
+    """받아 보니 상한보다 컸다(첨부 목록의 크기와 달랐거나 크기가 없었다)."""
+
+
+@dataclass(frozen=True)
+class DownloadedFile:
+    data: bytes
+    content_type: str | None
 
 
 class LearningXError(Exception):
@@ -121,6 +150,79 @@ class LearningXClient:
             f"/api/v1/courses/{course_id}/discussion_topics",
             {"only_announcements": "true"},
         )
+
+    async def attachment(
+        self, url: str, *, max_bytes: int, html_ok: bool = False
+    ) -> DownloadedFile:
+        """공지 첨부 하나를 받는다(F-54). 토큰은 보내지 않는다(받는 쪽이 누구든 토큰을 볼 일이 없다).
+
+        `url`은 공지 응답의 첨부 주소 그대로다. 우리 LearningX의 `/files/{id}/download`가 아니면 보내기
+        전에 거절한다. `max_bytes`를 넘으면 받다가 멈춘다(AttachmentTooLarge). 첨부가 HTML이 아닌데
+        HTML이 오면 로그인·오류 화면이 온 것으로 본다(`html_ok`는 첨부 자체가 HTML일 때만 켠다).
+        """
+        if not self._downloadable(url):
+            raise AttachmentUnavailable("허용하지 않은 첨부 주소예요.")
+        until = time.monotonic() + DOWNLOAD_BUDGET_SECONDS
+        current = url
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
+                for _ in range(MAX_REDIRECTS + 1):
+                    async with client.stream("GET", current, headers={"Accept": "*/*"}) as response:
+                        if 300 <= response.status_code < 400:
+                            current = self._next_hop(current, response.headers.get("Location"))
+                            continue
+                        return await self._read_file(response, max_bytes, html_ok, until)
+        except httpx.HTTPError as exc:
+            raise AttachmentUnavailable(
+                f"첨부를 받지 못했어요(연결 오류 {type(exc).__name__})."
+            ) from None
+        raise AttachmentUnavailable("첨부 주소가 너무 여러 번 옮겨졌어요.")
+
+    def _downloadable(self, url: str) -> bool:
+        """우리 LearningX의 첨부 받기 경로인지(스킴·호스트까지 같아야 한다)."""
+        parts = urlsplit(url)
+        return (
+            parts.scheme == self._scheme
+            and parts.netloc.lower() == self._host
+            and any(pattern.match(parts.path) for pattern in ALLOWED_DOWNLOADS)
+        )
+
+    def _next_hop(self, current: str, location: str | None) -> str:
+        """리다이렉트할 곳. `https`가 아니거나 우리 LearningX의 다른 경로(로그인 화면)면 멈춘다."""
+        if not location:
+            raise AttachmentUnavailable("첨부 주소가 옮겨졌는데 갈 곳이 없어요.")
+        target = urljoin(current, location)
+        parts = urlsplit(target)
+        # 시험·로컬 LearningX가 http일 때만 http를 허용한다. https를 http로 내리는 일은 없다
+        if parts.scheme not in ("https", self._scheme):
+            raise AttachmentUnavailable("첨부 주소가 안전하지 않은 곳으로 옮겨졌어요.")
+        if parts.netloc.lower() == self._host and not any(
+            pattern.match(parts.path) for pattern in ALLOWED_DOWNLOADS
+        ):
+            raise AttachmentUnavailable("LearningX가 첨부 대신 로그인 화면으로 보냈어요.")
+        return target
+
+    async def _read_file(
+        self, response: httpx.Response, max_bytes: int, html_ok: bool, until: float
+    ) -> DownloadedFile:
+        if response.status_code != 200:
+            raise AttachmentUnavailable(f"첨부를 받지 못했어요({response.status_code}).")
+        content_type = response.headers.get("Content-Type")
+        if not html_ok and content_type and content_type.split(";")[0].strip() == "text/html":
+            raise AttachmentUnavailable("첨부 대신 웹 페이지가 왔어요.")
+        declared = response.headers.get("Content-Length", "")
+        if declared.isdigit() and int(declared) > max_bytes:
+            raise AttachmentTooLarge("첨부가 상한보다 커요.")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > max_bytes:
+                raise AttachmentTooLarge("첨부가 상한보다 커요.")
+            if time.monotonic() > until:
+                raise AttachmentUnavailable("첨부를 받는 데 너무 오래 걸려요.")
+            chunks.append(chunk)
+        return DownloadedFile(b"".join(chunks), content_type)
 
     # ── 안쪽 ────────────────────────────────────────────────────────────────
 

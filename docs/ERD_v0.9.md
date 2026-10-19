@@ -252,6 +252,7 @@ erDiagram
         text message
         timestamptz posted_at
         smallint attachment_count
+        jsonb attachments "첨부 목록 (주소 없음, F-54)"
         text summary "한 줄 요약"
         boolean is_section_specific "분반 한정 공지"
         enum category "schedule_change, material, opportunity, general"
@@ -674,6 +675,7 @@ erDiagram
 - **LMS 응답 규칙(10/16 녹화)**: `lms_assignments.due_at`은 Canvas `due_at ?? lock_at`이다(녹화 17건 중 5건이 `due_at` null). `submission_state`는 Canvas `submission.workflow_state`를 그대로 쓰고(`unsubmitted`·`submitted`·`graded` 관측, `pending_review`는 아직 못 봤지만 제출로 센다), 과목 전체 기준인 `has_submitted_submissions`는 쓰지 않는다. `lms_module_items.canvas_item_id`가 유일 키다 — 한 모듈에 제목이 같은 항목이 둘씩 있다(87건 중 15쌍). `item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`가 관측됐고 `File`은 0건이다. `module_name`은 `1주차`·`Week 3 : …` 꼴이 섞이고 Canvas `position`은 연속이 아니라 저장하지 않는다. `lms_courses.term`은 과목명에서 만든 `2026-2`이고, 과목명 꼴이 다르면 LearningX가 준 학기 이름(`2026년 2학기`)을 넣는다
 - **강의계획서**: LMS 계획서는 포털 iframe이고 포털은 robots.txt로 자동 접근을 막아서 서버가 수집하지 않는다. 과목명 `202620HY23525_선형대수`를 파싱해 `portal_year = 2026`, `portal_term = 20`, `portal_course_no = '23525'`를 저장하고, 이 값으로 사용자 브라우저에서 열 포털 계획서 링크를 만든다. 사용자가 PDF로 저장해 올리면 `syllabi.lms_course_id`로 과목에 연결한다 (과목당 1개)
 - **강의자료 저작권**: 공지 첨부를 자동 수집할 때도 사용자별로 `files`에 따로 저장한다(`origin = 'lms_attachment'`, `external_ref = Canvas 첨부 ID`). 같은 첨부를 두 번 받지 않도록 `(user_id, external_ref)` 유니크를 건다
+- **공지 첨부(F-54)**: `lms_announcements.attachments`(jsonb 배열, 기본 `[]`)에 첨부마다 `{id, name, size, content_type}`을 둔다. 과목 공통이라 저장 상태는 여기 두지 않고, 학생마다 `files`(`origin = lms_attachment`, `external_ref` = 그 `id`)가 있는지로 본다. **첨부 주소(url)는 넣지 않는다** — 주소의 `verifier`만 있으면 로그인 없이 받을 수 있다. 받은 첨부는 `kind = lecture_material`, `lms_course_id` = 내 과목 행이고, 저장소 경로는 `<user_id>/lecture_material/<file_id>.<확장자>`다(원래 이름은 `original_name`). 탈퇴하면 다른 파일과 함께 저장소에서 지운다
 
 ### 공고 공개 범위
 
@@ -805,6 +807,8 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 9 | `supabase/migrations/20261014090000_region_merge_jeonnam_gwangju.sql` | 지역 코드 정리(전남·광주 병합) |
 | 10 | `supabase/migrations/20261014091000_tool_calls_input_comment.sql` | tool_calls.input 주석(프로필 값을 넣지 않는다) |
 | 11 | `supabase/migrations/20261017000000_lms_modules_synced_at.sql` | lms_courses.modules_synced_at(주차 항목 첫 수집, F-52) |
+| 12 | `supabase/migrations/20261017120000_annual_income_and_job_status.sql` | profiles.annual_income(만 원)·job_status, 소득 선택 동의 제약에 annual_income 추가, 요건 항목 2개 (F-21) |
+| 13 | `supabase/migrations/20261019120000_lms_announcement_attachments.sql` | lms_announcements.attachments(첨부 목록 jsonb, 주소 없음, F-54) |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -891,6 +895,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-10-19): lms_announcements.attachments(공지 첨부 목록, F-54). 7장 표에 빠져 있던 12번(F-21 연 소득·취업 상태)도 적었다
 - v0.9 보강 (2026-10-15): 포스터 추출 초안은 실행 기록(tool_calls.output)에 둔다(F-16), 스키마 변경 없음
 - v0.9 보강 (2026-10-15): 업로드 파일 저장 순서와 중복 처리 설명(F-13), 스키마 변경 없음
 - v0.9 보강 (2026-10-14): 다시 수집·추출해도 서류 행을 이름으로 맞춰 갱신, 스키마 변경 없음

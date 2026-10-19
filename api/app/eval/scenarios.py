@@ -13,6 +13,7 @@ PRD 8장의 P0는 S01–S18 열여덟 개이고, 여기 있는 것은 그중 **�
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, datetime, time, timedelta
 
 import httpx
@@ -21,6 +22,7 @@ from app.calendar import EVENT_MINUTES
 from app.eligibility import KST
 from app.eval.fakes import (
     DB_COURSE_ID,
+    LmsFile,
     course_week,
     poster_bytes,
     poster_deadline,
@@ -46,6 +48,7 @@ from app.extraction.validate import LOW_CONFIDENCE as LOW_CONFIDENCE_REASON
 from app.lms.classify import SUBMIT as CLASSIFY_TOOL
 from app.prepare.guide import TOOL_NAME as GUIDE_TOOL
 from app.schemas.syllabi import EXTRACT_TOOL as SYLLABUS_TOOL
+from app.uploads import MAX_BYTES
 
 DEPARTMENT = "인공지능학과"
 GRADE_RULE = Rule(1, "gpa_last_semester", "gte", 3.0)
@@ -1124,6 +1127,13 @@ RESEARCH_BODY = (
 CANCELLED_TOPIC_ID = 520_357
 CANCELLED_SUMMARY = "다음 주 월요일 수업은 휴강한다"
 RESEARCH_SUMMARY = "연구 참여 학생 2명을 모집한다"
+# 공지 첨부(F-54). 녹화의 PNG 포스터처럼 모집 공지에 포스터가 붙고, 설명회 녹화본은 20MB를 넘는다
+RESEARCH_POSTER = LmsFile(
+    9_905_001, "연구실 모집 포스터.png", "image/png", b"\x89PNG\r\n\x1a\n" + b"poster" * 64
+)
+RESEARCH_VIDEO = LmsFile(
+    9_905_002, "연구 설명회 녹화.mp4", "video/mp4", b"\x00", size=MAX_BYTES + 1
+)
 
 
 def _classify_reply(category: str, summary: str, **extra: str) -> Reply:
@@ -1159,6 +1169,9 @@ async def s23(world: EvalWorld) -> None:
     기회성 공지다. 분류는 값싼 모델 한 번, 기회성이면 요건 추출이 한 번 더 돈다(모델 호출 세 번).
 
     공개 범위도 같이 본다 — 그 과목을 듣지 않는 학생의 피드에는 보이지 않아야 한다(명세 5장).
+
+    공지 첨부(F-54)도 본다 — 모집 공지의 포스터는 학생 문서함·저장소에 들어가고, 20MB가 넘는 녹화본은
+    받기 요청조차 없다. 과목 상세 공지 탭이 둘의 상태(저장됨·저장 안 함)를 보여 준다.
     """
     student = await world.user(grade=3, gpa_last_semester=3.5)
     outsider = await world.user(grade=3)  # 그 과목을 듣지 않는 학생
@@ -1180,6 +1193,7 @@ async def s23(world: EvalWorld) -> None:
         RESEARCH_TITLE,
         message=RESEARCH_BODY,
         posted_days_ago=0.5,
+        files=(RESEARCH_POSTER, RESEARCH_VIDEO),
     )
     # 집는 순서는 게시일 최신순이다(연구 참여 모집이 먼저다)
     world.records(
@@ -1269,6 +1283,37 @@ async def s23(world: EvalWorld) -> None:
         "탭의 공고 번호",
         expected=[opportunity, None],
         actual=[one["opportunity_id"] for one in tab],
+    )
+
+    # 공지 첨부(F-54): 포스터는 내 문서함에 받고, 20MB를 넘는 녹화본은 받지 않는다
+    await world.check(
+        "탭의 첨부와 저장 상태",
+        expected=[
+            [("연구실 모집 포스터.png", "saved"), ("연구 설명회 녹화.mp4", "too_large")],
+            [],
+        ],
+        actual=[[(one["name"], one["status"]) for one in notice["attachments"]] for notice in tab],
+    )
+    stored = await world.rows(
+        "select external_ref, original_name, kind::text as kind, storage_path, size_bytes"
+        " from files where user_id = %s and origin = 'lms_attachment'",
+        student,
+    )
+    await world.check(
+        "내 문서함에 포스터 하나",
+        expected=[(str(RESEARCH_POSTER.file_id), RESEARCH_POSTER.name, "lecture_material")],
+        actual=[(row["external_ref"], row["original_name"], row["kind"]) for row in stored],
+    )
+    uploaded = world.storage.files.get(stored[0]["storage_path"], b"") if stored else b""
+    await world.check(
+        "저장소에 받은 그대로",
+        expected=hashlib.sha256(RESEARCH_POSTER.data).hexdigest(),
+        actual=hashlib.sha256(uploaded).hexdigest(),
+    )
+    await world.check(
+        "큰 첨부는 받지 않음",
+        expected=[f"attachment:{RESEARCH_POSTER.file_id}"],
+        actual=[call for call in world.lms.calls if call.startswith("attachment:")],
     )
 
     # 적격 공고라 "새 공고" 알림이 예약되고, 보내면 알림함에 쌓인다(F-33)

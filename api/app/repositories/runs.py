@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from app.db import get_conn
 from app.eligibility import KST
-from app.schemas.lms import SAVE_TOOL, LmsSyncResult, SyncCounts
+from app.schemas.lms import ATTACHMENT_TOOL, SAVE_TOOL, LmsSyncResult, SyncCounts
 from app.schemas.opportunities import DocumentItem, ProcessStep
 from app.schemas.posters import (
     EXTRACT_LABEL,
@@ -47,6 +47,7 @@ LMS_LABELS = {
     "fetch_lms_courses": "수강 과목 받기",
     "fetch_lms_assignments": "과제·제출 받기",
     "fetch_lms_modules": "주차 자료 받기",
+    ATTACHMENT_TOOL: "공지 첨부 저장",  # F-54
     SAVE_TOOL: "바뀐 것 저장",
 }
 # 계획서 추출(F-14)

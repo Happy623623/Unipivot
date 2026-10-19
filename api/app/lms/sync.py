@@ -16,6 +16,9 @@
 
 주차 항목(F-52)은 과목 공통이라 저장도 알림도 과목 단위다. 그 과목의 항목을 **이번에 처음** 받으면
 한 학기 분량이 모두 "새 항목"이라 알림을 보내지 않고 저장만 한다.
+
+공지 첨부(F-54)는 마지막에 학생 문서함에 받는다(`app/lms/files.py`). 파일 저장소 설정이 없으면 하지
+않고, 실패해도 동기화는 성공이다.
 """
 
 import logging
@@ -45,10 +48,12 @@ from app.lms.announce import AnnouncementOutcome, AnnouncementService
 from app.lms.announcements import CanvasAnnouncement, announcements
 from app.lms.assignments import CanvasAssignment, assignments
 from app.lms.client import LearningXClient, LearningXError
+from app.lms.files import AttachmentSaver
 from app.lms.modules import CanvasModuleItem, module_items, needs_items
 from app.lms.service import API_ERROR, NOT_CONNECTED, TOKEN_EXPIRED, student_courses
 from app.repositories.announcements import AnnouncementRepository
 from app.repositories.calendar import AssignmentDeadline, CalendarRepository
+from app.repositories.files import FileRepository
 from app.repositories.lms import (
     AssignmentChanges,
     CourseRow,
@@ -63,6 +68,7 @@ from app.repositories.notifications import (
     NotificationRepository,
 )
 from app.schemas.lms import SAVE_TOOL, SyncCounts, SyncResponse, SyncSkipped, SyncStarted
+from app.uploads.storage import SupabaseStorage, get_storage
 
 logger = logging.getLogger(__name__)
 Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
@@ -168,6 +174,8 @@ class LmsSyncService:
         runner: TaskRunner,
         announcer: AnnouncementService | None = None,
         repos: Callable[[AsyncConnection], Repos] = Repos.of,
+        storage: SupabaseStorage | None = None,
+        files: Callable[[AsyncConnection], FileRepository] = FileRepository,
     ) -> None:
         self.transaction = transaction  # 블록이 끝나면 커밋하는 연결(요청 트랜잭션과 따로)
         self.log_connection = log_connection
@@ -177,6 +185,8 @@ class LmsSyncService:
         self.runner = runner
         self.announcer = announcer  # 없으면 공지를 저장만 하고 분류하지 않는다(F-53)
         self.repos = repos
+        self.storage = storage  # 없으면 공지 첨부를 받지 않는다(F-54)
+        self.files = files
 
     # ── 사용자가 눌렀을 때 ──────────────────────────────────────────────────
 
@@ -284,6 +294,7 @@ class LmsSyncService:
         outcome, changes = await self._save(job, fetched, modules, notices, failed=failed)
         outcome = await self._calendar(run, job, outcome, changes)
         outcome = await self._classify(run, job, outcome, rows)
+        await self._attachments(run, job, notices)
         async with run.tool(SAVE_TOOL) as call:
             # `GET /runs/{id}`가 이 출력으로 결과를 만든다(repositories/runs.py)
             call.output = {
@@ -495,6 +506,29 @@ class LmsSyncService:
                 "notices": outcome.notices + made.notices,
             }
         )
+
+    # ── 공지 첨부 (F-54) ────────────────────────────────────────────────────
+
+    async def _attachments(
+        self,
+        run: AgentRun,
+        job: SyncJob,
+        notices: list[tuple[CourseRow, list[CanvasAnnouncement]]],
+    ) -> None:
+        """받은 공지의 첨부를 학생 문서함에 넣는다(`app/lms/files.py`).
+
+        파일 저장소 설정이 없으면 하지 않는다. **실패해도 동기화는 성공이다** — 공지는 이미 저장했고,
+        못 받은 첨부는 "저장 전"으로 남아 다음 동기화가 다시 받는다.
+        """
+        if self.storage is None or not notices:
+            return
+        saver = AttachmentSaver(
+            transaction=self.transaction, client=self.client, storage=self.storage, files=self.files
+        )
+        try:
+            await saver.run(run, job.user_id, notices)
+        except Exception as exc:  # 이미 저장한 첨부 조회가 터진 경우까지. 다음 동기화에서 다시 본다
+            logger.warning("공지 첨부 저장을 건너뛰어요: user %s, %r", job.user_id, exc)
 
     # ── 캘린더 (F-51·F-32) ──────────────────────────────────────────────────
 
@@ -757,6 +791,7 @@ def lms_sync_service_for(
         if llm is not None
         else None  # 모델 설정이 없으면 공지를 저장만 한다(F-53)
     )
+    storage = get_storage(settings)
     return LmsSyncService(
         transaction=pool.connection,
         log_connection=log_pool.connection,
@@ -770,6 +805,8 @@ def lms_sync_service_for(
         encryption_key=settings.token_encryption_key,
         runner=runner,
         announcer=announcer,
+        # 저장소 설정(SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL)이 없으면 공지 첨부를 받지 않는다(F-54)
+        storage=storage if storage.ready else None,
     )
 
 

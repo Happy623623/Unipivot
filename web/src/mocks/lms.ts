@@ -111,6 +111,7 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
         category: "schedule_change",
         posted_at: "2026-10-05T08:00:00+09:00",
         opportunity_id: null,
+        attachments: [],
       },
       {
         id: `${course.id}-n2`,
@@ -119,6 +120,11 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
         category: "material",
         posted_at: "2026-10-04T16:00:00+09:00",
         opportunity_id: null,
+        // 공지 첨부(F-54): 받은 것, 20MB가 넘어 받지 않은 것
+        attachments: [
+          { name: "중간고사 대비 예제.pdf", size_bytes: 1_843_200, status: "saved", file_id: `${course.id}-n2-file` },
+          { name: "예제 풀이 영상.mp4", size_bytes: 48_234_496, status: "too_large", file_id: null },
+        ],
       },
       {
         id: `${course.id}-n3`,
@@ -127,6 +133,7 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
         category: "opportunity",
         posted_at: "2026-10-03T11:00:00+09:00",
         opportunity_id: course.id === "database" ? "database-hackathon" : null,
+        attachments: [{ name: "프로그램 포스터.png", size_bytes: 979_532, status: "pending", file_id: null }],
       },
     ],
     // 계획서를 올리지 않은 과목은 일정도 없다(서버는 계획서 행이 있을 때만 준다). "데이터베이스"가

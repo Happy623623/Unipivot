@@ -21,6 +21,7 @@ SubmissionState = Literal["unsubmitted", "submitted", "graded", "pending_review"
 AssignmentState = Literal["open", "submitted", "all"]
 # 동기화 결과를 남기는 도구 이름. app/lms/sync.py가 쓰고 GET /runs/{id}가 읽는다
 SAVE_TOOL = "save_lms_sync"
+ATTACHMENT_TOOL = "save_lms_attachments"  # 공지 첨부를 학생 문서함에 받는 단계(F-54)
 
 
 class ConnectRequest(BaseModel):
@@ -238,6 +239,18 @@ class CourseModuleItem(BaseModel):
     uploaded_file_id: str | None
 
 
+# 공지 첨부의 저장 상태(F-54). saved: 내 문서함에 있다, too_large: 20MB를 넘어 받지 않는다,
+# pending: 아직 받지 못했다(다음 동기화가 받는다 — 저장소 설정이 없을 때도 여기 머문다)
+AttachmentStatus = Literal["saved", "too_large", "pending"]
+
+
+class AnnouncementAttachment(BaseModel):
+    name: str
+    size_bytes: int | None  # Canvas가 준 크기. 없을 수 있다
+    status: AttachmentStatus
+    file_id: str | None  # 저장했으면 내 파일 번호(나중에 열기·요약에 쓴다)
+
+
 class CourseAnnouncement(BaseModel):
     id: str
     title: str
@@ -245,6 +258,7 @@ class CourseAnnouncement(BaseModel):
     category: AnnouncementCategory | None
     posted_at: datetime | None
     opportunity_id: str | None
+    attachments: list[AnnouncementAttachment]  # 첨부가 없으면 빈 목록(F-54)
 
 
 class CourseSyllabusItem(BaseModel):

@@ -19,6 +19,17 @@ JWT_SECRET = "unit-test-jwt-secret-not-used-anywhere-else"
 USER_ID = "00000000-0000-4000-8000-000000000001"
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """시험은 개발자 PC의 `api/.env`를 읽지 않는다. 환경 변수(CI의 DATABASE_URL 등)는 그대로 읽는다.
+
+    CI에는 `.env`가 없다. PC에서 `api` 폴더에 들어가 돌리면 `Settings()`가 그 파일을 읽어서, "키가 없을
+    때" 시험(온통청년·Google·스케줄러)이 PC에서만 깨진다(10/19 #60에서 3건). 시험 파일을 모으기 전에
+    끄려고 fixture가 아니라 이 훅에서 끈다(모듈을 읽을 때 만드는 설정도 있다).
+    """
+    Settings.model_config["env_file"] = None
+    get_settings.cache_clear()
+
+
 def make_token(
     sub: str = USER_ID, secret: str = JWT_SECRET, expires_in: int = 3600, **claims: Any
 ) -> str:

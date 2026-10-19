@@ -30,6 +30,8 @@
 >
 > v0.4 보강(10/19, .ics 내려받기): `GET /calendar/ics`를 만들었다(F-34). 대상에 `syllabus_item_ids`를 더했고, 넣을 수 없는 대상은 건너뛰며, 기록은 남기지 않는다(PRD와 맞춤 — "provider = ics로 기록" 문장을 지웠다)
 >
+> v0.4 보강(10/19, 공지 첨부 저장): 동기화가 공지 첨부를 학생 문서함에 받는다(F-54). 첨부 받기 경로(`/files/{id}/download`, 토큰 없이 verifier로), 과목 상세 공지의 `attachments[]`(이름·크기·저장 상태)
+>
 > v0.4 보강(10/13, 시·군·구 선택): 프로필 region_sigungu 값
 >
 > v0.4 보강(10/13, 관심 공고): PUT·DELETE /opportunities/{id}/mark, 피드 include_not_interested, my_mark, counts에서 관심 없음 공고 제외, 알림 규칙
@@ -986,7 +988,9 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   | 모듈 항목(보충) | `GET /api/v1/courses/{id}/modules/{module_id}/items` | — |
   | 과목 공지 | `GET /api/v1/courses/{id}/discussion_topics` | `only_announcements=true` |
 
-  쪽이 나뉘면 `Link: rel="next"`를 따라가되 **스킴·호스트가 우리 LearningX와 같고 허용 경로일 때만** 따라간다(`https`를 `http`로 바꿔 주면 토큰이 평문으로 나가고, 남의 주소를 주면 그곳으로 토큰을 보낸다). 리다이렉트는 따라가지 않고 3xx도 오류로 본다. 한 목록은 10쪽(1,000건)·60초까지만 받고, **끝까지 받지 못하면 부분 목록을 쓰지 않고 오류로 끝낸다**(부분 목록을 전체로 쓰면 수강 과목을 지운다). 공지 첨부 다운로드(P1)는 아직 허용 경로가 아니다
+  쪽이 나뉘면 `Link: rel="next"`를 따라가되 **스킴·호스트가 우리 LearningX와 같고 허용 경로일 때만** 따라간다(`https`를 `http`로 바꿔 주면 토큰이 평문으로 나가고, 남의 주소를 주면 그곳으로 토큰을 보낸다). 리다이렉트는 따라가지 않고 3xx도 오류로 본다. 한 목록은 10쪽(1,000건)·60초까지만 받고, **끝까지 받지 못하면 부분 목록을 쓰지 않고 오류로 끝낸다**(부분 목록을 전체로 쓰면 수강 과목을 지운다)
+- **공지 첨부 받기(F-54, 10/19 녹화)**: API가 아니라 웹 경로 `GET /files/{id}/download`이고, 공지 응답의 첨부 `url`을 그대로 쓴다(코드 상수는 `ALLOWED_DOWNLOADS`). 그 주소의 `verifier`가 열쇠라 **토큰을 보내지 않는다** — 토큰만 보내면 LearningX가 `/login`으로 302를 준다. 주소는 파일 저장소의 서명 주소로 302를 주고 거기서 파일이 온다. 그래서 첨부만은 리다이렉트를 따라가되 `https`로만, 세 번까지, 우리 LearningX의 다른 경로(로그인 화면)로 가면 실패다. 첨부가 HTML이 아닌데 HTML이 오면 실패이고, 20MB(업로드 상한)를 넘으면 받다가 멈춘다. 우리 LearningX의 받기 경로가 아닌 주소는 보내기 전에 거절한다
+- 첨부 주소와 저장소 서명 주소는 그 자체로 열쇠라 **저장하지도 로그에 남기지도 않는다**(`verifier=`·`X-Amz-Signature=`·`X-Amz-Credential=`는 로그에서 가린다). 받는 동안만 메모리에 둔다
 - 테스트는 녹화한 응답(개인정보 제거)을 재생하는 가짜 클라이언트로 돌린다
 
 ### `POST /lms/connection`
@@ -1068,6 +1072,8 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   그 과목이라 **수강생만** 본다(5장). 요건을 못 뽑으면 공고는 만들되 판정에서 빠진다(원문 확인 필요)
 - `new_module_items`는 이번에 **처음 본 주차 항목** 수다. 그 과목의 항목을 처음 받는 동기화에서는 수만 세고 알림을 만들지 않는다 — 연결 직후에는 한 학기 분량이 한꺼번에 들어온다(녹화 87건). 그때 `lms_courses.last_viewed_at`도 지금으로 올려서 "새 자료" 수에도 들어가지 않게 한다
 - 새 주차 항목 알림(`new_material`)은 그 과목을 듣는 **수강생 모두에게** 간다(항목은 과목 공통이다, ERD 3-2). 연결을 끊은 사람과 설정에서 끈 사람은 뺀다
+- **공지 첨부는 학생 문서함에 받는다**(F-54). 이번에 받은 공지의 첨부 중 아직 저장하지 않은 것을 받아 파일 저장소에 올리고 `files`에 남긴다(`origin = lms_attachment`, `kind = lecture_material`, `external_ref` = Canvas 첨부 번호, `lms_course_id` = 그 과목). 같은 첨부는 학생마다 한 번만 받는다(교수 저작물이라 학생끼리 나누지 않는다). **20MB를 넘는 첨부는 받지 않고**(목록의 크기로 본다), 형식은 가리지 않는다. 분반 한정 공지의 첨부는 받지 않는다. 한 동기화에 **10개까지**, 최근 공지의 첨부부터 받고 남은 것은 다음 동기화가 받는다
+- 첨부를 못 받아도(로그인 화면으로 감·저장소 오류) **동기화는 성공이고 연결 상태도 그대로다** — 토큰 문제가 아니다. 그 첨부는 "저장 전"으로 남아 다음 동기화가 다시 받는다. 파일 저장소 설정(`SUPABASE_SERVICE_ROLE_KEY`·`SUPABASE_URL`)이 없는 서버는 받지 않는다. 받은 수는 실행 기록의 도구 `save_lms_attachments`(`{saved, failed}`)에 남고 결과(`result`)는 바뀌지 않는다
 
 ### `GET /lms/courses`
 
@@ -1102,7 +1108,7 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   "course": { "id": "uuid", "short_name": "선형대수", "has_syllabus": true, "syllabus_id": "uuid", "portal_syllabus_url": "https://portal.hanyang.ac.kr/...", "html_url": "https://learning.hanyang.ac.kr/courses/..." },
   "assignments": [ { "id": "uuid", "title": "Homework 4", "due_at": "2026-10-13T23:59:00+09:00", "submission_state": "unsubmitted", "html_url": "https://learning.hanyang.ac.kr/..." } ],
   "module_items": [ { "id": "uuid", "module_name": "8주차", "title": "08 - Eigenvalues", "item_type": "ExternalTool", "html_url": "https://learning.hanyang.ac.kr/...", "is_new": true, "uploaded_file_id": null } ],
-  "announcements": [ { "id": "uuid", "title": "강의실 변경 안내", "summary": "다음 주 수업은 다른 강의실에서 한다", "category": "schedule_change", "posted_at": "2026-10-04T14:00:00+09:00", "opportunity_id": null } ],
+  "announcements": [ { "id": "uuid", "title": "강의실 변경 안내", "summary": "다음 주 수업은 다른 강의실에서 한다", "category": "schedule_change", "posted_at": "2026-10-04T14:00:00+09:00", "opportunity_id": null, "attachments": [ { "name": "자리 배치도.pdf", "size_bytes": 86169, "status": "saved", "file_id": "uuid" } ] } ],
   "syllabus_items": [ { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-20T10:30:00+09:00", "is_confirmed": true, "calendar_registered": true } ],
   "materials": [ { "file_id": "uuid", "original_name": "08_eigen.pdf", "status": "succeeded" } ]
 }
@@ -1111,6 +1117,8 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 - 부르면 그 과목의 `last_viewed_at`을 지금으로 바꾼다. `is_new`는 바꾸기 전 값으로 계산한다(시각을 뒤로 돌리지는 않는다 — 주차 항목 첫 수집이 밀어 둔 값을 지우면 지난 자료가 다시 "새 자료"가 된다)
 - 분반 한정 공지(`is_section_specific`)는 내려주지 않는다
 - 공지의 `summary`·`category`는 **분류 전이면 null**이다(F-53). 분류는 동기화가 한다
+- 공지의 `attachments`는 그 공지의 첨부와 **내** 저장 상태다(F-54, 없으면 빈 목록). `status`는 `saved`(내 문서함에 받았다, `file_id`가 내 파일), `too_large`(20MB가 넘어 받지 않는다), `pending`(아직 받지 못했다 — 다음 동기화가 받는다) 중 하나다. `size_bytes`는 LearningX가 준 크기이고 없을 수 있다. 첨부 주소는 주지 않는다(verifier가 든 열쇠다). 저장 상태는 학생마다 다르다 — 다른 학생이 받은 것은 내 상태를 바꾸지 않는다
+- `materials`는 **내가 올린** 강의자료만이다. 공지 첨부도 같은 과목·같은 종류(`lecture_material`)로 저장되지만 여기에는 넣지 않고 공지마다 보여 준다
 - `course.html_url`은 "LMS에서 열기" 링크다. 과목 주소는 저장하지 않고 LMS 주소 + 과목 번호로 만든다
 - **남의 과목과 수강을 뺀 과목(`is_active` false)은 404 `NOT_FOUND`다**
 - 순서는 서버가 정한다(DB 정렬 규칙에 맡기지 않는다): 과제는 마감이 가까운 순(마감 없는 것은 뒤), 주차 항목은 **새 항목 먼저** 다음 주차·제목 순, 공지는 올린 순(최신 먼저), 계획서 일정은 날짜 순, 내 자료는 올린 순(최신 먼저). 값이 같으면 id로 가른다

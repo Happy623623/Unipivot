@@ -26,15 +26,18 @@ from psycopg import AsyncConnection
 from app.calendar import assignment_title
 from app.db import get_conn
 from app.eligibility import KST
+from app.lms.announcements import too_large
 from app.lms.assignments import SUBMITTED, CanvasAssignment
 from app.lms.modules import CanvasModuleItem
 from app.lms.parse import course_name, is_canvas_id
 from app.repositories.opportunities import Cursor
 from app.schemas.lms import (
+    AnnouncementAttachment,
     AnnouncementUpdate,
     AssignmentCourse,
     AssignmentItem,
     AssignmentUpdate,
+    AttachmentStatus,
     ConnectionView,
     CourseAnnouncement,
     CourseAssignment,
@@ -149,6 +152,35 @@ _EPOCH = datetime.fromtimestamp(
     0, UTC
 )  # 과목을 한 번도 안 열었을 때의 기준(`to_timestamp(0)`과 같다)
 UPDATE_LIMIT = 50  # `GET /lms/updates` 한 쪽
+
+
+def _attachment_list(value: Any) -> list[dict[str, Any]]:
+    """공지 표의 첨부 목록(jsonb). 모양이 어긋난 원소는 버린다(번호와 이름이 있어야 보여 줄 수 있다)."""
+    if not isinstance(value, list):
+        return []
+    return [
+        one
+        for one in value
+        if isinstance(one, dict)
+        and is_canvas_id(one.get("id"))
+        and isinstance(one.get("name"), str)
+    ]
+
+
+def _attachment(one: dict[str, Any], saved: dict[str, str]) -> AnnouncementAttachment:
+    """첨부 하나와 내 저장 상태. 받았으면 saved, 20MB를 넘으면 too_large, 아니면 아직 pending이다."""
+    size = one.get("size")
+    size_bytes = size if isinstance(size, int) and not isinstance(size, bool) else None
+    file_id = saved.get(str(one["id"]))
+    if file_id is not None:
+        status: AttachmentStatus = "saved"
+    elif too_large(size_bytes):
+        status = "too_large"
+    else:
+        status = "pending"
+    return AnnouncementAttachment(
+        name=one["name"], size_bytes=size_bytes, status=status, file_id=file_id
+    )
 
 
 def _desc(value: datetime | None) -> float:
@@ -573,7 +605,7 @@ class LmsRepository:
             ),
             assignments=await self._course_assignments(user_id, course_id),
             module_items=await self._course_items(user_id, head["canvas_course_id"], seen=seen),
-            announcements=await self._course_announcements(head["canvas_course_id"]),
+            announcements=await self._course_announcements(user_id, head["canvas_course_id"]),
             syllabus_items=await self._course_syllabus(user_id, course_id),
             materials=await self._course_materials(user_id, course_id),
         )
@@ -640,14 +672,23 @@ class LmsRepository:
             key=lambda one: (not one.is_new, one.module_name or "", one.title, one.id),
         )
 
-    async def _course_announcements(self, canvas_course_id: int) -> list[CourseAnnouncement]:
-        """과목 공지(F-53이 채운다). **분반 한정 공지는 내려주지 않는다**(명세 9장)."""
+    async def _course_announcements(
+        self, user_id: str, canvas_course_id: int
+    ) -> list[CourseAnnouncement]:
+        """과목 공지(F-53이 채운다). **분반 한정 공지는 내려주지 않는다**(명세 9장).
+
+        첨부(F-54)는 공지 표의 목록(과목 공통)에 **내가 저장했는지**를 붙인다 — 저장은 학생마다 따로다.
+        """
         rows = await self._rows(
-            "select id, title, summary, category::text as category, posted_at, opportunity_id"
+            "select id, title, summary, category::text as category, posted_at, opportunity_id,"
+            " attachments"
             " from lms_announcements"
             " where canvas_course_id = %s and not is_section_specific",
             (canvas_course_id,),
         )
+        listed = [(row, _attachment_list(row["attachments"])) for row in rows]
+        refs = sorted({str(one["id"]) for _, found in listed for one in found})
+        saved = await self._saved_attachments(user_id, refs)
         items = [
             CourseAnnouncement(
                 id=str(row["id"]),
@@ -656,10 +697,22 @@ class LmsRepository:
                 category=row["category"],
                 posted_at=row["posted_at"].astimezone(KST) if row["posted_at"] else None,
                 opportunity_id=str(row["opportunity_id"]) if row["opportunity_id"] else None,
+                attachments=[_attachment(one, saved) for one in found],
             )
-            for row in rows
+            for row, found in listed
         ]
         return sorted(items, key=lambda one: (one.posted_at is None, _desc(one.posted_at), one.id))
+
+    async def _saved_attachments(self, user_id: str, refs: list[str]) -> dict[str, str]:
+        """내가 저장한 공지 첨부: Canvas 첨부 번호 → 내 파일 번호."""
+        if not refs:
+            return {}
+        rows = await self._rows(
+            "select external_ref, id from files where user_id = %s"
+            " and origin = 'lms_attachment' and external_ref = any(%s)",
+            (user_id, refs),
+        )
+        return {row["external_ref"]: str(row["id"]) for row in rows}
 
     async def _course_syllabus(self, user_id: str, course_id: str) -> list[CourseSyllabusItem]:
         rows = await self._rows(
@@ -691,13 +744,17 @@ class LmsRepository:
         )
 
     async def _course_materials(self, user_id: str, course_id: str) -> list[CourseMaterial]:
-        """내가 이 과목에 올린 강의자료. 요약(materials)이 아직 없으면 pending으로 본다."""
+        """내가 이 과목에 **올린** 강의자료. 요약(materials)이 아직 없으면 pending으로 본다.
+
+        공지 첨부(F-54)도 같은 과목·같은 종류로 저장되지만 여기에는 넣지 않는다 — 공지 탭에서
+        공지마다 보여 준다(`origin = upload`만).
+        """
         rows = await self._rows(
             "select f.id, f.original_name, f.created_at,"
             " coalesce(m.status::text, 'pending') as status"
             " from files f left join materials m on m.file_id = f.id"
             " where f.user_id = %(uid)s and f.lms_course_id = %(course)s"
-            "   and f.kind = 'lecture_material'",
+            "   and f.kind = 'lecture_material' and f.origin = 'upload'",
             {"uid": user_id, "course": course_id},
         )
         rows.sort(

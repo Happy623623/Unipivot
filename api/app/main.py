@@ -40,10 +40,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 로그인 설정이 틀렸으면 첫 요청을 기다리지 않고 시작할 때 알린다(.env를 고치면 서버를 다시 켠다)
     if problem := auth_settings_problem(settings):
         logger.warning("로그인 설정 확인: %s", problem)
-    # 파일 업로드(F-13)는 Supabase Storage가 있어야 한다. 비었으면 첫 업로드에서 502가 난다
+    # 파일 업로드(F-13)·공지 첨부 저장(F-54)은 Supabase Storage가 있어야 한다. 비었으면 첫 업로드에서
+    # 502가 나고, 동기화는 공지 첨부를 받지 않는다
     if not settings.supabase_service_role_key or not settings.storage_base_url:
         logger.warning(
-            "파일 저장소 설정 확인: SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL이 있어야 포스터를 올릴 수 있어요"
+            "파일 저장소 설정 확인: SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL이 있어야 포스터를 올리고"
+            " 공지 첨부를 저장할 수 있어요"
         )
     app.state.pool = app.state.log_pool = None
     if settings.database_url:

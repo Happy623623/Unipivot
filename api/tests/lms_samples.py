@@ -30,7 +30,9 @@
 - 본문은 `message`에 **HTML**로 온다(길이 80–4,458자). 녹화 파일에는 본문·이름이 길이만 남아 있어
   (`<3710자>`) 샘플 본문은 우리가 쓴 글이다 — 모양만 녹화와 같다
 - `posted_at`은 16건 모두 있었다. 예약 공지(`delayed_post_at`)는 1건이었다
-- `attachments`는 16건 중 2건(JSON 파일 하나, 포스터 PNG 하나). 수만 센다
+- `attachments`는 16건 중 2건(JSON 파일 하나, 포스터 PNG 하나). 칸은 녹화 그대로다(`attachment`).
+  `filename`은 주소용으로 바뀐 글자이고(`%EC%A0%84…png`) 사람이 읽는 이름은 `display_name`이다.
+  `url`의 `verifier`는 지운 값 대신 가짜 값을 넣었다 — 그 주소로 토큰 없이 받는다(10/19 녹화)
 - `is_section_specific`는 16건 모두 false였다. true면 분반 한정이라 화면에 내려주지 않는다
 - `locked`(8건)는 댓글 잠금이라 우리와 상관없다. `user_name`은 쓰지 않는다(개인정보)
 - 제목이 비슷한 공지가 섞인다("휴강 안내" / "휴강안내 (Class Cancellation Notice)")
@@ -385,6 +387,54 @@ RESEARCH_BODY = (
 )
 
 
+GUIDE_FILE_ID = 11637886  # 녹화한 JSON 첨부(공지 "3주차 강의에 사용되었던 json 파일")
+POSTER_FILE_ID = 11592089  # 녹화한 PNG 첨부(전공 DAY 포스터)
+
+
+def attachment(
+    file_id: int = GUIDE_FILE_ID,
+    *,
+    display_name: str = "ERICA-projects-guide-v2.json",
+    filename: str | None = None,
+    content_type: str = "application/json",
+    size: int | None = 86169,
+    base: str = "https://lms.test",
+) -> dict[str, Any]:
+    """공지 첨부 한 건(10/16 녹화의 칸 그대로). 주소의 verifier는 가짜 값이다."""
+    return {
+        "id": file_id,
+        "uuid": "u" * 40,
+        "folder_id": 2366964,
+        "display_name": display_name,
+        "filename": filename if filename is not None else display_name,
+        "upload_status": "success",
+        "content-type": content_type,
+        "url": f"{base}/files/{file_id}/download?download_frd=1&verifier=v{file_id}abc",
+        "size": size,
+        "created_at": "2026-09-21T05:06:22Z",
+        "updated_at": "2026-09-21T05:06:22Z",
+        "unlock_at": None,
+        "locked": False,
+        "hidden": False,
+        "lock_at": None,
+        "hidden_for_user": False,
+        "thumbnail_url": None,
+        "modified_at": "2026-09-21T05:06:22Z",
+        "mime_class": "file",
+        "media_entry_id": None,
+        "locked_for_user": False,
+    }
+
+
+POSTER_ATTACHMENT: dict[str, Any] = attachment(
+    POSTER_FILE_ID,
+    display_name="전공DAY 포스터.png",
+    filename="%EC%A0%84%EA%B3%B5DAY+%ED%8F%AC%EC%8A%A4%ED%84%B0.png",
+    content_type="image/png",
+    size=979532,
+)
+
+
 def announcement(
     topic_id: int,
     course_id: int,
@@ -392,7 +442,7 @@ def announcement(
     *,
     message: str,
     posted_at: str | None = "2026-09-28T04:43:23Z",
-    attachments: int = 0,
+    attachments: list[dict[str, Any]] | None = None,
     section_specific: bool = False,
 ) -> dict[str, Any]:
     """공지 한 건. 칸 이름·꼴은 녹화 그대로다."""
@@ -415,7 +465,7 @@ def announcement(
         "permissions": {"attach": False, "update": False, "reply": False, "delete": False},
         "read_state": "unread",
         "unread_count": 0,
-        "attachments": [{"id": 11637886 + index} for index in range(attachments)],
+        "attachments": list(attachments or []),
         "published": True,
         "locked": True,
         "html_url": url,
@@ -446,7 +496,7 @@ DB_ANNOUNCEMENTS: list[dict[str, Any]] = [
         "3주차 강의에 사용한 json 파일",
         message="<p>수업에서 쓴 파일을 첨부합니다.</p>",
         posted_at="2026-10-05T05:06:22Z",
-        attachments=1,
+        attachments=[attachment()],
     ),
 ]
 ML_ANNOUNCEMENTS: list[dict[str, Any]] = [

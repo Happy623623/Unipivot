@@ -28,7 +28,13 @@ from app.calendar.google import (
     GoogleEvent,
 )
 from app.llm import LlmReply, ModelTurn, ToolCall, ToolSpec, Turn, Usage, UserTurn
-from app.lms.client import LearningXClient, LearningXError
+from app.lms.client import (
+    AttachmentTooLarge,
+    AttachmentUnavailable,
+    DownloadedFile,
+    LearningXClient,
+    LearningXError,
+)
 from app.posters.prompt import SUBMIT
 from app.push.keys import b64u
 from app.syllabi.extract import SEMESTER_DAYS
@@ -505,6 +511,38 @@ def lms_module(module_id: int, name: str, items: Sequence[dict[str, Any]]) -> di
     }
 
 
+@dataclass(frozen=True)
+class LmsFile:
+    """공지 첨부 하나(F-54). `data`는 받을 때 줄 바이트이고, `size`는 목록이 말하는 크기다."""
+
+    file_id: int
+    name: str
+    content_type: str
+    data: bytes
+    size: int | None = None  # 없으면 len(data)
+
+
+def lms_attachment(file: LmsFile) -> dict[str, Any]:
+    """녹화한 첨부 칸 그대로(2026-10-16, 공지 16건 중 2건). 주소의 verifier는 가짜 값이다."""
+    return {
+        "id": file.file_id,
+        "uuid": "u" * 40,
+        "folder_id": 2366964,
+        "display_name": file.name,
+        "filename": file.name,
+        "upload_status": "success",
+        "content-type": file.content_type,
+        "url": f"{RECORDED}://learningx/files/{file.file_id}/download?download_frd=1"
+        f"&verifier=v{file.file_id}",
+        "size": len(file.data) if file.size is None else file.size,
+        "locked": False,
+        "hidden": False,
+        "hidden_for_user": False,
+        "locked_for_user": False,
+        "mime_class": "file",
+    }
+
+
 def lms_announcement(
     topic_id: int,
     course_id: int,
@@ -513,6 +551,7 @@ def lms_announcement(
     message: str,
     posted_at: str | None,
     section_specific: bool = False,
+    files: Sequence[LmsFile] = (),
 ) -> dict[str, Any]:
     """녹화한 과목 공지 한 건(F-53). 본문은 HTML이고 시각은 UTC(`...Z`)다.
 
@@ -538,7 +577,7 @@ def lms_announcement(
         "permissions": {"attach": False, "update": False, "reply": False, "delete": False},
         "read_state": "unread",
         "unread_count": 0,
-        "attachments": [],
+        "attachments": [lms_attachment(file) for file in files],
         "published": True,
         "locked": True,
         "html_url": url,
@@ -620,6 +659,7 @@ class RecordedLearningX(LearningXClient):
             ML_COURSE_ID: [lms_module(9_903_894, "Week 3 : Trees", [])],
         }
         self.announcement_rows: dict[int, list[dict[str, Any]]] = {}
+        self.files: dict[int, LmsFile] = {}  # 공지 첨부(F-54). 받을 때 이 바이트를 준다
         self.calls: list[str] = []  # 부른 경로(시나리오가 "LMS를 다시 받았는지" 확인한다)
 
     # ── 시나리오가 쓰는 손잡이 ───────────────────────────────────────────────
@@ -639,12 +679,14 @@ class RecordedLearningX(LearningXClient):
         message: str,
         posted_days_ago: float = 0,
         section_specific: bool = False,
+        files: Sequence[LmsFile] = (),
     ) -> None:
-        """다음 동기화에서 새로 보일 과목 공지(F-53).
+        """다음 동기화에서 새로 보일 과목 공지(F-53). 첨부(F-54)는 `files`로 붙인다.
 
         게시 시각은 **주입한 시계에서 며칠 전**이다(`lms_moment`) — 시계를 어느 날로 두고 돌려도
         "최근 공지"로 집힌다(분류는 30일 안의 공지만 본다).
         """
+        self.files.update({file.file_id: file for file in files})
         self.announcement_rows.setdefault(course_id, []).append(
             lms_announcement(
                 topic_id,
@@ -653,6 +695,7 @@ class RecordedLearningX(LearningXClient):
                 message=message,
                 posted_at=lms_posted(self.now, posted_days_ago),
                 section_specific=section_specific,
+                files=files,
             )
         )
 
@@ -713,3 +756,18 @@ class RecordedLearningX(LearningXClient):
     async def announcements(self, token: str, course_id: int) -> list[dict[str, Any]]:
         self.calls.append(f"announcements:{course_id}")
         return [dict(row) for row in self.announcement_rows.get(course_id, [])]
+
+    async def attachment(
+        self, url: str, *, max_bytes: int, html_ok: bool = False
+    ) -> DownloadedFile:
+        """공지 첨부 받기(F-54). 실제 클라이언트처럼 우리 LearningX의 받기 경로만 받는다."""
+        if not self._downloadable(url):
+            raise AttachmentUnavailable("허용하지 않은 첨부 주소예요.")
+        number = int(url.split("/files/")[1].split("/")[0])
+        self.calls.append(f"attachment:{number}")
+        file = self.files.get(number)
+        if file is None:
+            raise AttachmentUnavailable("LearningX가 첨부 대신 로그인 화면으로 보냈어요.")
+        if len(file.data) > max_bytes:
+            raise AttachmentTooLarge("첨부가 상한보다 커요.")
+        return DownloadedFile(file.data, file.content_type)

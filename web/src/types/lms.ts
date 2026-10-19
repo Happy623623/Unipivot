@@ -123,6 +123,14 @@ export type SubmissionState =
   "unsubmitted" | "submitted" | "graded" | "pending_review";
 export type AnnouncementCategory =
   "schedule_change" | "material" | "opportunity" | "general";
+// 공지 첨부의 내 저장 상태(F-54): saved 문서함에 받음 · too_large 20MB가 넘어 받지 않음 · pending 아직(다음 동기화가 받는다)
+export type AttachmentStatus = "saved" | "too_large" | "pending";
+export interface AnnouncementAttachment {
+  name: string;
+  size_bytes: number | null;
+  status: AttachmentStatus;
+  file_id: string | null; // 저장했으면 내 파일 번호
+}
 export interface CourseDetail {
   course: {
     id: string;
@@ -156,6 +164,7 @@ export interface CourseDetail {
     category: AnnouncementCategory | null;
     posted_at: string | null;
     opportunity_id: string | null;
+    attachments: AnnouncementAttachment[]; // 첨부가 없으면 빈 목록(F-54)
   }[];
   syllabus_items: SyllabusItemView[];
   materials: {

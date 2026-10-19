@@ -2,7 +2,9 @@
 
 가리는 것: Authorization 헤더, Bearer 토큰, token=… 값, JWT, Google access·refresh token,
 LearningX(Canvas) 개인 액세스 토큰, Fernet 암호문, Anthropic·Google API 키, 주소에 붙은 API 키
-(온통청년 apiKeyNm=… 등). 요청 주소처럼 문자열이 아닌 인자도 문자열로 바꿔 보고 가릴 것이 있으면 가린다.
+(온통청년 apiKeyNm=… 등), 공지 첨부 주소의 열쇠(Canvas `verifier=…`, 파일 저장소 서명
+`X-Amz-Signature=…`·`X-Amz-Credential=…`). 요청 주소처럼 문자열이 아닌 인자도 문자열로 바꿔 보고
+가릴 것이 있으면 가린다.
 """
 
 import logging
@@ -32,6 +34,13 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # 주소에 붙은 키: apiKeyNm=…, api_key=…, x_api_key=…, serviceKey=…
     (
         re.compile(r"(?i)(?<![A-Za-z0-9])((?:apiKeyNm|api_?key|service_?key)=)[^&\s'\"]+"),
+        r"\1" + _REDACTED,
+    ),
+    # 공지 첨부 주소(F-54): verifier만 있으면 로그인 없이 받고, 저장소 서명 주소는 만료 전까지 열린다
+    (
+        re.compile(
+            r"(?i)(?<![A-Za-z0-9])((?:verifier|x-amz-signature|x-amz-credential)=)[^&\s'\"]+"
+        ),
         r"\1" + _REDACTED,
     ),
 )

@@ -24,6 +24,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends
 from psycopg import AsyncConnection
+from psycopg.types.json import Jsonb
 
 from app.db import get_conn
 from app.extraction.models import ExtractionResult
@@ -36,15 +37,16 @@ logger = logging.getLogger(__name__)
 
 TITLE_MAX = 200  # 공고 제목 길이(포스터 등록과 같다)
 
+# 첨부 목록(F-54)은 번호·이름·크기·형식만 넣는다. 주소는 verifier가 든 열쇠라 넣지 않는다
 _UPSERT = (
     "insert into lms_announcements (canvas_course_id, canvas_topic_id, title, message, posted_at,"
-    " attachment_count, is_section_specific, first_seen_at)"
-    " values (%(canvas)s, %(topic)s, %(title)s, %(message)s, %(posted)s, %(files)s, %(section)s,"
-    " %(now)s)"
+    " attachment_count, attachments, is_section_specific, first_seen_at)"
+    " values (%(canvas)s, %(topic)s, %(title)s, %(message)s, %(posted)s, %(files)s,"
+    " %(attachments)s, %(section)s, %(now)s)"
     " on conflict (canvas_topic_id) do update set"
     " canvas_course_id = excluded.canvas_course_id, title = excluded.title,"
     " message = excluded.message, posted_at = excluded.posted_at,"
-    " attachment_count = excluded.attachment_count,"
+    " attachment_count = excluded.attachment_count, attachments = excluded.attachments,"
     " is_section_specific = excluded.is_section_specific"
     " returning id, (xmax = 0) as inserted"
 )
@@ -126,6 +128,7 @@ class AnnouncementRepository:
                     "message": one.message,
                     "posted": one.posted_at,
                     "files": one.attachment_count,
+                    "attachments": Jsonb([item.stored() for item in one.attachments]),
                     "section": one.is_section_specific,
                     "now": now + timedelta(microseconds=index),
                 },

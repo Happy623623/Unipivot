@@ -8,11 +8,20 @@ from typing import Any
 
 import pytest
 
-from app.lms.announcements import NO_TITLE, announcement, announcements
+from app.lms.announcements import NO_TITLE, announcement, announcements, too_large
 from app.lms.classify import BODY_MAX, SUBMIT, SUMMARY_MAX, classify, first_message
+from app.uploads import MAX_BYTES
 from tests.llm_fakes import ScriptedLlm
 from tests.llm_fakes import call as model_call
-from tests.lms_samples import DB_ANNOUNCEMENTS, RESEARCH_TITLE, RESEARCH_TOPIC_ID
+from tests.lms_samples import (
+    DB_ANNOUNCEMENTS,
+    GUIDE_FILE_ID,
+    POSTER_ATTACHMENT,
+    POSTER_FILE_ID,
+    RESEARCH_TITLE,
+    RESEARCH_TOPIC_ID,
+    attachment,
+)
 
 MODEL = "gemini-3.5-flash-lite"
 
@@ -30,10 +39,69 @@ def test_it_reads_the_recorded_shape() -> None:
     first = items[0]
     assert first.title == RESEARCH_TITLE
     assert first.posted_at == datetime(2026, 10, 14, 4, 41, 13, tzinfo=UTC)
-    assert first.attachment_count == 0
+    assert first.attachment_count == 0 and first.attachments == ()
     assert first.is_section_specific is False
-    # 첨부가 있는 공지는 수만 센다(첨부 다운로드는 허용 경로가 아니다)
     assert items[2].attachment_count == 1
+    (guide,) = items[2].attachments
+    assert (guide.canvas_file_id, guide.name, guide.size, guide.content_type) == (
+        GUIDE_FILE_ID,
+        "ERICA-projects-guide-v2.json",
+        86169,
+        "application/json",
+    )
+    assert guide.url is not None and "verifier=" in guide.url  # 받을 때만 쓴다
+
+
+def test_an_attachment_is_stored_without_its_address() -> None:
+    """저장하는 모양에 주소가 없다 — verifier만 있으면 로그인 없이 받을 수 있다(10/19 녹화)."""
+    item = announcement(one(attachments=[attachment()]))
+    assert item is not None
+    assert item.attachments[0].stored() == {
+        "id": GUIDE_FILE_ID,
+        "name": "ERICA-projects-guide-v2.json",
+        "size": 86169,
+        "content_type": "application/json",
+    }
+    assert "verifier" not in repr(item)  # 실수로 찍어도 주소가 나오지 않는다
+
+
+def test_the_readable_name_wins_over_the_address_name() -> None:
+    """녹화의 PNG는 `filename`이 주소용 글자였다. 이름은 `display_name`이고, 없으면 그것을 푼다."""
+    poster = announcement(one(attachments=[POSTER_ATTACHMENT]))
+    assert poster is not None and poster.attachments[0].name == "전공DAY 포스터.png"
+    bare = {**POSTER_ATTACHMENT, "display_name": "  "}
+    decoded = announcement(one(attachments=[bare]))
+    assert decoded is not None and decoded.attachments[0].name == "전공DAY 포스터.png"
+    nameless = {**POSTER_ATTACHMENT, "display_name": None, "filename": None}
+    fallback = announcement(one(attachments=[nameless]))
+    assert fallback is not None and fallback.attachments[0].name == f"첨부 {POSTER_FILE_ID}"
+
+
+def test_broken_attachments_are_dropped_or_blanked() -> None:
+    """번호가 없으면 버리고, 같은 번호는 하나로, 크기·형식·주소가 이상하면 비운다."""
+    item = announcement(
+        one(
+            attachments=[
+                {"display_name": "번호 없음"},
+                "글자",
+                attachment(),
+                attachment(),  # 같은 첨부가 두 번
+                attachment(7, size=-1, content_type=" ", display_name="이상한 값"),
+                {**attachment(8), "size": True, "content-type": 3, "url": 3},
+            ]
+        )
+    )
+    assert item is not None
+    assert item.attachment_count == 6  # 수는 Canvas가 준 그대로 센다(화면의 "첨부 N개")
+    assert [one.canvas_file_id for one in item.attachments] == [GUIDE_FILE_ID, 7, 8]
+    assert (item.attachments[1].size, item.attachments[1].content_type) == (None, None)
+    assert (item.attachments[2].size, item.attachments[2].url) == (None, None)
+
+
+def test_the_size_rule_is_the_upload_limit() -> None:
+    assert too_large(None) is False  # 모르면 받아 보며 잰다
+    assert too_large(MAX_BYTES) is False
+    assert too_large(MAX_BYTES + 1) is True
 
 
 def test_html_becomes_plain_text() -> None:
