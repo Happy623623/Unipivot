@@ -1,6 +1,7 @@
-import { ApiError, apiFetch, notReady, USE_MOCKS } from "@/api/http";
+import { ApiError, apiFetch, USE_MOCKS } from "@/api/http";
 import * as mock from "@/api/mockClient";
 import { connectGoogleCalendar } from "@/lib/googleCalendar";
+import { createBrowserSupabase } from "@/lib/supabase/client";
 import type {
   ClientEvent,
   ConsentResult,
@@ -156,11 +157,13 @@ async function readNotifications(body: { ids: string[] } | { all: true }): Promi
   return result.unread_count;
 }
 
-// 탈퇴를 받을지. TODO(api): DELETE /me(4장)가 생기면 deleteAccount를 바꾸고 지운다.
-// 그 전까지 실제 모드는 탈퇴 창에서 준비 중이라고 먼저 알린다
-export const DELETE_ACCOUNT_READY = USE_MOCKS;
-
-export function deleteAccount(): Promise<void> {
+// DELETE /me (4장, F-06). 서버가 파일·Google 권한·프로필을 지운다. 끝나면 이 기기의 세션을 지우고
+// 로그인 화면으로 간다(로그인 계정은 남아, 다시 로그인하면 동의부터 새로 시작한다).
+// 목 모드는 그 자리에서 동의 전 상태로 돌아간다(부르는 쪽이 온보딩으로 보낸다)
+export async function deleteAccount(): Promise<void> {
   if (USE_MOCKS) return mock.deleteAccount();
-  return notReady("탈퇴는 아직 준비 중이에요. 준비되면 이 화면에서 바로 탈퇴할 수 있어요.");
+  await apiFetch<void>("/me", { method: "DELETE" });
+  await createBrowserSupabase().auth.signOut({ scope: "local" });
+  window.location.assign("/login?notice=deleted");
+  return new Promise<void>(() => {}); // 페이지가 바뀌므로 끝나지 않는다
 }

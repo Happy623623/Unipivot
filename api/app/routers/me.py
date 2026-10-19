@@ -1,9 +1,12 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from pydantic import ValidationError
 
+from app.account import delete_account
 from app.auth import CurrentUserDep
+from app.calendar.service import CalendarServiceDep
 from app.clock import NowDep
 from app.errors import ApiError
+from app.repositories.files import FileRepoDep
 from app.repositories.meta import MetaRepoDep
 from app.repositories.opportunities import OpportunityRepoDep
 from app.repositories.profiles import ProfileRepoDep
@@ -22,6 +25,7 @@ from app.schemas.me import (
     SettingsUpdate,
     gpa_errors,
 )
+from app.uploads.storage import StorageDep
 
 router = APIRouter(prefix="/me", tags=["내 정보"])
 
@@ -183,3 +187,21 @@ async def update_income_consent(
     if not body.agree_income_info:  # 철회하면 소득 값이 지워져서 판정이 바뀔 수 있다
         await feed.refresh_judgments(user.id, now=now, force=True)
     return result
+
+
+@router.delete("", status_code=204, response_class=Response)
+async def delete_me(
+    user: CurrentUserDep,
+    files: FileRepoDep,
+    storage: StorageDep,
+    calendar: CalendarServiceDep,
+    profiles: ProfileRepoDep,
+) -> Response:
+    """탈퇴 (API 4장, F-06). 파일 → Google 권한 → profiles 순으로 지운다(app/account.py).
+
+    파일을 지우지 못하면 502 `STORAGE_API_ERROR`로 멈추고 아무것도 바꾸지 않는다.
+    """
+    await delete_account(
+        user.id, files=files, storage=storage, calendar=calendar, profiles=profiles
+    )
+    return Response(status_code=204)

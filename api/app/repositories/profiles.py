@@ -57,6 +57,12 @@ class ProfileRepository:
             (user_id, display_name),
         )
 
+    async def delete(self, user_id: str) -> bool:
+        """탈퇴(ERD 7장): profiles 행을 지우면 딸린 행은 cascade로 지워지고, 공유 공고의 업로더와
+        실행 로그의 사용자는 null이 된다. 지운 행이 있었으면 True다."""
+        cursor = await self.conn.execute("delete from profiles where id = %s", (user_id,))
+        return cursor.rowcount > 0
+
     async def get_me(self, user_id: str) -> Me | None:
         filled = sql.SQL(" + ").join(
             sql.SQL("(p.{} is not null)::int").format(sql.Identifier(f)) for f in COMPLETION_FIELDS

@@ -6,6 +6,11 @@ import { createBrowserSupabase } from "@/lib/supabase/client";
 
 const useMocks = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 
+// 오류가 아닌 안내(?notice=). 탈퇴 뒤에 온다
+const noticeMessages: Record<string, string> = {
+  deleted: "탈퇴했어요. 개인 정보와 토큰, 올린 파일을 지웠어요.",
+};
+
 const errorMessages: Record<string, string> = {
   auth: "로그인을 마치지 못했어요. 다시 시도해 주세요.",
   missing_code: "로그인 정보가 없어요. 처음부터 다시 시도해 주세요.",
@@ -26,7 +31,9 @@ function GoogleMark() {
 
 function LoginCard() {
   const router = useRouter();
-  const errorCode = useSearchParams().get("error");
+  const params = useSearchParams();
+  const errorCode = params.get("error");
+  const notice = noticeMessages[params.get("notice") ?? ""] ?? null;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(
     errorCode ? (errorMessages[errorCode] ?? errorMessages.auth) : null,
@@ -71,6 +78,11 @@ function LoginCard() {
       {error && (
         <p role="alert" className="mt-4 rounded-[10px] bg-[#fef2f2] p-3 text-[13px] text-[#c53030]">
           {error}
+        </p>
+      )}
+      {!error && notice && (
+        <p role="status" className="mt-4 rounded-[10px] bg-[#ecfdf3] p-3 text-[13px] text-[#15803d]">
+          {notice}
         </p>
       )}
     </section>

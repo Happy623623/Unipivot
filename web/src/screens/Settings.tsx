@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   consentRequired,
-  DELETE_ACCOUNT_READY,
   deleteAccount,
   errorMessage,
   fieldErrors,
@@ -64,6 +63,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteText, setDeleteText] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState<{ message: string; fields: ProfileErrors } | null>(null);
   const [toast, setToast] = useState("");
@@ -133,13 +133,16 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
       setSavingProfile(false);
     }
   };
+  // 실제 모드는 끝나면 로그인 화면으로 떠나므로(deleteAccount) 이 함수가 끝나지 않는다. 목 모드는 온보딩으로
   const removeAccount = async () => {
     setDeleteError(null);
+    setDeleting(true);
     try {
       await deleteAccount();
       navigate({ name: "onboarding" });
     } catch (caught) {
       setDeleteError(errorMessage(caught, "탈퇴하지 못했어요. 잠시 후 다시 눌러 주세요."));
+      setDeleting(false);
     }
   };
 
@@ -208,32 +211,18 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
         />
       </Modal>
       <Modal open={deleteOpen} title="계정 탈퇴" onClose={() => setDeleteOpen(false)}>
-        {DELETE_ACCOUNT_READY ? (
-          <>
-            <p className="text-[14px] leading-6 text-[#344054]">
-              모든 개인 정보와 토큰을 지워요. 공유한 포스터 공고는 이름 없이 남아요.
-            </p>
-            <label className="mt-4 block text-[13px] font-semibold">
-              확인을 위해 탈퇴를 입력해 주세요
-              <input value={deleteText} onChange={(event) => setDeleteText(event.target.value)} className="mt-2 h-[42px] w-full rounded-[10px] border border-[#e5e7eb] px-3 outline-none focus:border-[#c53030]" />
-            </label>
-            {deleteError && <p role="alert" className="mt-3 text-[13px] text-[#c53030]">{deleteError}</p>}
-            <div className="mt-6 flex justify-end gap-2">
-              <Button secondary onClick={() => setDeleteOpen(false)}>취소</Button>
-              <Button disabled={deleteText !== "탈퇴"} onClick={removeAccount}>탈퇴</Button>
-            </div>
-          </>
-        ) : (
-          <>
-            {/* TODO(api): DELETE /me가 생기면 지운다 */}
-            <p className="text-[14px] leading-6 text-[#344054]">
-              탈퇴는 아직 준비 중이에요. 준비되면 이 화면에서 바로 탈퇴할 수 있어요.
-            </p>
-            <div className="mt-6 flex justify-end">
-              <Button onClick={() => setDeleteOpen(false)}>확인</Button>
-            </div>
-          </>
-        )}
+        <p className="text-[14px] leading-6 text-[#344054]">
+          모든 개인 정보와 토큰, 올린 파일을 지워요. 공유한 포스터 공고는 이름 없이 남고, 캘린더에 이미 넣은 일정은 그대로 남아요.
+        </p>
+        <label className="mt-4 block text-[13px] font-semibold">
+          확인을 위해 탈퇴를 입력해 주세요
+          <input value={deleteText} onChange={(event) => setDeleteText(event.target.value)} className="mt-2 h-[42px] w-full rounded-[10px] border border-[#e5e7eb] px-3 outline-none focus:border-[#c53030]" />
+        </label>
+        {deleteError && <p role="alert" className="mt-3 text-[13px] text-[#c53030]">{deleteError}</p>}
+        <div className="mt-6 flex justify-end gap-2">
+          <Button secondary onClick={() => setDeleteOpen(false)}>취소</Button>
+          <Button disabled={deleteText !== "탈퇴" || deleting} onClick={removeAccount}>{deleting ? "지우는 중" : "탈퇴"}</Button>
+        </div>
       </Modal>
       {toast && (
         <div className="fixed bottom-6 left-1/2 z-[90] -translate-x-1/2 rounded-[10px] bg-[#181a20] px-4 py-3 text-[13px] font-semibold text-white">

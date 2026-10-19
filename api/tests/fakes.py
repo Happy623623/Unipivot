@@ -127,6 +127,13 @@ class FakeProfileRepository:
     async def save_google_tokens(self, user_id: str, access_token: str, refresh_token: str) -> None:
         self.tokens[user_id] = {"access_token": access_token, "refresh_token": refresh_token}
 
+    async def delete(self, user_id: str) -> bool:
+        """탈퇴. 실제 저장소는 cascade로 딸린 행을 지우므로 여기서도 토큰·설정을 함께 지운다."""
+        had = self.profiles.pop(user_id, None) is not None
+        self.tokens.pop(user_id, None)
+        self.settings.pop(user_id, None)
+        return had
+
 
 class FakeMetaRepository:
     def __init__(self) -> None:

@@ -18,6 +18,7 @@ from typing import Annotated
 from fastapi import Depends, Request
 from psycopg import AsyncConnection
 
+from app.db import get_conn
 from app.errors import ApiError
 
 
@@ -45,6 +46,16 @@ class FileRepository:
             )
         ).fetchone()
         return None if row is None else StoredFile(row["id"], row["kind"], row["page_count"])
+
+    async def storage_paths(self, user_id: str) -> list[str]:
+        """이 사용자가 올린 파일이 저장소에 있는 경로 전부(탈퇴 때 지운다)."""
+        rows = await (
+            await self.conn.execute(
+                "select storage_path from files where user_id = %s order by created_at, storage_path",
+                (user_id,),
+            )
+        ).fetchall()
+        return [row["storage_path"] for row in rows]
 
     async def uploads_since(self, user_id: str, since: datetime) -> int:
         """하루 한도를 세는 값. 올려서 저장한 것만 센다(이미 있던 파일을 다시 올린 것은 안 센다)."""
@@ -117,3 +128,11 @@ def get_file_repos(request: Request) -> FileRepos:
 
 
 FileReposDep = Annotated[FileRepos, Depends(get_file_repos)]
+
+
+def get_file_repo(conn: Annotated[AsyncConnection, Depends(get_conn)]) -> FileRepository:
+    """요청 트랜잭션 안에서 쓰는 저장소(탈퇴처럼 다른 삭제와 한 트랜잭션이어야 할 때)."""
+    return FileRepository(conn)
+
+
+FileRepoDep = Annotated[FileRepository, Depends(get_file_repo)]
