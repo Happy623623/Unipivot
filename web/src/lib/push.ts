@@ -188,6 +188,20 @@ export async function unsubscribeHere(): Promise<string | null> {
   return endpoint;
 }
 
+/**
+ * 로그아웃할 때: 이미 등록된 서비스 워커에 구독이 있으면 지운다. 지운 주소를 돌려준다(서버에서도 지워야 한다).
+ * `unsubscribeHere`와 달리 서비스 워커를 새로 등록하지 않는다 — 푸시를 쓰지 않는 배포·브라우저에서 로그아웃이 아무것도 남기지 않게.
+ */
+export async function unsubscribeIfAny(): Promise<string | null> {
+  if (USE_MOCKS) return unsubscribeHere();
+  if (!pushSupported()) return null;
+  const found = await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription();
+  if (!found) return null;
+  const endpoint = found.endpoint;
+  await found.unsubscribe();
+  return endpoint;
+}
+
 /** 알림함 배너를 이번 방문 동안 접어 둔다(탭을 닫으면 다시 보인다). */
 export function dismissBanner(): void {
   try {

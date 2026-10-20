@@ -6,9 +6,10 @@ import { createBrowserSupabase } from "@/lib/supabase/client";
 
 const useMocks = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 
-// 오류가 아닌 안내(?notice=). 탈퇴 뒤에 온다
+// 오류가 아닌 안내(?notice=). 탈퇴·로그아웃 뒤에 온다
 const noticeMessages: Record<string, string> = {
   deleted: "탈퇴했어요. 개인 정보와 토큰, 올린 파일을 지웠어요.",
+  signed_out: "로그아웃했어요. 다시 쓰려면 Google로 시작하기를 눌러 주세요.",
 };
 
 const errorMessages: Record<string, string> = {

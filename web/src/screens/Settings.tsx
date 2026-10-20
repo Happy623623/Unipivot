@@ -19,6 +19,7 @@ import IncomeConsentSetting from "@/components/IncomeConsentSetting";
 import Modal from "@/components/Modal";
 import NotificationSettings from "@/components/NotificationSettings";
 import ProfileForm from "@/components/ProfileForm";
+import SignOutSetting from "@/components/SignOutSetting";
 import Skeleton from "@/components/Skeleton";
 import { DEGREE_LABELS, regionText, type ProfileErrors } from "@/lib/profileFields";
 import useAsyncData from "@/lib/useAsyncData";
@@ -187,6 +188,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
           setMeOverride(await getMe());
           setProfileOverride(await getProfile());
         }} />
+        <SignOutSetting />
         <button
           type="button"
           onClick={() => {
