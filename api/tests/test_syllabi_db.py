@@ -95,6 +95,10 @@ class Fixture:
     paths: dict[str, str] = field(default_factory=dict)
 
 
+# 계획서를 올린 시각(10/15 10:00 KST, 2026-2학기 중)
+UPLOADED_AT = datetime(2026, 10, 15, 1, 0, tzinfo=UTC)
+
+
 @asynccontextmanager
 async def committed() -> AsyncIterator[Fixture]:
     """사용자 둘, 과목 둘, 계획서 파일 둘을 커밋한다. 끝나면 지운다."""
@@ -185,12 +189,17 @@ async def extract(
     storage: FakeStorage | None = None,
     name: str = "내 계획서",
     user: str | None = None,
+    now: datetime = UPLOADED_AT,
 ) -> dict[str, Any]:
-    """`POST /syllabi/extract` → `GET /runs/{id}`. InlineRunner라 응답 전에 실행이 끝나 있다."""
+    """`POST /syllabi/extract` → `GET /runs/{id}`. InlineRunner라 응답 전에 실행이 끝나 있다.
+
+    올린 시각은 UPLOADED_AT으로 고정한다. 계획서 날짜가 2026-2학기라, 실제 시계로 올리면 학기가 끝난 뒤
+    (과목 없이 올린 계획서는 올린 날이 든 학기를 쓴다) 일정이 학기 밖이라 빠져 시험이 깨졌다
+    """
     store = storage or FakeStorage()
     file_id = world.files[name]
     store.objects.setdefault(world.paths[file_id], PDF)
-    async with api(settings, llm, store) as client:
+    async with api(settings, llm, store, now=now) as client:
         http = client(user or world.user)
         started = await http.post(
             "/api/v1/syllabi/extract", json={"file_id": file_id, **(body or {})}

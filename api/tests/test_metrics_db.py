@@ -25,7 +25,9 @@ pytestmark = [
     pytest.mark.skipif(not DATABASE_URL, reason="DATABASE_URL이 없어서 DB 통합 테스트를 건너뜀"),
 ]
 
-WIDE = (date(2026, 1, 1), date(2027, 12, 31))  # 시나리오 실행을 모두 담는 기간
+# 시나리오 실행을 모두 담는 기간. 실행은 DB now()에 남으므로 끝은 오늘(KST)에서 1년 뒤로 둔다
+# (2027-12-31로 박아 두면 그 뒤로는 실행이 기간 밖이라 깨졌다 — 시계를 앞으로 돌려 찾았다)
+WIDE = (date(2026, 1, 1), to_kst_date(current_time()) + timedelta(days=366))
 
 
 async def aggregate(period: tuple[date, date] = WIDE) -> Any:
@@ -148,7 +150,7 @@ async def test_the_cost_of_a_run_outside_the_period_is_not_counted() -> None:
         await conn.close()
     await run_scenarios(DATABASE_URL, pick(["S01"]))  # 기간 안의 실행
 
-    today = (await aggregate((date(2026, 1, 1), date(2027, 12, 31)))).scenarios
+    today = (await aggregate(WIDE)).scenarios
     assert (today.runs, today.llm_calls) == (1, 1)
     assert today.cost_usd > 0
     past = (await aggregate((date(2020, 1, 1), date(2020, 1, 1)))).scenarios

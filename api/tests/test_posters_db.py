@@ -8,7 +8,7 @@ Storage도 가짜다. 초안은 tool_calls.output에 남고 GET /runs/{id}가 �
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -18,6 +18,7 @@ import pytest
 from app.background import InlineRunner
 from app.config import Settings, get_settings
 from app.db import create_pools
+from app.eligibility.dates import KST
 from app.extraction.store import content_hash
 from app.extraction.validate import LOW_CONFIDENCE as LOW_CONFIDENCE_REASON
 from app.llm.deps import get_llm
@@ -28,7 +29,24 @@ from app.uploads.storage import StorageError, get_storage
 from tests.conftest import make_token
 from tests.db_world import DATABASE_URL, connect, make_user
 from tests.llm_fakes import ScriptedLlm, call
-from tests.test_posters_extract import TEXT, args
+from tests.test_posters_extract import TEXT
+from tests.test_posters_extract import args as extract_args
+
+# 초안 마감은 시험을 돌리는 날(KST)에서 30일 뒤 18:00이다. 날짜를 박아 두면 그날이 지나 깨졌다(10/20 CI) —
+# 같은 날 지나면 등록이 "마감이 이미 지났어요"로 거절되고, 다음 날부터는 추출이 "게시일보다 이른 마감"이라 마감을
+# 버려 마감을 보는 시험이 엉뚱한 이유로 지나가거나 깨진다(app/extraction/validate.py `_check_deadline`)
+DEADLINE_DAY = datetime.now(KST).date() + timedelta(days=30)
+DEADLINE_AT = datetime.combine(DEADLINE_DAY, time(18, 0), KST)
+
+
+def args(**over: Any) -> dict[str, Any]:
+    """추출 시험의 가짜 제출값에 마감만 위 날짜로 바꾼다(신청 시작은 마감 20일 전)."""
+    dates = {
+        "apply_start": (DEADLINE_DAY - timedelta(days=20)).isoformat(),
+        "deadline": f"{DEADLINE_DAY.isoformat()}T18:00",
+    }
+    return extract_args(**{**dates, **over})
+
 
 pytestmark = [
     pytest.mark.db,
@@ -312,15 +330,9 @@ async def test_a_duplicate_is_found_by_title_and_the_same_deadline_day(settings:
     llm = ScriptedLlm(call(SUBMIT, **args()))
     async with committed() as world:
         add = world.add
-        # 초안 마감일은 2026-10-20 18:00 KST다. 제목은 띄어쓰기를 지워 비교한다
-        same = await add(
-            "2026전국대학생SW창업아이디어톤",
-            None,
-            deadline_at=datetime.fromisoformat("2026-10-20T09:00:00+00:00"),
-        )
-        await add(
-            "다른 공고", None, deadline_at=datetime.fromisoformat("2026-10-20T09:00:00+00:00")
-        )
+        # 초안 마감일은 DEADLINE_AT(18:00 KST)이다. 제목은 띄어쓰기를 지워 비교한다
+        same = await add("2026전국대학생SW창업아이디어톤", None, deadline_at=DEADLINE_AT)
+        await add("다른 공고", None, deadline_at=DEADLINE_AT)
         await world.commit()
         run = await extract(world, settings, llm)
     assert run["result"]["duplicate_candidate"]["opportunity_id"] == same
@@ -333,7 +345,7 @@ async def test_the_same_title_on_another_day_is_not_a_duplicate(settings: Settin
         await add(
             "2026 전국 대학생 SW 창업 아이디어톤",
             None,
-            deadline_at=datetime.fromisoformat("2026-10-21T09:00:00+00:00"),
+            deadline_at=DEADLINE_AT + timedelta(days=1),
         )
         await world.commit()
         run = await extract(world, settings, llm)
@@ -349,7 +361,7 @@ async def test_another_students_poster_opportunity_is_not_a_duplicate(settings: 
             None,
             source_type="poster",
             uploaded_by=world.other,
-            deadline_at=datetime.fromisoformat("2026-10-20T09:00:00+00:00"),
+            deadline_at=DEADLINE_AT,
         )
         await world.commit()
         run = await extract(world, settings, llm)
