@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import Modal from "@/components/Modal";
@@ -41,6 +41,7 @@ export default function PlannerDayPanel({
   const [dueDate, setDueDate] = useState(date);
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const menuButton = useRef<HTMLButtonElement | null>(null); // 마지막으로 연 "⋯" — 메뉴에서 연 창이 닫히면 여기로 초점을 돌린다
   const [toggling, setToggling] = useState<ReadonlySet<string>>(new Set()); // 저장 중인 할 일(할 일마다 따로 잠근다)
 
   const openForm = (task?: PlannerTask) => {
@@ -116,7 +117,10 @@ export default function PlannerDayPanel({
                   <div className="flex items-center gap-2">
                     <Badge tone={meta.tone}>{meta.label}</Badge>
                     {(editable(task).title || editable(task).date) && (
-                      <button type="button" onClick={() => setMenuOpen(menuOpen === task.id ? null : task.id)} aria-label={`${task.title} 더 보기`} className="px-1 text-[18px] text-[#667085]">⋯</button>
+                      <button type="button" onClick={(event) => {
+                        menuButton.current = event.currentTarget;
+                        setMenuOpen(menuOpen === task.id ? null : task.id);
+                      }} aria-label={`${task.title} 더 보기`} className="px-1 text-[18px] text-[#667085]">⋯</button>
                     )}
                   </div>
                 </div>
@@ -154,6 +158,7 @@ export default function PlannerDayPanel({
         open={modalOpen}
         title={!editing ? "일정 추가" : canEditTitle ? "일정 수정" : "날짜 옮기기"}
         onClose={() => setModalOpen(false)}
+        returnFocusRef={menuButton}
       >
         {canEditTitle ? (
           <label>
