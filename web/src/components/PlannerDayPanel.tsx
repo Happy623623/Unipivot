@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
-import Modal from "@/components/Modal";
+import Modal, { ModalCancelButton } from "@/components/Modal";
 import { formatKstLongDate } from "@/lib/format";
 import { getPlannerTaskMeta } from "@/lib/planner";
 import type { PlannerMarker, PlannerTask } from "@/types/api";
@@ -43,8 +43,10 @@ export default function PlannerDayPanel({
   const [saving, setSaving] = useState(false);
   const menuButton = useRef<HTMLButtonElement | null>(null); // 마지막으로 연 "⋯" — 메뉴에서 연 창이 닫히면 여기로 초점을 돌린다
   const [toggling, setToggling] = useState<ReadonlySet<string>>(new Set()); // 저장 중인 할 일(할 일마다 따로 잠근다)
+  const formRound = useRef(0); // 창을 연 횟수. 15초 잠금이 풀려 닫고 새로 연 창을 앞 저장의 결과가 닫지 않게 한다
 
   const openForm = (task?: PlannerTask) => {
+    formRound.current += 1;
     setEditing(task ?? null);
     setTitle(task?.title ?? "");
     setDueDate(task?.due_date ?? date);
@@ -57,10 +59,12 @@ export default function PlannerDayPanel({
   const save = async () => {
     if (canEditTitle && !title.trim()) return;
     setSaving(true);
+    const round = formRound.current;
     try {
       if (editing) await onEdit(editing, title.trim(), dueDate);
       else await onAdd(title.trim(), dueDate);
-      setModalOpen(false); // 저장하지 못하면(오류가 올라온다) 창을 열어 둔 채 다시 누르게 한다
+      // 저장하지 못하면(오류가 올라온다) 창을 열어 둔 채 다시 누르게 한다. 그새 다른 창을 열었으면 그 창은 두고
+      if (round === formRound.current) setModalOpen(false);
     } catch {
       /* 안내는 화면이 띄운다 */
     } finally {
@@ -159,6 +163,7 @@ export default function PlannerDayPanel({
         title={!editing ? "일정 추가" : canEditTitle ? "일정 수정" : "날짜 옮기기"}
         onClose={() => setModalOpen(false)}
         returnFocusRef={menuButton}
+        busy={saving}
       >
         {canEditTitle ? (
           <label>
@@ -176,7 +181,7 @@ export default function PlannerDayPanel({
           <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} className="h-[42px] w-full rounded-[10px] border border-[#e5e7eb] px-3 text-[14px] outline-none focus:border-[#4f6ef7]" />
         </label>
         <div className="mt-6 flex justify-end gap-2">
-          <Button secondary onClick={() => setModalOpen(false)}>취소</Button>
+          <ModalCancelButton />
           <Button onClick={save} busy={saving}>{saving ? "저장 중" : "저장"}</Button>
         </div>
       </Modal>

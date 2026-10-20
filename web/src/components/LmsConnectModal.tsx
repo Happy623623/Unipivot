@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, connectLms, errorMessage } from "@/api/client";
 import Button from "@/components/Button";
 import Modal from "@/components/Modal";
@@ -25,8 +25,18 @@ export default function LmsConnectModal({
   const [status, setStatus] = useState<ConnectStatus>("idle");
   const [connected, setConnected] = useState<LmsConnectResult | null>(null);
   const [failure, setFailure] = useState(TOKEN_FAILURE);
+  // 닫을 때마다 늘린다. 확인이 15초를 넘겨 잠금이 풀린 뒤 닫으면, 늦게 온 결과는 이 창(다시 연 창)에 그리지 않는다
+  const attempt = useRef(0);
+  const checkingRef = useRef<HTMLDivElement>(null);
+
+  // "연결하기"를 누르면 그 버튼이 확인 화면으로 바뀌어 초점이 <body>로 빠진다. 창이 키를 듣지 못해 15초 뒤에도
+  // Esc로 닫을 수 없고 화면 읽기 프로그램도 무엇이 진행 중인지 모른다. 확인 화면으로 초점을 옮긴다
+  useEffect(() => {
+    if (status === "checking") checkingRef.current?.focus({ preventScroll: true });
+  }, [status]);
 
   const close = () => {
+    attempt.current += 1;
     setStep(1);
     setToken("");
     setStatus("idle");
@@ -36,11 +46,15 @@ export default function LmsConnectModal({
   };
 
   const connect = async () => {
+    const mine = attempt.current;
     setStatus("checking");
     try {
       const result = await connectLms(token);
-      setConnected(result);
-      setStatus("success");
+      // 연결은 됐으니 바깥(연결 상태)에는 늘 알린다. 창 안 결과는 닫지 않았을 때만
+      if (mine === attempt.current) {
+        setConnected(result);
+        setStatus("success");
+      }
       onConnected({
         status: result.status,
         token_last4: result.token_last4,
@@ -50,16 +64,17 @@ export default function LmsConnectModal({
     } catch (caught) {
       // 토큰이 틀린 것(422)과 LearningX가 멈춘 것(502)·서버에 닿지 못한 것은 다른 일이다.
       // 명세 13장의 문구를 그대로 쓰고, 토큰 문제일 때만 공백 안내를 붙인다
+      if (mine !== attempt.current) return;
       const invalid = caught instanceof ApiError && caught.code === "LMS_TOKEN_INVALID";
       setFailure(invalid ? TOKEN_FAILURE : errorMessage(caught, RETRY_FAILURE));
       setStatus("failure");
     } finally {
-      setToken("");
+      if (mine === attempt.current) setToken("");
     }
   };
 
   return (
-    <Modal open={open} title="LearningX 연결" onClose={close}>
+    <Modal open={open} title="LearningX 연결" onClose={close} busy={status === "checking"}>
       <div className="mb-5 flex gap-2">
         {[1, 2, 3].map((item) => (
           <div
@@ -125,7 +140,7 @@ export default function LmsConnectModal({
         </>
       )}
       {step === 3 && status === "checking" && (
-        <div className="py-10 text-center">
+        <div ref={checkingRef} tabIndex={-1} role="status" className="py-10 text-center outline-none">
           <div className="mx-auto size-8 animate-spin rounded-full border-4 border-[#e5e7eb] border-t-[#4f6ef7]" />
           <p className="mt-4 text-[14px] font-semibold">토큰을 확인하고 과제를 받아오고 있어요</p>
           <p className="mt-1 text-[12px] text-[#667085]">조금 걸릴 수 있어요. 창을 닫지 말아 주세요.</p>

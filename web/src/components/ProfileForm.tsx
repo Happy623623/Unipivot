@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import Button from "@/components/Button";
+import { useModalCloseLocked } from "@/components/Modal";
 import ProfileFieldInput from "@/components/profile/ProfileFieldInput";
 import {
   buildProfileSteps,
@@ -41,6 +42,7 @@ export default function ProfileForm({
 }: ProfileFormProps) {
   const [values, setValues] = useState<ProfileFormValues>(() => toFormValues(profile));
   const [errors, setErrors] = useState<ProfileErrors>({});
+  const cancelLocked = useModalCloseLocked();
   const steps = useMemo(() => buildProfileSteps(departments), [departments]);
   // 소득 항목은 선택 동의를 했을 때만 입력받는다 (동의 전에는 저장하면 403)
   const editableFields = steps.flatMap((step) => (step.id === "income" && !incomeConsented ? [] : step.fields));
@@ -96,7 +98,8 @@ export default function ProfileForm({
       </div>
       {message && <p role="alert" className="mt-4 text-[13px] text-[#c53030]">{message}</p>}
       <div className="mt-6 flex justify-end gap-2">
-        {onCancel && <Button secondary onClick={onCancel}>취소</Button>}
+        {/* 창 안에서 쓰면 저장 중엔 창 닫기처럼 취소도 잠긴다(components/Modal.tsx) */}
+        {onCancel && <Button secondary inactive={cancelLocked} onClick={onCancel}>취소</Button>}
         <Button type="submit" busy={saving}>
           {saving ? "저장 중" : submitLabel}
         </Button>

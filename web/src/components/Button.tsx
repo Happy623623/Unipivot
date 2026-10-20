@@ -7,6 +7,7 @@ interface ButtonProps {
   onClick?: () => void;
   disabled?: boolean; // 지금은 할 수 없는 일(입력이 덜 됐다 등). 초점을 받지 않는다
   busy?: boolean; // 누른 일이 아직 진행 중. 눌러도 지나가지만 초점은 남는다(아래). disabled와 같이 주지 않는다
+  inactive?: boolean; // 다른 일이 진행 중이라 지금은 누를 수 없다(창의 "취소" 등). busy처럼 초점은 남고, 진행 중 표시(aria-busy)는 없다
   title?: string;
 }
 
@@ -33,23 +34,25 @@ export default function Button({
   onClick,
   disabled = false,
   busy = false,
+  inactive = false,
   title,
 }: ButtonProps) {
+  const blocked = busy || inactive;
   return (
     <button
       type={type}
       onClick={(event) => {
-        if (busy) {
+        if (blocked) {
           event.preventDefault();
           return;
         }
         onClick?.();
       }}
       disabled={disabled}
-      aria-disabled={busy || undefined}
+      aria-disabled={blocked || undefined}
       aria-busy={busy || undefined}
       title={title}
-      className={`${BASE} disabled:cursor-not-allowed disabled:opacity-45 aria-disabled:cursor-wait aria-disabled:opacity-45 aria-disabled:active:scale-100 ${
+      className={`${BASE} disabled:cursor-not-allowed disabled:opacity-45 aria-disabled:opacity-45 aria-busy:cursor-wait aria-disabled:not-aria-busy:cursor-not-allowed aria-disabled:active:scale-100 ${
         secondary ? "border-[#e5e7eb] bg-white text-[#181a20] hover:bg-[#f7f8fa]" : PRIMARY
       }`}
     >

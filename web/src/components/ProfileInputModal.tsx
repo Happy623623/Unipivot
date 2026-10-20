@@ -11,7 +11,7 @@ import {
   updateIncomeConsent,
 } from "@/api/client";
 import Button from "@/components/Button";
-import Modal from "@/components/Modal";
+import Modal, { ModalCancelButton } from "@/components/Modal";
 import ProfileFieldInput from "@/components/profile/ProfileFieldInput";
 import {
   buildProfileSteps,
@@ -163,7 +163,7 @@ export default function ProfileInputModal({ open, opportunityId, missingFields, 
   };
 
   return (
-    <Modal open={open} title="정보 입력" onClose={onClose}>
+    <Modal open={open} title="정보 입력" onClose={onClose} busy={saving || agreeing}>
       {loadError ? (
         <p role="alert" className="text-[13px] text-[#c53030]">{loadError}</p>
       ) : !loaded || !values ? (
@@ -206,7 +206,7 @@ export default function ProfileInputModal({ open, opportunityId, missingFields, 
           )}
           {error && <p role="alert" className="mt-4 text-[13px] text-[#c53030]">{error}</p>}
           <div className="mt-6 flex justify-end gap-2">
-            <Button secondary onClick={onClose}>취소</Button>
+            <ModalCancelButton />
             <Button type="submit" disabled={!saving && editable.length === 0} busy={saving}>
               {saving ? "다시 판정 중" : "저장하고 다시 판정"}
             </Button>

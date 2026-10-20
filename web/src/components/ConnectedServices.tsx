@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { disconnectCalendar, disconnectLms, errorMessage, nowIso, reconnectCalendar } from "@/api/client";
 import Button from "@/components/Button";
-import Modal from "@/components/Modal";
+import Modal, { ModalCancelButton } from "@/components/Modal";
 import { formatRelativeTime } from "@/lib/format";
 import type { LmsConnection, Me } from "@/types/api";
 
@@ -26,8 +26,10 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
   const [lms, setLms] = useState(initialLms);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [calendarDisconnectError, setCalendarDisconnectError] = useState<string | null>(null);
+  const [calendarDisconnecting, setCalendarDisconnecting] = useState(false);
   // 돌아온 결과는 지금 상태와 맞을 때만 보여 준다(연결됐는데 "못 했어요"를 띄우지 않는다)
   const notice = calendarResult && (calendarResult === "connected") === me.calendar_connected
     ? RESULT_NOTICE[calendarResult]
@@ -46,24 +48,31 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
     }
   };
 
+  // 해제 중에는 버튼을 busy로 두어 두 번 보내지 않고, 창도 닫히지 않는다(실패 문구가 창 안에 뜬다)
   const disconnect = async () => {
     setDisconnectError(null);
+    setDisconnecting(true);
     try {
       setLms(await disconnectLms());
       setDisconnectOpen(false);
     } catch (caught) {
       setDisconnectError(errorMessage(caught, "연결을 해제하지 못했어요. 잠시 후 다시 눌러 주세요."));
+    } finally {
+      setDisconnecting(false);
     }
   };
 
   // Google 쪽 권한을 거두고 토큰을 지운다. 이미 넣은 일정은 캘린더에 남는다(F-06)
   const disconnectGoogle = async () => {
     setCalendarDisconnectError(null);
+    setCalendarDisconnecting(true);
     try {
       onMeChange(await disconnectCalendar());
       setCalendarOpen(false);
     } catch (caught) {
       setCalendarDisconnectError(errorMessage(caught, "연결을 해제하지 못했어요. 잠시 후 다시 눌러 주세요."));
+    } finally {
+      setCalendarDisconnecting(false);
     }
   };
 
@@ -105,25 +114,29 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
           )}
         </div>
       </div>
-      <Modal open={calendarOpen} title="Google Calendar 연결 해제" onClose={() => setCalendarOpen(false)}>
+      <Modal open={calendarOpen} title="Google Calendar 연결 해제" onClose={() => setCalendarOpen(false)} busy={calendarDisconnecting}>
         <p className="text-[14px] leading-6 text-[#344054]">
           연결을 해제하면 이 앱의 캘린더 권한을 거두고 저장한 토큰을 지워요. 이미 넣은 일정은 캘린더에 그대로 남고,
           새 일정은 다시 연결할 때까지 넣지 않아요.
         </p>
         {calendarDisconnectError && <p role="alert" className="mt-3 text-[13px] text-[#c53030]">{calendarDisconnectError}</p>}
         <div className="mt-6 flex justify-end gap-2">
-          <Button secondary onClick={() => setCalendarOpen(false)}>취소</Button>
-          <Button onClick={disconnectGoogle}>연결 해제</Button>
+          <ModalCancelButton />
+          <Button onClick={disconnectGoogle} busy={calendarDisconnecting}>
+            {calendarDisconnecting ? "해제하는 중" : "연결 해제"}
+          </Button>
         </div>
       </Modal>
-      <Modal open={disconnectOpen} title="LearningX 연결 해제" onClose={() => setDisconnectOpen(false)}>
+      <Modal open={disconnectOpen} title="LearningX 연결 해제" onClose={() => setDisconnectOpen(false)} busy={disconnecting}>
         <p className="text-[14px] leading-6 text-[#344054]">
           연결을 해제하면 토큰을 바로 지워요. LearningX 설정에서도 토큰을 삭제해 주세요.
         </p>
         {disconnectError && <p role="alert" className="mt-3 text-[13px] text-[#c53030]">{disconnectError}</p>}
         <div className="mt-6 flex justify-end gap-2">
-          <Button secondary onClick={() => setDisconnectOpen(false)}>취소</Button>
-          <Button onClick={disconnect}>연결 해제</Button>
+          <ModalCancelButton />
+          <Button onClick={disconnect} busy={disconnecting}>
+            {disconnecting ? "해제하는 중" : "연결 해제"}
+          </Button>
         </div>
       </Modal>
     </section>

@@ -70,7 +70,7 @@ export default function SyllabusConfirmedList({
                     }}
                     aria-disabled={busyItem !== null || undefined}
                     aria-busy={busyItem === item.id || undefined}
-                    className="text-[12px] font-semibold text-[#4f6ef7] aria-disabled:cursor-default aria-disabled:text-[#a0a4ab] aria-busy:cursor-wait"
+                    className="text-[12px] font-semibold text-[#4f6ef7] aria-disabled:not-aria-busy:cursor-default aria-disabled:text-[#a0a4ab] aria-busy:cursor-wait"
                   >
                     {busyItem === item.id ? "넣는 중…" : "캘린더에 넣기"}
                   </button>

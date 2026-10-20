@@ -16,7 +16,7 @@ import Button from "@/components/Button";
 import ConnectedServices, { type CalendarResult } from "@/components/ConnectedServices";
 import Header from "@/components/Header";
 import IncomeConsentSetting from "@/components/IncomeConsentSetting";
-import Modal from "@/components/Modal";
+import Modal, { ModalCancelButton } from "@/components/Modal";
 import NotificationSettings from "@/components/NotificationSettings";
 import ProfileForm from "@/components/ProfileForm";
 import SignOutSetting from "@/components/SignOutSetting";
@@ -200,7 +200,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
           탈퇴
         </button>
       </section>
-      <Modal open={profileOpen} title="프로필 수정" onClose={() => openProfile(false)}>
+      <Modal open={profileOpen} title="프로필 수정" onClose={() => openProfile(false)} busy={savingProfile}>
         <ProfileForm
           profile={profile}
           departments={departments}
@@ -212,7 +212,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
           onSave={submitProfile}
         />
       </Modal>
-      <Modal open={deleteOpen} title="계정 탈퇴" onClose={() => setDeleteOpen(false)}>
+      <Modal open={deleteOpen} title="계정 탈퇴" onClose={() => setDeleteOpen(false)} busy={deleting}>
         <p className="text-[14px] leading-6 text-[#344054]">
           모든 개인 정보와 토큰, 올린 파일을 지워요. 공유한 포스터 공고는 이름 없이 남고, 캘린더에 이미 넣은 일정은 그대로 남아요.
         </p>
@@ -222,7 +222,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
         </label>
         {deleteError && <p role="alert" className="mt-3 text-[13px] text-[#c53030]">{deleteError}</p>}
         <div className="mt-6 flex justify-end gap-2">
-          <Button secondary onClick={() => setDeleteOpen(false)}>취소</Button>
+          <ModalCancelButton />
           <Button disabled={!deleting && deleteText !== "탈퇴"} busy={deleting} onClick={removeAccount}>{deleting ? "지우는 중" : "탈퇴"}</Button>
         </div>
       </Modal>

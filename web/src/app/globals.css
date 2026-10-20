@@ -15,8 +15,11 @@ body {
   min-width: 320px;
 }
 
-button {
-  cursor: pointer;
+/* base 층에 둔다. 층 밖에 두면 Tailwind 유틸리티(utilities 층)를 늘 이겨서 aria-disabled:cursor-wait 같은 커서가 먹지 않았다 */
+@layer base {
+  button {
+    cursor: pointer;
+  }
 }
 
 @keyframes notification-enter {
