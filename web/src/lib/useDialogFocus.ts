@@ -1,6 +1,6 @@
 import { useEffect, useRef, type RefObject } from "react";
 
-// 창(components/Modal.tsx)의 키보드 초점.
+// 창(components/Modal.tsx)과 헤더 알림 패널(components/NotificationPanel.tsx)의 키보드 초점.
 // 열리면 창으로 초점을 옮기고(창 자체 — 제목을 읽고, 탈퇴처럼 되돌릴 수 없는 버튼에 바로 가지 않게),
 // Tab·Shift+Tab은 창 안에서 돌고, Esc는 닫기와 같고, 닫히면 연 버튼으로 초점을 돌려준다.
 // 연 버튼이 그새 사라졌으면(메뉴 안의 버튼 등) fallback(메뉴를 연 버튼 등)으로, 그것도 없거나 사용자가 이미 다른 곳에

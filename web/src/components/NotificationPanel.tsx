@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 import { useAppShell } from "@/components/AppShell";
 import NotificationRow from "@/components/NotificationRow";
 import Skeleton from "@/components/Skeleton";
 import notificationRoute from "@/lib/notificationRoute";
+import useDialogFocus from "@/lib/useDialogFocus";
 import useNotifications from "@/lib/useNotifications";
 import type { AppNotification } from "@/types/api";
 
@@ -12,15 +13,22 @@ const LAST_STAGGERED = 8;
 interface NotificationPanelProps {
   open: boolean;
   onClose: () => void;
+  // 연 버튼(헤더 종). 마우스로 눌러도 버튼에 초점을 주지 않는 브라우저(Safari 등)에서도 닫으면 여기로 돌아온다
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 // 헤더 알림 버튼이 여는 오른쪽 패널 (F-35). 최근 알림을 열 때마다 받아 오고, 전체 목록은 /notifications다.
-// 알림을 누르면 읽음 처리를 기다리지 않고 바로 그 화면으로 간다(저장하지 못하면 안 읽음으로 되돌린다)
-export default function NotificationPanel({ open, onClose }: NotificationPanelProps) {
+// 알림을 누르면 읽음 처리를 기다리지 않고 바로 그 화면으로 간다(저장하지 못하면 안 읽음으로 되돌린다).
+// 키보드 초점은 창(Modal)과 같다(lib/useDialogFocus.ts): 열면 패널 자체로(제목 "알림"을 읽는다), Tab은 패널 안에서 돌고,
+// Esc로 닫히며, 닫히면 연 버튼(헤더 종)으로 돌아간다. 뒤 화면은 덮개로 가려 누르면 닫히므로 모달로 둔다
+export default function NotificationPanel({ open, onClose, returnFocusRef }: NotificationPanelProps) {
   const { unreadNotifications, setUnreadNotifications, navigate } = useAppShell();
   const { items, unread, loading, error, reload, read, readAll } = useNotifications({ enabled: open });
   const [readFailed, setReadFailed] = useState(false);
   const [readNotice, setReadNotice] = useState(""); // "모두 읽음" 결과를 화면 읽기 프로그램에 알린다(알림함 화면은 토스트로 알린다)
+  const panelRef = useRef<HTMLElement>(null);
+  const titleId = useId();
+  useDialogFocus(panelRef, open, onClose, returnFocusRef);
 
   useEffect(() => {
     if (unread !== null) setUnreadNotifications(unread);
@@ -57,18 +65,22 @@ export default function NotificationPanel({ open, onClose }: NotificationPanelPr
         aria-hidden="true"
       />
       <aside
+        ref={panelRef}
         id="notification-panel"
-        className={`fixed inset-y-0 right-0 z-50 flex w-[380px] max-w-[92vw] flex-col bg-white p-6 shadow-[-16px_0_50px_rgba(24,26,32,0.12)] transition-transform duration-300 ease-out ${
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className={`fixed inset-y-0 right-0 z-50 flex w-[380px] max-w-[92vw] flex-col bg-white p-6 shadow-[-16px_0_50px_rgba(24,26,32,0.12)] outline-none transition-transform duration-300 ease-out ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
-        aria-label="알림 패널"
-        aria-hidden={!open}
-        /* 닫혀 있는 동안은 화면 밖이라 탭 순서에서도 뺀다(안 그러면 안 보이는 단추로 초점이 간다) */
+        /* 닫혀 있는 동안은 화면 밖이라 탭 순서와 화면 읽기에서 뺀다(inert). aria-hidden을 같이 주면 닫는 순간 초점이 남은
+           채로 숨겨져 브라우저가 경고한다 */
         inert={!open}
       >
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-[20px] font-bold">알림</h2>
+            <h2 id={titleId} className="text-[20px] font-bold">알림</h2>
             <p className="mt-1 text-[12px] text-[#667085]">
               {readFailed ? "읽음 처리를 저장하지 못했어요. 다시 눌러 주세요." : `읽지 않은 알림 ${unreadNotifications}개`}
             </p>
@@ -115,7 +127,15 @@ export default function NotificationPanel({ open, onClose }: NotificationPanelPr
           {!loading && error !== null && (
             <div className="flex min-h-52 flex-col items-center justify-center gap-2 rounded-[14px] border border-dashed border-[#e5e7eb] px-4 text-center">
               <p className="text-[13px] leading-5 text-[#667085]">{error}</p>
-              <button type="button" onClick={reload} className="text-[13px] font-semibold text-[#4f6ef7]">
+              <button
+                type="button"
+                // 누르면 이 블록이 사라져 초점이 <body>로 빠지고 Esc도 안 먹는다. 먼저 패널로 초점을 옮긴다
+                onClick={() => {
+                  panelRef.current?.focus({ preventScroll: true });
+                  reload();
+                }}
+                className="text-[13px] font-semibold text-[#4f6ef7]"
+              >
                 다시 시도
               </button>
             </div>

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useAppShell } from "@/components/AppShell";
 import NotificationPanel from "@/components/NotificationPanel";
 
@@ -12,6 +12,7 @@ interface HeaderProps {
 export default function Header({ title, subtitle, action }: HeaderProps) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const { unreadNotifications } = useAppShell();
+  const bellRef = useRef<HTMLButtonElement>(null);
 
   return (
     <>
@@ -25,6 +26,7 @@ export default function Header({ title, subtitle, action }: HeaderProps) {
           <p className="mt-[2px] text-[14px] leading-[1.45] text-[#667085]">{subtitle}</p>
         </div>
         <button
+          ref={bellRef}
           type="button"
           onClick={() => setNotificationsOpen(true)}
           aria-expanded={notificationsOpen}
@@ -54,7 +56,7 @@ export default function Header({ title, subtitle, action }: HeaderProps) {
           )}
         </button>
       </header>
-      <NotificationPanel open={notificationsOpen} onClose={() => setNotificationsOpen(false)} />
+      <NotificationPanel open={notificationsOpen} onClose={() => setNotificationsOpen(false)} returnFocusRef={bellRef} />
     </>
   );
 }
