@@ -7,6 +7,7 @@ export type DevScenario =
   | "empty_feed"
   | "poster_failure"
   | "poster_duplicate"
+  | "poster_gone"
   | "syllabus_failure"
   | "upload_limit";
 
@@ -29,6 +30,7 @@ export const scenarioLabels: Record<DevScenario, string> = {
   empty_feed: "빈 피드",
   poster_failure: "포스터 분석 실패",
   poster_duplicate: "포스터 중복",
+  poster_gone: "포스터 원본 없음",
   syllabus_failure: "계획서 읽기 실패",
   upload_limit: "업로드 한도 초과",
 };

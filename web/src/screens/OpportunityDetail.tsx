@@ -3,11 +3,11 @@ import { errorMessage, getOpportunity, setOpportunityMark } from "@/api/client";
 import Button from "@/components/Button";
 import AiProcessPanel from "@/components/AiProcessPanel";
 import Header from "@/components/Header";
-import Modal from "@/components/Modal";
 import OpportunityConditions from "@/components/OpportunityConditions";
 import OpportunityDocuments from "@/components/OpportunityDocuments";
 import OpportunityMarkButtons, { markError, markToast } from "@/components/OpportunityMarkButtons";
 import OpportunityPreparation from "@/components/OpportunityPreparation";
+import PosterOriginal from "@/components/PosterOriginal";
 import ProfileInputModal from "@/components/ProfileInputModal";
 import Skeleton from "@/components/Skeleton";
 import Toast from "@/components/Toast";
@@ -72,6 +72,7 @@ export default function OpportunityDetail({
   useEffect(() => {
     setOverride(null);
     setProfileOpen(focus === "profile_input");
+    setPosterOpen(false);
   }, [id, focus]);
 
   if (request.loading) return <DetailSkeleton />;
@@ -86,9 +87,10 @@ export default function OpportunityDetail({
 
   const detail = override ?? request.data;
   const isPoster = detail.source_type === "poster";
-  // 포스터는 원본 이미지(포스터 업로드 W6부터)를 창으로, 나머지는 원문 주소를 새 탭으로 연다. 둘 다 없으면 원문 보기가 없다
+  // 내가 올린 포스터는 원본(W6)을 창으로, 나머지는 원문 주소를 새 탭으로 연다. 둘 다 없으면 원문 보기가 없다
   const originalHref = isPoster ? null : webUrl(detail.original_url);
-  const openPoster = isPoster && detail.poster_url ? () => setPosterOpen(true) : null;
+  const posterKind = isPoster ? detail.poster_kind : null;
+  const openPoster = posterKind ? () => setPosterOpen(true) : null;
   const myMark = markChange?.id === detail.id ? markChange.mark : detail.my_mark;
 
   // 정보 입력을 저장한 뒤: 서버가 상세를 줄 때 지금 프로필로 다시 판정한다
@@ -177,9 +179,9 @@ export default function OpportunityDetail({
         onClose={() => setProfileOpen(false)}
         onSaved={reloadAfterProfile}
       />
-      <Modal open={posterOpen} title="포스터 원문" onClose={() => setPosterOpen(false)}>
-        {detail.poster_url && <img src={detail.poster_url} alt={`${detail.title} 포스터`} className="mx-auto max-h-[70dvh] rounded-[14px]" />}
-      </Modal>
+      {posterOpen && posterKind && (
+        <PosterOriginal opportunityId={detail.id} kind={posterKind} title={detail.title} onClose={() => setPosterOpen(false)} />
+      )}
       <Toast toast={toast} />
     </>
   );

@@ -38,6 +38,8 @@
 >
 > v0.4 보강(10/19, 탈퇴 저장소 가드): 파일이 있는데 서버의 저장소 설정에 고칠 점이 있으면 `DELETE /me`가 파일을 지우기 전에 `502 STORAGE_API_ERROR`로 멈춘다(publishable key로 지우면 저장소가 "없는 파일"로 답해 파일이 남는다). 지우기의 "이미 없음"은 저장소가 `NoSuchKey`로 답할 때만이다(`code` 없는 404는 실패)
 >
+> v0.4 보강(10/20, 포스터 원본 보기): 공고 상세의 `poster_url`을 `poster_kind`(`image`·`pdf`·`null`)로 바꾸고, 주소는 `GET /opportunities/{id}/poster-url`(5분, `no-store`)로 따로 받는다(W6). 내가 올린 포스터 공고만이고, 404·502 규칙은 `GET /files/{file_id}/url`과 같다
+>
 > v0.4 보강(10/13, 시·군·구 선택): 프로필 region_sigungu 값
 >
 > v0.4 보강(10/13, 관심 공고): PUT·DELETE /opportunities/{id}/mark, 피드 include_not_interested, my_mark, counts에서 관심 없음 공고 제외, 알림 규칙
@@ -181,6 +183,7 @@ sequenceDiagram
 | 내 정보 | `DELETE /me` | 탈퇴(모든 개인 데이터·토큰 삭제) | 7장 | P0 |
 | 공고 | `GET /opportunities` | 추천 피드 | F-40 | P0 |
 | 공고 | `GET /opportunities/{id}` | 공고 상세(조건별 판정표·서류·준비 상태) | F-41 | P0 |
+| 공고 | `GET /opportunities/{id}/poster-url` | 내가 올린 포스터의 원본을 5분 동안 보는 주소 | F-41 | P0 |
 | 공고 | `PUT /opportunities/{id}/mark` · `DELETE /opportunities/{id}/mark` | 관심·관심 없음(숨기기) 표시와 지우기 | F-45 | P1 |
 | 공고 | `GET /opportunities/{id}/alternatives` | 대체 공고 | F-23 | P1 |
 | 공고 | `POST /opportunities/{id}/reports` | 신고 | F-17 | P1 |
@@ -497,7 +500,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
   "status": "active",
   "uploaded_by_me": false,
   "course_name": null,
-  "poster_url": null,
+  "poster_kind": null,
   "attachments": [
     { "id": "uuid", "file_name": "2026-2 장학 안내.hwp", "source_url": "https://...", "extract_status": "succeeded" }
   ],
@@ -569,17 +572,31 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `my_mark`(F-45): 피드와 같은 내 표시. 관심 없음 공고도 상세는 그대로 열린다
 - `missing_fields`는 정보 입력창(F-03)에 띄울 항목이다
 - 서류의 `task_id`·`is_done`은 준비하기 전에는 null이고, 체크는 기존 `PATCH /planner/tasks/{task_id}`로 한다
-- `poster_url`은 포스터 공고의 원본 이미지(Storage 서명 URL, 5분), `course_name`은 과목 공지에서 온 공고의 과목명이다
+- `poster_kind`는 **내가 올린** 포스터 공고의 원본 형식이다(`image`·`pdf`). 남이 올린 포스터·포스터가 아닌 공고·원본 파일이 없거나 형식을 모르는 공고는 null이고, 화면은 그때 원문 보기를 숨긴다. 주소는 응답에 없고 `GET /opportunities/{id}/poster-url`로 누를 때 받는다. `course_name`은 과목 공지에서 온 공고의 과목명이다
 - `process.extraction`은 추출 실행에서 라벨·상태·소요 시간만 뽑은 것이라 배치 실행이나 남의 포스터도 내려준다. `GET /runs/{id}`의 본인 실행 제한은 그대로 둔다
 - 이 API를 부르면 `opportunity_views`를 upsert한다(`first_viewed_at` 유지, `last_viewed_at` 갱신)
 - 응답 전에 그 공고를 지금 프로필로 다시 판정해 저장한다(evaluated_at = 요청 시각). reason_text는 피드 카드의 summary와 같다.
-- 응답에 uploader_masked는 없다(피드와 같다. 업로더 표시는 공유와 함께 P1). poster_url은 포스터 업로드(W6)부터 채운다.
+- 응답에 uploader_masked는 없다(피드와 같다. 업로더 표시는 공유와 함께 P1). poster_kind는 내가 올린 포스터에만 채운다(W6).
 - 요건 추출에 실패한 공고의 eligibility는 status undetermined, display_status needs_review, reason_text "원문 확인 필요: 자격 요건을 정리하지 못함"이다. basis_date·evaluated_at은 null이고 missing_fields·clauses·conditions와 process.extraction은 []다. 판정 엔진이 오류를 낸 공고는 reason_text가 "원문 확인 필요: 조건을 판정하지 못함"이고 clauses·conditions가 []다.
 - conditions는 묶음 순서이고, 묶음 안에서는 추출 순서(원문 순서)다. operator·value는 요건 값이고, user_value는 비교에 쓴 내 값(나이는 기준일의 만 나이, 미입력이면 null)이다.
 - documents는 필수 서류가 먼저, 그다음 이름 순이다. attachments에는 학교 다운로드 주소(source_url)가 있는 첨부만 준다.
 - 형식이 틀린 id는 422 VALIDATION_FAILED(details.fields.opportunity_id)다.
 - 상세를 열면 opportunity_views를 upsert한다. first_viewed_at은 그대로 두고 last_viewed_at은 늦은 쪽을 남긴다. 404면 남기지 않는다.
 - review_reasons(string[]): needs_review를 켠 이유(요건 추출·공지 가져오기)다. 주소를 지우고 공백을 한 칸으로 줄인 한 줄(최대 200자)씩이고, 10줄이 넘으면 앞 10줄 뒤에 '외 N건'이 온다. 첨부는 파일 이름으로 쓴다. 이유가 없거나 S1-6b 전에 추출한 공고는 []다. 화면은 처리 과정(F-42)에 일반 텍스트로 보여 준다(자동 링크·마크다운 없이). 문구는 학생이 읽는 쉬운 말이다(상한·항목 키 이름 없음). 모델이 쓴 이유는 'AI 메모: '로 시작한다.
+
+### `GET /opportunities/{id}/poster-url`
+
+내가 올린 포스터 공고의 원본을 5분 동안 볼 수 있는 주소(W6). 공고 상세에서 `poster_kind`가 있을 때 "원문 보기"를 누르면 부른다. 내려받지 않고 브라우저가 그대로 보여 준다.
+
+```json
+{ "url": "https://{project}.supabase.co/storage/v1/object/sign/uploads/{경로}?token=…", "expires_at": "2026-10-15T12:05:00+09:00" }
+```
+
+- 주소에는 `download`가 붙지 않는다. 사진은 창 안 `<img>`로, PDF는 새 탭 링크로 연다. 포스터는 올릴 때 바이트로 JPEG·PNG·WEBP·PDF만 받아서 그대로 열어도 된다
+- 주소는 그 자체로 열쇠다. 화면은 창을 열 때 받고 닫으면 버리며, 서버는 로그에 남기지 않고 응답에 `Cache-Control: no-store`를 붙인다. `expires_at`은 주소를 만든 시각 + 5분이다(1장 파일 URL)
+- 내가 올린 포스터 공고의 내 파일만 된다. 남이 올린 포스터·포스터가 아닌 공고·원본 파일이 없는 공고·없는 번호는 `404 NOT_FOUND`("포스터를 찾을 수 없어요."), `id`가 UUID가 아니면 `422 VALIDATION_FAILED`다. 남이 올린 포스터의 원본은 공유(P1)에서 정한다
+- 기록은 있는데 저장소에 파일이 없으면(`NoSuchKey`) `404 NOT_FOUND`("올린 포스터 파일이 없어졌어요. 포스터를 다시 올려 주세요.")이고 다시 눌러도 같다. 단 서버의 저장소 설정에 고칠 점이 있으면 그 답을 믿지 않고 `502 STORAGE_API_ERROR`다. 저장소가 주소를 주지 않으면 `502 STORAGE_API_ERROR`("포스터를 열지 못했어요. 잠시 후 다시 시도해 주세요.")다
+- 공고 상태(숨김·병합)는 보지 않는다. 내가 올린 내 파일이다
 
 ### `PUT /opportunities/{id}/mark` · `DELETE /opportunities/{id}/mark` (P1)
 

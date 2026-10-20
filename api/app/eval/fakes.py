@@ -161,7 +161,7 @@ class RecordedStorage(SupabaseStorage):
         super().__init__(base_url=f"{RECORDED}://storage", bucket="uploads", service_key=RECORDED)
         self.files: dict[str, bytes] = {}
         self.removed: list[str] = []
-        self.signed: list[tuple[str, str, int]] = []  # (경로, 받을 이름, 수명 초)
+        self.signed: list[tuple[str, str | None, int]] = []  # (경로, 받을 이름, 수명 초)
 
     async def upload(self, path: str, data: bytes, content_type: str) -> None:
         self.files[path] = data
@@ -176,7 +176,7 @@ class RecordedStorage(SupabaseStorage):
         self.removed.append(path)
 
     async def signed_url(
-        self, path: str, *, download_name: str, seconds: int = SIGNED_SECONDS
+        self, path: str, *, download_name: str | None = None, seconds: int = SIGNED_SECONDS
     ) -> str:
         """실제 저장소처럼 없는 파일은 서명할 때 StorageMissing이다(저장소 설정이 맞으면 문서함 받기가 404,
         시나리오 설정은 저장소 설정이 비어 있어 502다 — app/routers/files.py). 주소는 열쇠라(명세 6장) 시나리오의
@@ -187,10 +187,10 @@ class RecordedStorage(SupabaseStorage):
             )
         self.signed.append((path, download_name, seconds))
         token = secrets.token_urlsafe(16)
-        return (
-            f"{self.base_url}/object/sign/{self.bucket}/{quote(path, safe='/')}"
-            f"?token={token}&download={quote(download_name, safe='')}"
-        )
+        url = f"{self.base_url}/object/sign/{self.bucket}/{quote(path, safe='/')}?token={token}"
+        if download_name is None:  # 그대로 보는 주소(포스터 원본, W6)
+            return url
+        return f"{url}&download={quote(download_name, safe='')}"
 
 
 class RecordedCalendar(GoogleCalendarClient):

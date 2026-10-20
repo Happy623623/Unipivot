@@ -2,10 +2,11 @@ import { ApiError, apiFetch, USE_MOCKS, waitForRun } from "@/api/http";
 import { respond, rejectAfter } from "@/api/mockClient";
 import { getDevScenario } from "@/dev/scenarios";
 import { duplicatePosterExtractResult, posterExtractResult } from "@/mocks";
-import { registerStoredPoster } from "@/mocks/posterStore";
+import { MOCK_POSTER_IMAGE, registerStoredPoster } from "@/mocks/posterStore";
 import type {
   PosterConfirmResult,
   PosterExtractResult,
+  PosterUrl,
   FileUploadResult,
   ProcessStep,
 } from "@/types/api";
@@ -123,4 +124,18 @@ export async function registerPosterOpportunity(
     method: "POST",
     body: JSON.stringify({ run_id: runId, draft }),
   });
+}
+
+// 내가 올린 포스터의 원본을 보는 5분짜리 주소 (GET /opportunities/{id}/poster-url, W6). 원문 보기 창을 열 때마다
+// 새로 받고 닫으면 버린다 — 주소는 그 자체로 열쇠라 들고 있지 않는다. 목 모드는 예시 포스터 그림을 준다
+export function getPosterUrl(opportunityId: string): Promise<PosterUrl> {
+  if (USE_MOCKS) {
+    if (getDevScenario() === "poster_gone") {
+      return rejectAfter(
+        new ApiError("NOT_FOUND", "올린 포스터 파일이 없어졌어요. 포스터를 다시 올려 주세요.", 404),
+      );
+    }
+    return respond({ url: MOCK_POSTER_IMAGE, expires_at: "2026-10-05T09:05:00+09:00" });
+  }
+  return apiFetch<PosterUrl>(`/opportunities/${encodeURIComponent(opportunityId)}/poster-url`);
 }

@@ -1,15 +1,19 @@
+import logging
 from collections.abc import Sequence
 from dataclasses import replace
+from datetime import timedelta
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.auth import CurrentUserDep
 from app.clock import NowDep
+from app.config import Settings, get_settings
 from app.eligibility import KST
 from app.errors import ApiError
 from app.prepare.service import PrepareServiceDep
+from app.repositories.files import FileReposDep
 from app.repositories.opportunities import FeedQuery, OpportunityRepoDep, decode_cursor
 from app.schemas.opportunities import (
     CATEGORIES,
@@ -19,10 +23,21 @@ from app.schemas.opportunities import (
     MarkRequest,
     MarkResult,
     OpportunityDetail,
+    PosterUrl,
 )
 from app.schemas.prepare import PrepareRequest, PrepareStarted
+from app.uploads.storage import (
+    SIGNED_SECONDS,
+    StorageDep,
+    StorageError,
+    StorageMissing,
+    storage_settings_problem,
+)
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/opportunities", tags=["공고"])
+POSTER_GONE = "올린 포스터 파일이 없어졌어요. 포스터를 다시 올려 주세요."
+POSTER_FAILED = "포스터를 열지 못했어요. 잠시 후 다시 시도해 주세요."
 
 
 def _values(
@@ -110,6 +125,42 @@ async def read_opportunity(
     if detail is None:
         raise ApiError(404, "NOT_FOUND", "공고를 찾을 수 없어요.")
     return detail
+
+
+@router.get("/{opportunity_id}/poster-url", response_model=PosterUrl)
+async def read_poster_url(
+    opportunity_id: UUID,
+    user: CurrentUserDep,
+    repos: FileReposDep,
+    storage: StorageDep,
+    now: NowDep,
+    response: Response,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> PosterUrl:
+    """내가 올린 포스터의 원본을 5분 동안 보는 주소(W6). 내려받지 않고 브라우저가 그대로 연다.
+
+    상세의 `poster_kind`가 null인 공고(남이 올린 포스터·포스터가 아닌 공고·원본이 없는 공고)는 404다.
+    404·502 규칙은 문서함 받기(app/routers/files.py)와 같다 — 저장소가 "없는 파일"이라고 해도 저장소
+    설정에 고칠 점이 있으면 믿지 않는다. DB 연결은 파일을 찾을 때만 빌리고, 주소는 열쇠라 로그에 남기지
+    않고 브라우저도 저장해 두지 않게 한다(`Cache-Control: no-store`).
+    """
+    async with repos() as repo:
+        found = await repo.poster(user.id, str(opportunity_id))
+    if found is None:
+        raise ApiError(404, "NOT_FOUND", "포스터를 찾을 수 없어요.")
+    try:
+        url = await storage.signed_url(found.storage_path)
+    except StorageMissing as exc:
+        if storage_settings_problem(settings) is None:
+            logger.warning("기록은 있는데 저장소에 없는 포스터예요(%s): %s", opportunity_id, exc)
+            raise ApiError(404, "NOT_FOUND", POSTER_GONE) from None
+        logger.warning("포스터 주소를 만들지 못했어요(저장소 설정 확인): %s", exc)
+        raise ApiError(502, "STORAGE_API_ERROR", POSTER_FAILED) from exc
+    except StorageError as exc:
+        logger.warning("포스터 주소를 만들지 못했어요: %s", exc)
+        raise ApiError(502, "STORAGE_API_ERROR", POSTER_FAILED) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return PosterUrl(url=url, expires_at=(now + timedelta(seconds=SIGNED_SECONDS)).astimezone(KST))
 
 
 @router.put("/{opportunity_id}/mark", response_model=MarkResult)

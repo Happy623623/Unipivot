@@ -312,6 +312,16 @@ async def test_every_mark_in_the_name_is_escaped() -> None:
     assert url.endswith("&download=A%26B%20%231%2B2%2F3%3F.pdf")
 
 
+@respx.mock
+async def test_a_signed_url_without_a_name_opens_in_the_browser() -> None:
+    """포스터 원본(W6)은 내려받지 않고 그대로 본다. `download`가 없으면 저장소가 attachment를 붙이지 않는다."""
+    route = respx.post(SIGN).mock(return_value=httpx.Response(200, json={"signedURL": SIGNED}))
+    url = await storage(service_key=SECRET).signed_url(PATH)
+    assert url == f"{BASE}{SIGNED}"
+    assert "download" not in url
+    assert json.loads(route.calls.last.request.content) == {"expiresIn": 300}
+
+
 @pytest.mark.parametrize(
     ("body", "shown"),
     [

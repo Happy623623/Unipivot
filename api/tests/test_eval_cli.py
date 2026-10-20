@@ -285,6 +285,16 @@ async def test_the_recorded_storage_signs_a_download_link_like_the_real_one() ->
         await storage.signed_url("u/lecture_material/none.pdf", download_name="x.pdf")
 
 
+async def test_the_recorded_storage_signs_a_viewing_link_without_a_name() -> None:
+    """포스터 원본(W6)은 이름 없이 서명한다. 실제처럼 `download`가 붙지 않는다."""
+    storage = RecordedStorage()
+    await storage.upload("u/poster/p.png", b"\x89PNG\r\n\x1a\n", "image/png")
+    url = await storage.signed_url("u/poster/p.png")
+    assert url.startswith("recorded://storage/object/sign/uploads/u/poster/p.png?token=")
+    assert "download" not in url
+    assert storage.signed == [("u/poster/p.png", None, 300)]
+
+
 async def test_the_recorded_calendar_keeps_one_event_per_number() -> None:
     calendar = RecordedCalendar()
     ends_at = datetime(2026, 11, 20, 18, tzinfo=KST)

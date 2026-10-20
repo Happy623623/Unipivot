@@ -110,7 +110,7 @@ function makeDetail(item: OpportunityItem): OpportunityDetail {
     source_type: item.source_type,
     status: "active",
     original_url: item.source_type === "poster" ? null : "https://example.edu/notices/" + item.id,
-    poster_url: item.source_type === "poster" ? "/assets/mock-opportunity-poster.svg" : null,
+    poster_kind: item.source_type === "poster" && item.uploaded_by_me ? "image" : null,
     easy_summary: item.easy_summary,
     apply_start_at: "2026-09-20T09:00:00+09:00",
     deadline_at: item.deadline_at,

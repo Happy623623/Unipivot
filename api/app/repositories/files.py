@@ -3,7 +3,9 @@
 사용자 것만 읽고 쓴다. 같은 사용자가 같은 파일(sha256)을 같은 kind로 올리면 한 행이다
 (ERD v0.9의 부분 유니크 files_user_upload_sha_uq, origin = 'upload'에만 걸린다). LMS 첨부 자동
 수집은 (user_id, external_ref) 유니크가 맡으므로 같은 파일 찾기는 origin = 'upload'만 본다. 문서함(F-44)
-목록과 받기는 두 출처(직접 올림·공지 첨부)를 다 본다.
+목록과 받기는 두 출처(직접 올림·공지 첨부)를 다 본다. 포스터 원본(W6)은 내가 올린 포스터 공고에 붙은 내
+파일만 찾는다(공고 상세의 `poster_kind`와 같은 소유 조건, app/repositories/opportunities.py의 POSTER_OWN). 공고
+상태(숨김·병합)는 보지 않는다 — 내가 올린 내 파일이라 공고를 숨겨도 원본은 내 것이다.
 
 라우터에는 저장소가 아니라 **공급자**를 준다. 파일을 Supabase Storage에 올리는 동안 요청 풀의
 연결을 쥐고 있으면, 저장소가 느리거나 멈췄을 때 열 개뿐인 연결이 모두 묶여 다른 화면까지 멈춘다.
@@ -23,7 +25,7 @@ from app.db import get_conn
 from app.eligibility.dates import KST
 from app.errors import ApiError
 from app.lms.parse import course_name
-from app.repositories.opportunities import Cursor, encode_cursor
+from app.repositories.opportunities import POSTER_FORMAT, POSTER_OWN, Cursor, encode_cursor
 from app.schemas.files import MyFile, MyFileCourse, MyFileList
 from app.uploads import document_name
 
@@ -45,6 +47,14 @@ class DocumentFile:
     storage_path: str
     original_name: str | None
     origin: str  # upload · lms_attachment
+
+
+@dataclass(frozen=True)
+class PosterOriginalFile:
+    """원본 주소를 만들 내 포스터(W6). `kind`는 공고 상세의 `poster_kind`와 같다."""
+
+    storage_path: str
+    kind: str  # image · pdf
 
 
 _SELECT = "select id::text as id, kind::text as kind, page_count from files"
@@ -216,6 +226,22 @@ class FileRepository:
         if row is None:
             return None
         return DocumentFile(row["storage_path"], row["original_name"], row["origin"])
+
+    # ── 포스터 원본 (W6) ──────────────────────────────────────────────────────
+
+    async def poster(self, user_id: str, opportunity_id: str) -> PosterOriginalFile | None:
+        """내가 올린 포스터 공고의 원본 파일. 남이 올린 포스터·포스터가 아닌 공고·원본이 없거나 형식을
+        모르는 파일은 None이다(상세의 `poster_kind`가 null인 때와 같다)."""
+        row = await (
+            await self.conn.execute(
+                f"select pf.storage_path, {POSTER_FORMAT} as kind from opportunities o"
+                f" join files pf on {POSTER_OWN} where o.id = %(oid)s",
+                {"uid": user_id, "oid": opportunity_id},
+            )
+        ).fetchone()
+        if row is None or row["kind"] is None:
+            return None
+        return PosterOriginalFile(row["storage_path"], row["kind"])
 
 
 # files.created_at에는 not null이 없다(기본값만 있다). 빈 행이 하나 있어도 목록이 깨지지 않게 맨 뒤로 둔다

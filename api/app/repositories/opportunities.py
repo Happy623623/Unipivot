@@ -188,6 +188,18 @@ PREP_DONE = (
     "(p.agent_run_id is null or exists(select 1 from agent_runs pr"
     " where pr.id = p.agent_run_id and pr.status = 'succeeded'))"
 )
+# 포스터 원본 형식(W6). 내가 올린 포스터 공고에 붙은 **내** 파일만 본다(남이 올린 포스터의 원본은 공유
+# P1에서 정한다). 올릴 때 바이트로 가린 형식만 이름을 붙이고, 그 밖은 null이라 화면이 원문 보기를 숨긴다.
+# 포스터 원본 주소(repositories/files.py의 poster)도 같은 조건이다
+POSTER_FORMAT = (
+    "case pf.mime_type when 'application/pdf' then 'pdf' when 'image/jpeg' then 'image'"
+    " when 'image/png' then 'image' when 'image/webp' then 'image' end"
+)
+POSTER_OWN = (
+    "pf.id = o.poster_file_id and pf.user_id = %(uid)s and pf.kind = 'poster'"
+    " and o.source_type = 'poster' and o.uploaded_by = %(uid)s"
+)
+POSTER_KIND = f"(select {POSTER_FORMAT} from files pf where {POSTER_OWN})"
 # 상세를 열 수 있는 공고: 준비한 공고는 상태와 상관없이 본인에게, 그 밖은 활성·마감 공고 중 공개 범위 안
 _OPENABLE = " (p.id is not null or (o.status in ('active', 'expired') and" + VISIBLE + "))"
 # 상세 한 건: 공고·요건·서류(내 준비 할 일)·첨부·처리 과정·캘린더를 한 문장으로 읽는다
@@ -197,6 +209,7 @@ _DETAIL = (
     " o.easy_summary, o.apply_start_at, o.deadline_at, o.needs_review, o.review_reasons,"
     " o.extraction_confidence, o.eligibility_basis_date, o.requirements_version,"
     " o.extraction_run_id, coalesce(o.uploaded_by = %(uid)s, false) as uploaded_by_me,"
+    " " + POSTER_KIND + " as poster_kind,"
     # 과목 이름은 수강 중인지 따지지 않고 읽는다. 준비한 과목 공지는 수강을 끝낸 뒤에도 보인다
     " (select lc.name from lms_courses lc where lc.user_id = %(uid)s"
     " and lc.canvas_course_id = o.visible_canvas_course_id) as course_name,"
@@ -517,7 +530,7 @@ class OpportunityRepository:
             source_type=row["source_type"],
             status=row["status"],
             original_url=row["original_url"],
-            poster_url=None,  # TODO(W6): 포스터 업로드에서 Storage 서명 URL(5분)을 붙인다
+            poster_kind=row["poster_kind"],
             easy_summary=row["easy_summary"],
             apply_start_at=apply_start.astimezone(KST) if apply_start else None,
             deadline_at=deadline.astimezone(KST) if deadline else None,

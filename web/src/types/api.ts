@@ -204,6 +204,13 @@ export interface ProcessStep {
   chosen_by: "agent" | "pipeline";       // 모델이 고른 도구인지, 정해진 순서인지
   note: string | null;                   // 모델이 고른 이유 한 줄. 일반 텍스트로만 보여 준다
 }
+// 포스터 원본 형식(W6). 사진은 창에 그대로, PDF는 새 탭에서 연다
+export type PosterKind = "image" | "pdf";
+// GET /opportunities/{id}/poster-url — 5분 동안 열리는 포스터 원본 주소. 내려받지 않고 그대로 본다(주소를 들고 있지 않는다)
+export interface PosterUrl {
+  url: string;
+  expires_at: string;
+}
 export interface OpportunityDetail {
   id: string;
   title: string;
@@ -212,7 +219,7 @@ export interface OpportunityDetail {
   source_type: SourceType;
   status: OpportunityStatus;             // 준비한 공고가 마감·숨김이 되어도 보인다. 화면 위에 안내를 띄운다
   original_url: string | null;
-  poster_url: string | null;             // 포스터 원본 이미지(서명 URL 5분). 포스터 업로드(W6)부터 채운다
+  poster_kind: PosterKind | null;        // 내가 올린 포스터의 원본 형식(W6). 주소는 getPosterUrl로 누를 때 받는다
   easy_summary: string | null;
   apply_start_at: string | null;
   deadline_at: string | null;

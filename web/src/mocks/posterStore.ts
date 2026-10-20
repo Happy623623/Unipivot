@@ -10,6 +10,8 @@ import type {
 } from "@/types/api";
 
 const EVALUATED_AT = "2026-10-05T10:30:00+09:00";
+// 목 모드의 포스터 원본 그림(getPosterUrl이 주는 주소)
+export const MOCK_POSTER_IMAGE = "/assets/mock-opportunity-poster.svg";
 
 function step(seq: number, tool: string, label: string, latency: number): ProcessStep {
   return { seq, tool, label, status: "succeeded", latency_ms: latency, chosen_by: "pipeline", note: null };
@@ -66,7 +68,7 @@ export function registerStoredPoster(
     source_type: "poster",
     status: "active",
     original_url: null,
-    poster_url: "/assets/mock-opportunity-poster.svg",
+    poster_kind: "image",
     easy_summary: draft.easy_summary,
     apply_start_at: draft.apply_start_at,
     deadline_at: draft.deadline_at,

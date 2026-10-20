@@ -7,7 +7,7 @@
 - 받기: GET {base}/object/{bucket}/{path} (서버가 포스터를 모델에 넘길 때 쓴다)
 - 지우기: DELETE {base}/object/{bucket}/{path} (이미 없는 파일은 400 `NoSuchKey`로 온다 — 지나간다.
   `code` 없는 404는 저장소의 답이 아닐 수 있어 지나가지 않는다)
-- 받기 주소: POST {base}/object/sign/{bucket}/{path} → 5분짜리 서명 경로(문서함 받기, F-44)
+- 받기 주소: POST {base}/object/sign/{bucket}/{path} → 5분짜리 서명 경로(문서함 받기 F-44, 포스터 원본 W6)
 
 저장소 키(`SUPABASE_SERVICE_ROLE_KEY`)는 두 모양이 있고 싣는 곳이 다르다.
 - **secret key `sb_secret_…`**: 2025년 11월 뒤 만든 프로젝트에는 이것만 있다. `apikey` 머리값에만
@@ -91,14 +91,16 @@ class SupabaseStorage:
         await self._send("DELETE", path, gone_is_ok=True)
 
     async def signed_url(
-        self, path: str, *, download_name: str, seconds: int = SIGNED_SECONDS
+        self, path: str, *, download_name: str | None = None, seconds: int = SIGNED_SECONDS
     ) -> str:
-        """`seconds`초 동안 열리는 받기 주소. 열면 `download_name`으로 내려받는다.
+        """`seconds`초 동안 열리는 주소. `download_name`을 주면 열 때 그 이름으로 내려받는다.
 
         `download`를 붙이면 저장소가 `Content-Disposition: attachment`로 준다(storage-js의 `download`
         선택과 같다). 공지 첨부는 형식을 가리지 않고 받아서, HTML·SVG가 브라우저에서 그대로 열리면 안
-        된다. 주소의 호스트는 언제나 우리 저장소다 — 저장소가 준 것은 서명 경로뿐이다. 없는 파일이면
-        StorageMissing이다(서명할 때 저장소가 파일을 찾아본다).
+        된다 — 문서함 받기는 늘 이름을 넘긴다. 이름이 없으면 브라우저가 그대로 보여 주는 주소다(포스터
+        원본, W6). 포스터는 올릴 때 바이트로 가린 사진·PDF만 받아서 그렇게 열어도 된다. 주소의 호스트는
+        언제나 우리 저장소다 — 저장소가 준 것은 서명 경로뿐이다. 없는 파일이면 StorageMissing이다(서명할
+        때 저장소가 파일을 찾아본다).
         """
         body = await self._send(
             "POST",
@@ -108,6 +110,8 @@ class SupabaseStorage:
             action="object/sign",
         )
         signed = _signed_path(body)
+        if download_name is None:
+            return f"{self.base_url}{signed}"
         return f"{self.base_url}{signed}&download={quote(download_name, safe='')}"
 
     async def _send(

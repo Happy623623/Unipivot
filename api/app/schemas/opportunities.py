@@ -19,6 +19,7 @@ SourceType = Literal["school_notice", "youth_policy", "contest", "poster", "lms_
 EligibilityStatus = Literal["eligible", "undetermined", "ineligible"]
 DisplayStatus = Literal["eligible", "missing_info", "needs_review", "ineligible"]
 OpportunityMark = Literal["interested", "not_interested"]  # 관심, 관심 없음 (F-45)
+PosterKind = Literal["image", "pdf"]  # 포스터 원본 형식(W6). 사진은 창에, PDF는 새 탭에 연다
 
 CATEGORIES: tuple[str, ...] = Category.__args__
 SOURCE_TYPES: tuple[str, ...] = SourceType.__args__
@@ -170,7 +171,9 @@ class OpportunityDetail(BaseModel):
     source_type: SourceType
     status: OpportunityStatus  # 준비한 공고가 마감·숨김이 되면 화면 위에 안내를 띄운다
     original_url: str | None
-    poster_url: str | None  # 포스터 원본 이미지(서명 URL 5분). 포스터 업로드(W6)에서 채운다
+    # 내가 올린 포스터 공고의 원본 형식(W6). 주소는 GET /opportunities/{id}/poster-url로 따로 받는다.
+    # 그 밖(남의 포스터·포스터가 아닌 공고·원본 파일이 없는 공고)은 null이다
+    poster_kind: PosterKind | None
     easy_summary: str | None
     apply_start_at: datetime | None  # KST 오프셋(+09:00)
     deadline_at: datetime | None
@@ -187,6 +190,16 @@ class OpportunityDetail(BaseModel):
     process: Process
     reported_by_me: bool  # 신고(P1) 전에는 늘 false
     my_mark: OpportunityMark | None = None  # 내 표시(F-45). 없으면 null
+
+
+# GET /opportunities/{id}/poster-url (W6)
+
+
+class PosterUrl(BaseModel):
+    """5분 동안 열리는 포스터 원본 주소. 내려받지 않고 브라우저가 그대로 보여 준다."""
+
+    url: str
+    expires_at: datetime
 
 
 # PUT /opportunities/{id}/mark (F-45)
