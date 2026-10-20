@@ -27,6 +27,7 @@ import {
   type ProfileFormValues,
 } from "@/lib/profileFields";
 import useAsyncData from "@/lib/useAsyncData";
+import useSessionWatch from "@/lib/useSessionWatch";
 
 // 동의 문구를 바꾸면 버전도 바꾼다 (profiles.consent_version에 남는다)
 const CONSENT_VERSION = "2026-10-07";
@@ -44,6 +45,7 @@ interface OnboardingProps {
 }
 
 export default function Onboarding({ onDone }: OnboardingProps) {
+  useSessionWatch(); // 다른 탭에서 로그아웃·탈퇴하면 입력 중인 프로필을 내리고 로그인 화면으로
   // 학과 목록을 못 불러와도 온보딩은 진행한다 (학과는 나중에 설정에서 고른다)
   const request = useAsyncData(
     () => Promise.all([getMe(), getProfile(), getDepartments().catch(() => [])]),

@@ -4,6 +4,7 @@ import { removePushSubscription } from "@/api/pushClient";
 import { connectGoogleCalendar } from "@/lib/googleCalendar";
 import { unsubscribeIfAny } from "@/lib/push";
 import { createBrowserSupabase, hasStoredSession } from "@/lib/supabase/client";
+import { announceLeaving } from "@/lib/useSessionWatch";
 import type {
   ClientEvent,
   ConsentResult,
@@ -168,7 +169,8 @@ function within<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
 // 지운다(다른 기기의 로그인은 그대로). 이미 받은 접근 토큰은 만료(1시간)까지 남는다.
 // 1) 먼저 이 브라우저의 웹 푸시 구독을 지우고 서버에도 알린다(토큰이 살아 있을 때) — 안 그러면 로그아웃한 기기로
 //    알림이 계속 간다(명세 10장). 실패해도 넘어간다(브라우저 구독이 없으면 서버는 보낼 때 410으로 스스로 지운다).
-// 2) Supabase 로그아웃. 서버에 알리지 못해도 supabase-js는 이 기기의 세션을 먼저 지운다. 다만 세션을 불러오다(만료된
+// 2) Supabase 로그아웃. 직전에 다른 탭에 이유를 알린다(announceLeaving) — 그 탭들은 세션이 끝나면 "로그아웃했어요"로 간다
+//    (lib/useSessionWatch.ts). 서버에 알리지 못해도 supabase-js는 이 기기의 세션을 먼저 지운다. 다만 세션을 불러오다(만료된
 //    토큰 갱신) 실패하면 지우지 않고 오류만 돌려주므로, 세션 쿠키가 남았으면 던져서 그 자리에서 다시 누르게 한다(8초까지 기다린다).
 // 3) 로그인 화면으로 간다. 뒤로 가기로 개인 정보가 그려진 설정 화면이 돌아오지 않게 기록을 바꾼다(replace).
 // 목 모드는 서버가 없어 1)·3)만 한다
@@ -181,7 +183,8 @@ export async function signOut(): Promise<void> {
   }
   if (!USE_MOCKS) {
     // 연결이 끊기면 supabase-js가 갱신을 몇 번 다시 해 보느라 25초쯤 걸린다. 8초만 기다리고 세션이 남았으면 알린다
-    // (그 뒤에 끝나도 다시 누르면 세션이 없어 바로 로그인 화면으로 간다)
+    // (그 뒤에 끝나면 useSessionWatch가 이 탭도 로그인 화면으로 옮긴다)
+    announceLeaving("signed_out");
     await within(createBrowserSupabase().auth.signOut({ scope: "local" }), 8000);
     if (hasStoredSession()) throw new Error("세션이 남았어요");
   }
@@ -190,11 +193,13 @@ export async function signOut(): Promise<void> {
 }
 
 // DELETE /me (4장, F-06). 서버가 파일·Google 권한·프로필을 지운다. 끝나면 이 기기의 세션을 지우고
-// 로그인 화면으로 간다(로그인 계정은 남아, 다시 로그인하면 동의부터 새로 시작한다).
+// 로그인 화면으로 간다(로그인 계정은 남아, 다시 로그인하면 동의부터 새로 시작한다). 세션을 지우기 직전에 다른 탭에
+// 알려 그 탭들도 "탈퇴했어요"로 간다.
 // 목 모드는 그 자리에서 동의 전 상태로 돌아간다(부르는 쪽이 온보딩으로 보낸다)
 export async function deleteAccount(): Promise<void> {
   if (USE_MOCKS) return mock.deleteAccount();
   await apiFetch<void>("/me", { method: "DELETE" });
+  announceLeaving("deleted");
   await createBrowserSupabase().auth.signOut({ scope: "local" });
   window.location.replace("/login?notice=deleted"); // 뒤로 가기로 지운 계정의 화면이 돌아오지 않게
   return new Promise<void>(() => {}); // 페이지가 바뀌므로 끝나지 않는다

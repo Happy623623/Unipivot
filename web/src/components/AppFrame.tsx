@@ -8,11 +8,13 @@ import StatusPreview from "@/dev/StatusPreview";
 import { pathnameToRoute, useAppNavigate } from "@/lib/routes";
 import { syncPushSubscription } from "@/lib/usePushSubscription";
 import useAsyncData from "@/lib/useAsyncData";
+import useSessionWatch from "@/lib/useSessionWatch";
 import type { Me } from "@/types/api";
 
 // Make의 App.tsx가 하던 일: 내 정보 불러오기, 동의 전이면 온보딩으로 보내기, 상태 미리보기.
 // 동의를 마친 사용자가 앱을 열면 app_open을 한 번 기록한다(서버가 KST 하루 1건만 남긴다).
-// 알림 목록은 패널을 열 때 받고(useNotifications), 여기서는 배지 숫자만 들고 있는다
+// 알림 목록은 패널을 열 때 받고(useNotifications), 여기서는 배지 숫자만 들고 있는다.
+// 다른 탭에서 로그아웃·탈퇴하면 이 탭도 로그인 화면으로 간다(useSessionWatch)
 const MeContext = createContext<Me | null>(null);
 export const useMe = () => useContext(MeContext);
 
@@ -27,6 +29,7 @@ export default function AppFrame({ children }: { children: ReactNode }) {
   const meRequest = useAsyncData(getMe, [revision]);
   const openRecorded = useRef(false);
   const pushSynced = useRef(false);
+  useSessionWatch();
 
   useEffect(() => {
     setUnread(null);
