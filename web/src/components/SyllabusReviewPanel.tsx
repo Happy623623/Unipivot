@@ -72,7 +72,7 @@ export default function SyllabusReviewPanel({
           >
             그만두기
           </button>
-          <Button onClick={onSave} disabled={chosen === 0 || saving}>
+          <Button onClick={onSave} disabled={!saving && chosen === 0} busy={saving}>
             {saving ? "넣는 중…" : label}
           </Button>
         </div>

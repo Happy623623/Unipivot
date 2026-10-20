@@ -120,9 +120,12 @@ export default function Notifications({ navigate }: { navigate: (route: Route) =
         </div>
         <button
           type="button"
-          onClick={readEverything}
-          disabled={unread === null || unread === 0}
-          className="text-[13px] font-semibold text-[#4f6ef7] disabled:cursor-default disabled:text-[#a0a4ab]"
+          // 누르면 읽지 않은 알림이 0이 되어 disabled가 되고 초점이 빠졌다. 읽을 것이 없으면 aria-disabled로 알리고 누름은 무시한다
+          onClick={() => {
+            if (unread !== null && unread > 0) void readEverything();
+          }}
+          aria-disabled={unread === null || unread === 0 || undefined}
+          className="text-[13px] font-semibold text-[#4f6ef7] aria-disabled:cursor-default aria-disabled:text-[#a0a4ab]"
         >
           모두 읽음
         </button>

@@ -101,7 +101,7 @@ export default function ConsentStep({ saving, onAgree }: ConsentStepProps) {
         ))}
       </div>
       <div className="mt-8 flex justify-end">
-        <Button onClick={() => onAgree({ incomeInfo: checked.income })} disabled={!requiredDone || saving}>
+        <Button onClick={() => onAgree({ incomeInfo: checked.income })} disabled={!saving && !requiredDone} busy={saving}>
           {saving ? "저장 중" : "동의하고 계속"}
         </Button>
       </div>

@@ -23,7 +23,8 @@ export default function BrowserPushSetting({ pushEnabled }: { pushEnabled: boole
         </div>
         <Toggle
           checked={state.subscribed}
-          disabled={busy || denied}
+          disabled={denied}
+          busy={busy && !denied}
           label="이 브라우저에서 알림 받기"
           onChange={(checked) => void (checked ? enable() : disable())}
         />

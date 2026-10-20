@@ -46,7 +46,7 @@ export default function PushEnableBanner({ onDone }: { onDone: (message: string)
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <Button secondary onClick={hide}>나중에</Button>
-        <Button disabled={busy} onClick={() => void turnOn()}>알림 켜기</Button>
+        <Button busy={busy} onClick={() => void turnOn()}>알림 켜기</Button>
       </div>
     </section>
   );

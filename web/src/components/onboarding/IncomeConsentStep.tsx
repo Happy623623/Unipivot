@@ -25,7 +25,7 @@ export default function IncomeConsentStep({ saving, onAgree, onSkip, onBack }: I
         {onBack ? <Button secondary onClick={onBack}>이전</Button> : <span />}
         <div className="flex gap-2">
           <Button secondary onClick={onSkip}>건너뛰기</Button>
-          <Button onClick={onAgree} disabled={saving}>
+          <Button onClick={onAgree} busy={saving}>
             {saving ? "저장 중" : "동의하고 입력"}
           </Button>
         </div>

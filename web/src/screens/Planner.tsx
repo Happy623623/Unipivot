@@ -195,7 +195,7 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
             Google 캘린더를 쓰지 않으면 다가오는 마감일과 수업 일정을 파일로 받아 iPhone·삼성·Outlook 캘린더에 넣을 수 있어요.
           </p>
         </div>
-        <Button secondary onClick={downloadIcs} disabled={downloading}>
+        <Button secondary onClick={downloadIcs} busy={downloading}>
           {downloading ? "파일 만드는 중…" : ".ics 내려받기"}
         </Button>
       </section>

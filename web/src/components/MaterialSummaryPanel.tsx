@@ -130,7 +130,8 @@ export default function MaterialSummaryPanel({
       <div className="mt-4 flex items-center justify-between">
         {translating && <Badge>번역 중</Badge>}
         <div className="ml-auto">
-          <Button onClick={translate} disabled={selected.length === 0 || translating}>
+          {/* 고른 구간이 없으면 할 수 없는 일(disabled), 번역 중이면 진행 중(busy). 둘을 같이 주지 않는다 */}
+          <Button onClick={translate} disabled={!translating && selected.length === 0} busy={translating}>
             선택한 구간 번역하기
           </Button>
         </div>

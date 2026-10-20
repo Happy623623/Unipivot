@@ -180,14 +180,14 @@ export default function OpportunityPreparation({
                 className="mt-1 block h-[42px] rounded-[10px] border border-[#e5e7eb] px-3 text-[14px] text-[#181a20]"
               />
             </label>
-            <Button onClick={() => startPreparation()} disabled={!targetDate || running}>
+            <Button onClick={() => startPreparation()} disabled={!running && !targetDate} busy={running}>
               준비 일정 만들기
             </Button>
           </div>
         );
       }
       return (
-        <Button onClick={() => startPreparation()} disabled={running}>
+        <Button onClick={() => startPreparation()} busy={running}>
           {running ? "만드는 중" : "준비 일정 만들기"}
         </Button>
       );
@@ -208,7 +208,7 @@ export default function OpportunityPreparation({
         <span title="대체 공고 추천은 준비 중이에요">
           <Button disabled>대체 공고 보기</Button>
         </span>
-        <Button secondary onClick={() => setConfirmOpen(true)} disabled={running}>
+        <Button secondary onClick={() => setConfirmOpen(true)} busy={running}>
           그래도 준비하기
         </Button>
       </div>

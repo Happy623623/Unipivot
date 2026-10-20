@@ -132,7 +132,8 @@ export default function ProfileInputModal({ open, opportunityId, missingFields, 
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!loaded || !values) return;
+    // 저장 버튼은 busy라 누름은 막지만 입력란의 Enter(암묵적 제출)는 여기로 온다
+    if (saving || !loaded || !values) return;
     const nextErrors = validateProfile(values, editable);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
@@ -178,7 +179,7 @@ export default function ProfileInputModal({ open, opportunityId, missingFields, 
                 <>
                   <p>소득·수급 정보는 선택 동의를 하면 입력할 수 있어요. 자격 판정에만 쓰고, 탈퇴하면 바로 지워요.</p>
                   <div className="mt-2">
-                    <Button secondary onClick={agreeIncome} disabled={agreeing}>
+                    <Button secondary onClick={agreeIncome} busy={agreeing}>
                       {agreeing ? "동의하는 중" : "동의하고 입력하기"}
                     </Button>
                   </div>
@@ -206,7 +207,7 @@ export default function ProfileInputModal({ open, opportunityId, missingFields, 
           {error && <p role="alert" className="mt-4 text-[13px] text-[#c53030]">{error}</p>}
           <div className="mt-6 flex justify-end gap-2">
             <Button secondary onClick={onClose}>취소</Button>
-            <Button type="submit" disabled={saving || editable.length === 0}>
+            <Button type="submit" disabled={!saving && editable.length === 0} busy={saving}>
               {saving ? "다시 판정 중" : "저장하고 다시 판정"}
             </Button>
           </div>

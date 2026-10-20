@@ -221,7 +221,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
         {deleteError && <p role="alert" className="mt-3 text-[13px] text-[#c53030]">{deleteError}</p>}
         <div className="mt-6 flex justify-end gap-2">
           <Button secondary onClick={() => setDeleteOpen(false)}>취소</Button>
-          <Button disabled={deleteText !== "탈퇴" || deleting} onClick={removeAccount}>{deleting ? "지우는 중" : "탈퇴"}</Button>
+          <Button disabled={!deleting && deleteText !== "탈퇴"} busy={deleting} onClick={removeAccount}>{deleting ? "지우는 중" : "탈퇴"}</Button>
         </div>
       </Modal>
       {toast && (

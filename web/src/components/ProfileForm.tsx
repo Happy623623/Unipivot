@@ -55,6 +55,7 @@ export default function ProfileForm({
     <form
       onSubmit={(event) => {
         event.preventDefault();
+        if (saving) return; // 저장 버튼은 busy라 누름은 막지만 입력란의 Enter(암묵적 제출)는 여기로 온다
         const nextErrors = validateProfile(values, editableFields);
         setErrors(nextErrors);
         if (Object.keys(nextErrors).length > 0) return;
@@ -96,7 +97,7 @@ export default function ProfileForm({
       {message && <p role="alert" className="mt-4 text-[13px] text-[#c53030]">{message}</p>}
       <div className="mt-6 flex justify-end gap-2">
         {onCancel && <Button secondary onClick={onCancel}>취소</Button>}
-        <Button type="submit" disabled={saving}>
+        <Button type="submit" busy={saving}>
           {saving ? "저장 중" : submitLabel}
         </Button>
       </div>

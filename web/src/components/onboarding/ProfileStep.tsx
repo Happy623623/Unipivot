@@ -66,7 +66,7 @@ export default function ProfileStep({
       </div>
       <div className="mt-8 flex justify-between gap-2">
         {onBack ? <Button secondary onClick={onBack}>이전</Button> : <span />}
-        <Button onClick={onNext} disabled={saving}>
+        <Button onClick={onNext} busy={saving}>
           {saving ? "저장 중" : last ? "저장하고 계속" : "다음"}
         </Button>
       </div>

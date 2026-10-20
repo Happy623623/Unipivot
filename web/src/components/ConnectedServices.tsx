@@ -86,7 +86,7 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
           {me.calendar_connected ? (
             <Button secondary onClick={() => setCalendarOpen(true)}>연결 해제</Button>
           ) : (
-            <Button secondary disabled={connecting} onClick={connectCalendar}>
+            <Button secondary busy={connecting} onClick={connectCalendar}>
               {connecting ? "Google로 이동 중" : "연결하기"}
             </Button>
           )}

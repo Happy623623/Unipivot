@@ -41,9 +41,15 @@ export default function IncomeConsentSetting({ consented, onChanged }: IncomeCon
           role="switch"
           aria-checked={consented}
           aria-label="소득·수급 정보 수집·이용 동의"
-          disabled={saving}
-          onClick={() => (consented ? setConfirmOpen(true) : change(true))}
-          className={`relative h-6 w-11 shrink-0 rounded-full ${consented ? "bg-[#4f6ef7]" : "bg-[#e5e7eb]"}`}
+          // 바꾸는 동안 disabled로 막으면 초점이 빠진다. aria-disabled·aria-busy로 알리고 누름은 무시한다
+          aria-disabled={saving || undefined}
+          aria-busy={saving || undefined}
+          onClick={() => {
+            if (saving) return;
+            if (consented) setConfirmOpen(true);
+            else void change(true);
+          }}
+          className={`relative h-6 w-11 shrink-0 rounded-full aria-disabled:cursor-wait aria-disabled:opacity-45 ${consented ? "bg-[#4f6ef7]" : "bg-[#e5e7eb]"}`}
         >
           <span className={`absolute top-1 size-4 rounded-full bg-white transition ${consented ? "left-6" : "left-1"}`} />
         </button>
@@ -55,7 +61,7 @@ export default function IncomeConsentSetting({ consented, onChanged }: IncomeCon
         </p>
         <div className="mt-6 flex justify-end gap-2">
           <Button secondary onClick={() => setConfirmOpen(false)}>취소</Button>
-          <Button disabled={saving} onClick={() => change(false)}>동의 철회</Button>
+          <Button busy={saving} onClick={() => change(false)}>동의 철회</Button>
         </div>
       </Modal>
     </>

@@ -101,7 +101,7 @@ export default function PreparationProgress({
             <p className="mt-2 text-[12px] text-[#c53030]">{result.calendar_error}</p>
           )}
           <div className="mt-4 flex justify-end">
-            <Button onClick={onFinish} disabled={finishing}>
+            <Button onClick={onFinish} busy={finishing}>
               {finishing ? "완료 중" : "완료"}
             </Button>
           </div>

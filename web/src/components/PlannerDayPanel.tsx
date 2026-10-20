@@ -41,7 +41,7 @@ export default function PlannerDayPanel({
   const [dueDate, setDueDate] = useState(date);
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [toggling, setToggling] = useState<string | null>(null);
+  const [toggling, setToggling] = useState<ReadonlySet<string>>(new Set()); // 저장 중인 할 일(할 일마다 따로 잠근다)
 
   const openForm = (task?: PlannerTask) => {
     setEditing(task ?? null);
@@ -88,16 +88,25 @@ export default function PlannerDayPanel({
                     <input
                       type="checkbox"
                       checked={task.is_done}
-                      disabled={toggling === task.id}
+                      // 저장하는 동안 disabled로 막으면 체크마다 초점이 빠진다. aria-disabled로 알리고 누름은 무시한다
+                      // (제어 체크박스라 무시하면 checked가 그대로 남는다)
+                      aria-disabled={toggling.has(task.id) || undefined}
+                      aria-busy={toggling.has(task.id) || undefined}
                       onChange={async () => {
-                        setToggling(task.id); // 연타하면 응답 순서가 엇갈린다
+                        if (toggling.has(task.id)) return;
+                        // 연타하면 응답 순서가 엇갈린다. 다른 할 일의 저장이 끝나도 이 할 일의 잠금은 풀리지 않게 자기 것만 뺀다
+                        setToggling((current) => new Set(current).add(task.id));
                         try {
                           await onToggle(task);
                         } finally {
-                          setToggling(null);
+                          setToggling((current) => {
+                            const next = new Set(current);
+                            next.delete(task.id);
+                            return next;
+                          });
                         }
                       }}
-                      className="mt-1 accent-[#4f6ef7]"
+                      className="mt-1 accent-[#4f6ef7] aria-disabled:cursor-wait aria-disabled:opacity-45"
                     />
                     <span>
                       <b className={`block text-[14px] ${task.is_done ? "text-[#a0a4ab] line-through" : ""}`}>{task.title}</b>
@@ -163,7 +172,7 @@ export default function PlannerDayPanel({
         </label>
         <div className="mt-6 flex justify-end gap-2">
           <Button secondary onClick={() => setModalOpen(false)}>취소</Button>
-          <Button onClick={save} disabled={saving}>{saving ? "저장 중" : "저장"}</Button>
+          <Button onClick={save} busy={saving}>{saving ? "저장 중" : "저장"}</Button>
         </div>
       </Modal>
     </>

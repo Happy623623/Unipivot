@@ -20,18 +20,24 @@ export default function NotificationPanel({ open, onClose }: NotificationPanelPr
   const { unreadNotifications, setUnreadNotifications, navigate } = useAppShell();
   const { items, unread, loading, error, reload, read, readAll } = useNotifications({ enabled: open });
   const [readFailed, setReadFailed] = useState(false);
+  const [readNotice, setReadNotice] = useState(""); // "모두 읽음" 결과를 화면 읽기 프로그램에 알린다(알림함 화면은 토스트로 알린다)
 
   useEffect(() => {
     if (unread !== null) setUnreadNotifications(unread);
   }, [unread, setUnreadNotifications]);
 
   useEffect(() => {
-    if (open) setReadFailed(false);
+    if (open) {
+      setReadFailed(false);
+      setReadNotice("");
+    }
   }, [open]);
 
   // 패널은 알림을 누르면 바로 다른 화면으로 가서, 읽음 처리 실패는 "모두 읽음"에서만 알린다
   const readEverything = async () => {
-    setReadFailed(!(await readAll()));
+    const saved = await readAll();
+    setReadFailed(!saved);
+    setReadNotice(saved ? "알림을 모두 읽음으로 바꿨어요." : "읽음 처리를 저장하지 못했어요. 다시 눌러 주세요.");
   };
 
   const openNotification = (notification: AppNotification) => {
@@ -66,13 +72,17 @@ export default function NotificationPanel({ open, onClose }: NotificationPanelPr
             <p className="mt-1 text-[12px] text-[#667085]">
               {readFailed ? "읽음 처리를 저장하지 못했어요. 다시 눌러 주세요." : `읽지 않은 알림 ${unreadNotifications}개`}
             </p>
+            <p role="status" className="sr-only">{readNotice}</p>
           </div>
           <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={readEverything}
-              disabled={unread === null || unread === 0}
-              className="text-[12px] font-semibold text-[#4f6ef7] disabled:cursor-default disabled:text-[#a0a4ab]"
+              // 누르면 읽지 않은 알림이 0이 되어 disabled가 되고 초점이 빠졌다. 읽을 것이 없으면 aria-disabled로 알리고 누름은 무시한다
+              onClick={() => {
+                if (unread !== null && unread > 0) void readEverything();
+              }}
+              aria-disabled={unread === null || unread === 0 || undefined}
+              className="text-[12px] font-semibold text-[#4f6ef7] aria-disabled:cursor-default aria-disabled:text-[#a0a4ab]"
             >
               모두 읽음
             </button>

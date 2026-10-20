@@ -64,9 +64,13 @@ export default function SyllabusConfirmedList({
                 (calendarConnected ? (
                   <button
                     type="button"
-                    onClick={() => onAddToCalendar(item)}
-                    disabled={busyItem !== null}
-                    className="text-[12px] font-semibold text-[#4f6ef7] disabled:text-[#a0a4ab]"
+                    // 넣는 동안 disabled로 막으면 초점이 빠진다. aria-disabled로 알리고 누름은 무시한다
+                    onClick={() => {
+                      if (busyItem === null) onAddToCalendar(item);
+                    }}
+                    aria-disabled={busyItem !== null || undefined}
+                    aria-busy={busyItem === item.id || undefined}
+                    className="text-[12px] font-semibold text-[#4f6ef7] aria-disabled:cursor-default aria-disabled:text-[#a0a4ab] aria-busy:cursor-wait"
                   >
                     {busyItem === item.id ? "넣는 중…" : "캘린더에 넣기"}
                   </button>

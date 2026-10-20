@@ -203,7 +203,7 @@ export default function PosterExtractForm({
         <Button secondary onClick={() => setEditing((value) => !value)}>
           {editing ? "수정 완료" : "정보 수정"}
         </Button>
-        <Button onClick={onRegister} disabled={registering}>
+        <Button onClick={onRegister} busy={registering}>
           {registering ? "등록 중" : "공고 등록하고 자격 확인"}
         </Button>
       </div>

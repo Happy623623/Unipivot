@@ -65,9 +65,13 @@ function LoginCard() {
       </h1>
       <button
         type="button"
-        onClick={signIn}
-        disabled={pending}
-        className="mt-8 flex h-[48px] w-full items-center justify-center gap-3 rounded-[10px] border border-[#e5e7eb] bg-white text-[15px] font-semibold text-[#181a20] transition hover:bg-[#f7f8fa] disabled:cursor-not-allowed disabled:opacity-50"
+        // Google로 가는 동안 disabled로 막으면 초점이 빠진다(가지 못하면 이 화면에 남는다). 누름만 무시한다
+        onClick={() => {
+          if (!pending) void signIn();
+        }}
+        aria-disabled={pending || undefined}
+        aria-busy={pending || undefined}
+        className="mt-8 flex h-[48px] w-full items-center justify-center gap-3 rounded-[10px] border border-[#e5e7eb] bg-white text-[15px] font-semibold text-[#181a20] transition hover:bg-[#f7f8fa] aria-disabled:cursor-wait aria-disabled:opacity-50"
       >
         <GoogleMark />
         {pending ? "Google로 이동 중" : "Google로 시작하기"}

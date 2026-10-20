@@ -29,7 +29,7 @@ export default function DeadlineCalendarRow({ registered, busy, onToggle }: Dead
             : "마감일을 Google Calendar에 넣어 두면 캘린더 알림으로도 받아요."}
         </p>
       </div>
-      <Button secondary onClick={onToggle} disabled={busy}>
+      <Button secondary onClick={onToggle} busy={busy}>
         {registered ? "캘린더에서 빼기" : "캘린더에 넣기"}
       </Button>
     </section>
