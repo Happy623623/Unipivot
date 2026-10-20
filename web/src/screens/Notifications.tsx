@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { todayKst } from "@/api/client";
 import { useAppShell } from "@/components/AppShell";
 import Button from "@/components/Button";
@@ -10,6 +10,7 @@ import Skeleton from "@/components/Skeleton";
 import Toast from "@/components/Toast";
 import { formatKstLongDate, getKstDateKey } from "@/lib/format";
 import notificationRoute from "@/lib/notificationRoute";
+import useLoadMoreFocus from "@/lib/useLoadMoreFocus";
 import useNotifications from "@/lib/useNotifications";
 import useToast from "@/lib/useToast";
 import type { AppNotification } from "@/types/api";
@@ -54,7 +55,7 @@ export default function Notifications({ navigate }: { navigate: (route: Route) =
   const [unreadOnly, setUnreadOnly] = useState(false);
   const { unreadNotifications, setUnreadNotifications } = useAppShell();
   const [toast, showToast] = useToast();
-  const { items, unread, loading, error, hasMore, loadingMore, reload, loadMore, read, readAll } =
+  const { items, unread, loading, error, hasMore, loadingMore, generation, reload, loadMore, read, readAll } =
     useNotifications({ unreadOnly });
 
   useEffect(() => {
@@ -78,6 +79,18 @@ export default function Notifications({ navigate }: { navigate: (route: Route) =
   };
 
   const groups = dayGroups(items, todayKst());
+  const listRef = useRef<HTMLDivElement>(null);
+  const more = useLoadMoreFocus({
+    listRef,
+    ids: items.map((item) => item.id),
+    loading,
+    loadingMore,
+    hasMore,
+    error,
+    generation,
+    loadMore,
+    listKey: unreadOnly ? "unread" : "all",
+  });
   return (
     <>
       <Header
@@ -135,28 +148,31 @@ export default function Notifications({ navigate }: { navigate: (route: Route) =
       {!loading && error === null && items.length === 0 && unreadOnly && (
         <EmptyBox title="안 읽은 알림이 없어요" action="전체 알림 보기" onAction={() => setUnreadOnly(false)} />
       )}
-      {groups.map((group) => (
-        <section key={group.key} className="flex flex-col gap-2">
-          <h2 className="text-[13px] font-semibold text-[#667085]">{group.label}</h2>
-          {group.items.map((notification) => (
-            <NotificationRow
-              key={notification.id}
-              notification={notification}
-              onOpen={openNotification}
-            />
-          ))}
-        </section>
-      ))}
+      <div ref={listRef} className="contents">
+        {groups.map((group) => (
+          <section key={group.key} className="flex flex-col gap-2">
+            <h2 className="text-[13px] font-semibold text-[#667085]">{group.label}</h2>
+            {group.items.map((notification) => (
+              <NotificationRow
+                key={notification.id}
+                notification={notification}
+                onOpen={openNotification}
+              />
+            ))}
+          </section>
+        ))}
+      </div>
       {error !== null && items.length > 0 && (
         <p className="text-[13px] text-[#c53030]">{error}</p>
       )}
       {hasMore && (
         <div className="flex justify-center">
-          <Button secondary onClick={loadMore} busy={loadingMore}>
+          <Button secondary onClick={more.loadMore} busy={loadingMore}>
             {loadingMore ? "불러오는 중…" : "더 보기"}
           </Button>
         </div>
       )}
+      <p role="status" className="sr-only">{more.status}</p>
       <Toast toast={toast} />
     </>
   );

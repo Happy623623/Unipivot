@@ -10,6 +10,7 @@ export interface DocumentsState {
   error: string | null;
   hasMore: boolean;
   loadingMore: boolean;
+  generation: number; // 첫 쪽부터 다시 받은 횟수(lib/useLoadMoreFocus.ts)
   reload: () => void;
   loadMore: () => void;
 }
@@ -64,6 +65,7 @@ export default function useDocuments(): DocumentsState {
         if (fieldErrors(cause).cursor) {
           setItems([]);
           setCursor(null);
+          setLoading(true); // 다시 받기 effect보다 먼저 "받는 중"으로 둔다(빈 문서함 안내가 잠깐 번쩍이지 않게)
           reload();
           return;
         }
@@ -71,5 +73,5 @@ export default function useDocuments(): DocumentsState {
       });
   }, [cursor, loading, loadingMore, reload]);
 
-  return { items, loading, error, hasMore: cursor !== null, loadingMore, reload, loadMore };
+  return { items, loading, error, hasMore: cursor !== null, loadingMore, generation: round, reload, loadMore };
 }

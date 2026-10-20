@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import Button from "@/components/Button";
 import DownloadButton from "@/components/DownloadButton";
 import Header from "@/components/Header";
@@ -6,6 +7,7 @@ import Skeleton from "@/components/Skeleton";
 import Toast from "@/components/Toast";
 import { formatFileSize, formatKstDate } from "@/lib/format";
 import useDocuments from "@/lib/useDocuments";
+import useLoadMoreFocus from "@/lib/useLoadMoreFocus";
 import useToast from "@/lib/useToast";
 import type { MyFile } from "@/types/api";
 import type { Route } from "@/types/route";
@@ -41,7 +43,8 @@ function DocumentRow({ item, onError }: { item: MyFile; onError: (message: strin
     .filter(Boolean)
     .join(" · ");
   return (
-    <li className="flex items-center gap-3 py-3">
+    // 마지막 쪽이 와서 더 보기가 사라지면 새로 온 첫 줄로 초점을 옮긴다(lib/useLoadMoreFocus.ts)
+    <li data-row={item.file_id} tabIndex={-1} className="flex items-center gap-3 rounded-[10px] py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]">
       <div className="min-w-0 flex-1">
         <p className="break-all text-[14px] font-semibold text-[#181a20]">{item.file_name}</p>
         <p className="mt-0.5 text-[12px] text-[#667085]">{meta}</p>
@@ -61,9 +64,20 @@ function DocumentsSkeleton() {
 }
 
 export default function Documents({ navigate }: { navigate: (route: Route) => void }) {
-  const { items, loading, error, hasMore, loadingMore, reload, loadMore } = useDocuments();
+  const { items, loading, error, hasMore, loadingMore, generation, reload, loadMore } = useDocuments();
   const [toast, showToast] = useToast(3200);
   const groups = courseGroups(items);
+  const listRef = useRef<HTMLDivElement>(null);
+  const more = useLoadMoreFocus({
+    listRef,
+    ids: items.map((item) => item.file_id), // 받은 순서. 화면은 과목별로 묶어 새 줄이 앞 묶음 안에 들어갈 수도 있다
+    loading,
+    loadingMore,
+    hasMore,
+    error,
+    generation,
+    loadMore,
+  });
 
   return (
     <>
@@ -85,40 +99,43 @@ export default function Documents({ navigate }: { navigate: (route: Route) => vo
           </div>
         </section>
       )}
-      {groups.map((group) => (
-        <section key={group.key} className="rounded-2xl border border-[#e5e7eb] bg-white px-5 pb-2 pt-5">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="text-[17px] font-semibold">
-              {group.course?.short_name ?? "과목을 정하지 않은 파일"}
-              <span className="ml-2 text-[13px] font-medium text-[#667085]">{group.items.length}개</span>
-            </h2>
-            {/* 수강을 뺀 과목은 과목 화면이 열리지 않아 링크를 두지 않는다(파일은 그대로 받는다) */}
-            {group.course?.is_active && (
-              <button
-                type="button"
-                onClick={() => navigate({ name: "course", id: group.course!.id })}
-                aria-label={`${group.course.short_name} 과목 보기`}
-                className="shrink-0 text-[12px] font-semibold text-[#4f6ef7]"
-              >
-                과목 보기&nbsp;<span aria-hidden="true"> →</span>
-              </button>
-            )}
-          </div>
-          <ul className="mt-1 divide-y divide-[#e5e7eb]">
-            {group.items.map((item) => (
-              <DocumentRow key={item.file_id} item={item} onError={showToast} />
-            ))}
-          </ul>
-        </section>
-      ))}
+      <div ref={listRef} className="contents">
+        {groups.map((group) => (
+          <section key={group.key} className="rounded-2xl border border-[#e5e7eb] bg-white px-5 pb-2 pt-5">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-[17px] font-semibold">
+                {group.course?.short_name ?? "과목을 정하지 않은 파일"}
+                <span className="ml-2 text-[13px] font-medium text-[#667085]">{group.items.length}개</span>
+              </h2>
+              {/* 수강을 뺀 과목은 과목 화면이 열리지 않아 링크를 두지 않는다(파일은 그대로 받는다) */}
+              {group.course?.is_active && (
+                <button
+                  type="button"
+                  onClick={() => navigate({ name: "course", id: group.course!.id })}
+                  aria-label={`${group.course.short_name} 과목 보기`}
+                  className="shrink-0 text-[12px] font-semibold text-[#4f6ef7]"
+                >
+                  과목 보기&nbsp;<span aria-hidden="true"> →</span>
+                </button>
+              )}
+            </div>
+            <ul className="mt-1 divide-y divide-[#e5e7eb]">
+              {group.items.map((item) => (
+                <DocumentRow key={item.file_id} item={item} onError={showToast} />
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
       {error !== null && items.length > 0 && <p className="text-[13px] text-[#c53030]">{error}</p>}
       {hasMore && (
         <div className="flex justify-center">
-          <Button secondary onClick={loadMore} busy={loadingMore}>
+          <Button secondary onClick={more.loadMore} busy={loadingMore}>
             {loadingMore ? "불러오는 중…" : "더 보기"}
           </Button>
         </div>
       )}
+      <p role="status" className="sr-only">{more.status}</p>
       <Toast toast={toast} />
     </>
   );

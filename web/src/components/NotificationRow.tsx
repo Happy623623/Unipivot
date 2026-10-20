@@ -22,6 +22,7 @@ export default function NotificationRow({ notification, onOpen, enterDelay }: No
   return (
     <button
       type="button"
+      data-row={notification.id}
       onClick={() => onOpen(notification)}
       className={`${enterDelay === undefined ? "" : "notification-item"} w-full rounded-[14px] border border-transparent p-4 text-left transition hover:border-[#cfd7ff] ${
         unread ? "bg-[#eef2ff]" : "bg-white"

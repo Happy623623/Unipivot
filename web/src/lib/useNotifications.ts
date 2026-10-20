@@ -23,6 +23,7 @@ export interface NotificationsState {
   error: string | null;
   hasMore: boolean;
   loadingMore: boolean;
+  generation: number; // 첫 쪽부터 다시 받은 횟수. 더 보기가 422로 처음부터 다시 받았는지 알아보는 데 쓴다(lib/useLoadMoreFocus.ts)
   reload: () => void;
   loadMore: () => void;
   read: (notification: AppNotification) => Promise<boolean>;
@@ -93,6 +94,7 @@ export default function useNotifications({
         // 조건이 바뀐 목록의 cursor는 details.fields.cursor가 있는 422다. 처음부터 다시 받는다
         if (fieldErrors(cause).cursor) {
           setCursor(null);
+          setLoading(true); // 다시 받기 effect보다 먼저 "받는 중"으로 둔다(그 사이 그리기가 마지막 쪽처럼 보이지 않게)
           reload();
           return;
         }
@@ -144,6 +146,7 @@ export default function useNotifications({
     error,
     hasMore: cursor !== null,
     loadingMore,
+    generation: round,
     reload,
     loadMore,
     read,
