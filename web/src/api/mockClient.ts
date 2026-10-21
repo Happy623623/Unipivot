@@ -1,7 +1,7 @@
 import { ApiError } from "@/api/http";
 import { getDevScenario } from "@/dev/scenarios";
 import { countItems } from "@/lib/feedCounts";
-import { courseDetails, courses, lmsUpdates, materials, opportunities } from "@/mocks";
+import { courseDetails, courses, lmsUpdates, opportunities } from "@/mocks";
 import { mockDepartments, mockNow } from "@/mocks/account";
 import { rejudgeStoredOpportunity } from "@/mocks/rejudge";
 import { setStoredMark } from "@/mocks/store";
@@ -38,7 +38,6 @@ import type {
   LmsConnectResult,
   LmsConnection,
   LmsUpdate,
-  MaterialDetail,
   Me,
   NotificationList,
   OpportunityDetail,
@@ -273,8 +272,3 @@ export function getLmsUpdates(): Promise<LmsUpdate[]> {
   return respond(lmsUpdates);
 }
 
-export function getMaterial(fileId: string): Promise<MaterialDetail> {
-  const material = materials[fileId];
-  if (!material) return Promise.reject(new Error("강의자료를 찾을 수 없어요."));
-  return respond(material);
-}

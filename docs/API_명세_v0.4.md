@@ -678,7 +678,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 - 계획서(syllabus)는 **PDF에서 글자를 뽑을 수 있어야** 받는다. 사진을 PDF로 감싼 파일은 `400 UNSUPPORTED_FILE_TYPE`이고, 포털 계획서를 브라우저에서 PDF로 저장해 올리라고 안내한다
 - 형식은 파일 이름·Content-Type이 아니라 **앞부분 바이트**로 가린다. 이름만 `.jpg`로 바꾼 파일은 `400 UNSUPPORTED_FILE_TYPE`이다
 - HEIC(아이폰 기본 사진 형식)는 **아직 받지 않는다**. `400 UNSUPPORTED_FILE_TYPE`과 함께 JPG로 바꿔 올리라고 안내한다(W6 2차 이후에 연다)
-- 지금은 `kind = poster`와 `syllabus`를 받는다. `lecture_material`은 그 기능(F-15)과 함께 열고, 그때까지는 `422 VALIDATION_FAILED`(`details.fields.kind`)다. 과목 연결은 업로드가 아니라 `POST /syllabi/extract`의 `lms_course_id`로 한다(`lms_module_item_id`는 F-15와 함께 받는다)
+- `kind = poster`·`syllabus`·`lecture_material`을 받는다(그 밖은 `422 VALIDATION_FAILED`, `details.fields.kind`). 강의자료(F-15)는 **글자가 있는 300쪽 이하 PDF**다(스캔본은 `400 UNSUPPORTED_FILE_TYPE`). 강의자료에만 `lms_course_id`(내 과목)·`lms_module_item_id`(내 과목의 주차 항목, 주면 그 과목을 붙인다)를 붙인다 — 내 것이 아니면 `404 NOT_FOUND`. 같은 강의자료를 다시 올리면(reused) 비어 있는 과목·주차 항목만 채운다. 계획서의 과목 연결은 업로드가 아니라 `POST /syllabi/extract`의 `lms_course_id`로 한다
 - 하루 한도는 사용자당 **20개**다(KST 하루, 저장한 파일만 센다). 이미 올린 파일을 다시 올리는 것은 저장하지 않으므로 한도를 다 썼어도 `200`이다
 - 업로드한 파일 이름은 경로를 떼고 `files.original_name`에 저장한다
 - 파일은 비공개 Storage 버킷의 `<user_id>/<kind>/<file_id>.<확장자>`에 둔다. 저장소에 먼저 올리고 그다음에 기록을 남긴다(거꾸로 하면 끊겼을 때 없는 파일을 "이미 있어요"라고 가리킨다)
@@ -983,42 +983,40 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 
 ### `POST /materials` (P1, 축소판)
 
-P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토큰 상한 이내면 문서 전체를 1회 요약한다. 상한을 넘으면 `413 MATERIAL_TOO_LONG`이고 쪽 범위 선택은 없다. 업로드 화면에 "외부 AI 서비스로 보내 요약해요"를 고지한다.
+P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토큰 상한(기본 3만, `MATERIAL_MAX_TOKENS`) 안이면 문서 전체를 Gemini 3.5 Flash-Lite로 한 번 요약한다. 상한을 넘으면 `413 MATERIAL_TOO_LONG`이고 **쪽 범위 선택은 없다**(나눠 올리라고 안내한다). 업로드 화면에 "요약하려고 자료의 글을 외부 AI 서비스(Google Gemini)로 보내요"를 고지한다. (10/21 구현)
 
 ```json
 // Request
 { "file_id": "uuid" }
 
-// Response 202 (이미 요약이 있으면 200 + GET /materials/{file_id}와 같은 본문)
+// Response 202 — 요약을 시작했다(또는 이미 요약 중인 실행)
 { "run_id": "uuid", "status": "running" }
 
-// 완료 시 result
-{ "kind": "material_summary", "file_id": "uuid", "overall_summary": "..." }
+// Response 200 — 이미 요약이 있다(캐시). GET /materials/{file_id}와 같은 본문
+
+// 완료 시 GET /runs/{run_id}의 result
+{ "kind": "material_summary", "file_id": "uuid", "overall_summary": "## 전체 요약\n..." }
 ```
 
-처리 순서: 텍스트 추출 → 토큰 상한 확인 → 전체 요약 1회. 구간 분할, 구간 번역, 스캔 페이지 Vision은 하지 않는다(확장 범위).
+처리 순서: (요청 안에서) 저장소에서 받기 → PDF인지·쪽수(300쪽까지) → 글자 뽑기 → 토큰 어림(영문 4자에 1, 그 밖 1자에 1) → 상한 확인 → 202. (뒤에서) 전체 요약 1회 → 저장. 구간 분할·구간 번역·스캔 쪽 Vision은 하지 않는다(확장 범위).
 
 ```json
 // Response 413
 {
   "error": {
     "code": "MATERIAL_TOO_LONG",
-    "message": "자료가 길어서 한 번에 요약할 수 없어요. 요약할 쪽 범위를 골라주세요.",
-    "details": {
-      "total_pages": 142,
-      "text_tokens": 185000,
-      "limit_tokens": 80000,
-      "suggested_ranges": [ { "start": 1, "end": 61 }, { "start": 62, "end": 118 }, { "start": 119, "end": 142 } ]
-    }
+    "message": "자료가 길어서 한 번에 요약할 수 없어요. 요약할 부분만 PDF로 나눠서 올려 주세요.",
+    "details": { "total_pages": 142, "text_tokens": 85000, "limit_tokens": 30000 }
   }
 }
 ```
 
-- `suggested_ranges`는 상한 안에 들어가도록 백엔드가 나눈 범위. 프론트는 이걸 버튼으로 보여주고, 사용자가 직접 범위를 입력할 수도 있게 한다
-- 상한 초과는 `materials.over_limit = true`로 기록한다(유료화 수요 근거)
-- 처리 중 `GET /runs/{run_id}`의 `steps`에 구간 진행이 나온다. 예: `{ "tool": "summarize_section", "label": "구간 요약 (4/12)" }`
-
-완료 시 `result`: `{ "kind": "material_summary", "file_id": "uuid", "sections": 12, "source_language": "en" }`
+- 요약할 수 있는 파일은 **내** 강의자료다(직접 올린 것과 공지 첨부로 저장된 것). 아니면 `404 NOT_FOUND`. 저장소에 파일이 없어도 `404`(다시 올리라고 한다)
+- PDF가 아니거나(공지 첨부) 글자가 없으면 `400 UNSUPPORTED_FILE_TYPE`, 300쪽을 넘으면 `413 PAGE_LIMIT_EXCEEDED`, 저장소에서 받지 못하면 `502 STORAGE_API_ERROR`, 모델이 없는 서버는 `502 LLM_ERROR`(실행을 만들지 않는다)
+- 상한 초과는 `materials.over_limit = true`로 기록한다(유료화 수요 근거). 실행은 만들지 않는다
+- 이미 요약 중이면 새로 시작하지 않고 그 실행의 `run_id`로 202다(두 탭에서 동시에 눌러도 실행은 하나). 요약 실행이 5분 넘게 running이면 멈춘 것으로 보고(서버 재시작 등) 다시 시작한다
+- 같은 PDF를 다시 올리면 같은 파일이라(6장 reused) 저장한 요약을 그대로 쓴다
+- 실행 단계: `read_material_pdf`(강의자료 글자 읽기) → `summarize_material`(전체 요약). 실패는 실행의 `error`(`LLM_TIMEOUT`·`LLM_ERROR`)다. 자료 글은 실행 기록에 남기지 않는다
 
 ### `GET /materials/{file_id}`
 
@@ -1027,19 +1025,22 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
   "file_id": "uuid",
   "file_name": "ML_Lectures_Week1-8.pdf",
   "course": { "lms_course_id": "uuid", "name": "기계학습" },
-  "source_language": "en",
-  "total_pages": 142,
-  "processed_range": { "start": 1, "end": 61 },
+  "source_language": null,
+  "total_pages": 42,
+  "processed_range": { "start": 1, "end": 42 },
   "status": "succeeded",
-  "overall_summary": "## 전체 요약\n- 지도학습의 기본 개념부터 ..."
+  "overall_summary": "## 전체 요약\n- 지도학습의 기본 개념부터 ...",
+  "over_limit": false,
+  "run_id": "uuid"
 }
 ```
 
-- 요약 필드는 Markdown이다. `sections`와 번역 필드는 확장 범위로 빠졌다
+- 요약 필드는 Markdown이다. `sections`와 번역 필드는 확장 범위로 빠졌다. `source_language`는 축소판에서 늘 `null`이다
+- 요약을 아직 요청하지 않았으면 `status: "pending"`(요약·범위·`run_id`는 `null`, `total_pages`는 올릴 때 센 쪽수). 멈춘 요약은 `failed`다. 내 강의자료가 아니면 `404`
 
 ### `GET /materials` (P1)
 
-강의자료 요약 목록(F-15). `?lms_course_id=uuid&cursor=` → `{ "items": [{ "file_id", "file_name", "course", "created_at", "status", "total_sections", "translated_sections" }], "next_cursor" }`. 문서함 화면(F-44)은 이 목록이 아니라 6장 `GET /files`를 쓴다
+강의자료 요약 목록(F-15). `?lms_course_id=uuid&limit=&cursor=` → `{ "items": [{ "file_id", "file_name", "course", "created_at", "status" }], "next_cursor" }`. 요약을 요청한 자료만 처음 요청한 순서(최신순)로 준다. 문서함 화면(F-44)은 이 목록이 아니라 6장 `GET /files`를 쓴다
 
 ## 9. LMS 연동
 
@@ -1481,8 +1482,8 @@ P1 축소판이다. 텍스트가 있는 PDF만 받고, 추출 텍스트가 토�
 | `NOT_FOUND` | 404 | 대상 없음(숨김·과목 비공개 포함) | 에러 화면 |
 | `VALIDATION_FAILED` | 422 | 입력값 검증 실패, `details.fields`에 필드별 사유 | 필드 아래 표시 |
 | `FILE_TOO_LARGE` | 413 | 파일 크기 초과(20MB) | 안내 문구 |
-| `PAGE_LIMIT_EXCEEDED` | 413 | PDF 쪽수 초과(포스터 2쪽·계획서 10쪽까지) | 안내 문구 |
-| `MATERIAL_TOO_LONG` | 413 | 강의자료 토큰 상한 초과, `details.suggested_ranges` 제공 | 쪽 범위 선택 화면 |
+| `PAGE_LIMIT_EXCEEDED` | 413 | PDF 쪽수 초과(포스터 2쪽·계획서 10쪽·강의자료 300쪽까지) | 안내 문구 |
+| `MATERIAL_TOO_LONG` | 413 | 강의자료 토큰 상한 초과(`details`: `total_pages`·`text_tokens`·`limit_tokens`) | 나눠 올리라는 안내 |
 | `UNSUPPORTED_FILE_TYPE` | 400 | 허용되지 않은 형식 | 안내 문구 |
 | `POSTER_READ_FAILED` | 422 | 포스터에서 글자·공고 이름을 읽지 못함(실행 결과의 error로 전달) | 다시 찍어 올리기 안내 |
 | `SYLLABUS_READ_FAILED` | 422 | 계획서에서 글자·일정을 읽지 못함(실행 결과의 error로 전달) | 다시 올리기 안내 |

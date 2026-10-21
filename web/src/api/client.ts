@@ -41,6 +41,7 @@ import type {
 export * from "@/api/accountClient";
 export * from "@/api/documentsClient";
 export * from "@/api/lmsClient";
+export * from "@/api/materialsClient";
 export * from "@/api/posterClient";
 export * from "@/api/pushClient";
 export * from "@/api/syllabusClient";

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.calendar import CalendarEventView
 from app.schemas.lms import LmsSyncResult
+from app.schemas.materials import MaterialSummaryResult
 from app.schemas.opportunities import DocumentItem, ProcessStep, RunStatus
 from app.schemas.posters import PosterExtractResult
 from app.schemas.syllabi import SyllabusExtractResult
@@ -46,7 +47,11 @@ class RunError(BaseModel):
 
 
 RunResult = Annotated[
-    PrepareResult | PosterExtractResult | LmsSyncResult | SyllabusExtractResult,
+    PrepareResult
+    | PosterExtractResult
+    | LmsSyncResult
+    | SyllabusExtractResult
+    | MaterialSummaryResult,
     Field(discriminator="kind"),
 ]
 

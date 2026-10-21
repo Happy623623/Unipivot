@@ -6,12 +6,10 @@ import type {
   LmsConnectResult,
   LmsConnection,
   LmsUpdate,
-  MaterialDetail,
   SyncResponse,
 } from "@/types/api";
 
-// LMS 연결·동기화·과목·새 소식·강의자료 (API 명세 8·9장). 화면은 client.ts를 거쳐 쓴다.
-// TODO(api): 강의자료 요약(GET /materials/{file_id}, 8장)만 아직 없다. 그때까지 실제 모드는 준비 중 안내다
+// LMS 연결·동기화·과목·새 소식 (API 명세 9장). 화면은 client.ts를 거쳐 쓴다. 강의자료 요약은 materialsClient.ts
 
 const DISCONNECTED: LmsConnection = {
   status: "disconnected",
@@ -92,8 +90,4 @@ export async function getLmsUpdates(): Promise<LmsUpdate[]> {
     "/lms/updates",
   );
   return items;
-}
-
-export function getMaterial(fileId: string): Promise<MaterialDetail> {
-  return USE_MOCKS ? mock.getMaterial(fileId) : notReady("강의자료 요약은 아직 준비 중이에요.");
 }

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     vision_model: str = "gemini-3.8-flash"
     guide_model: str = "gemini-3.5-flash-lite"  # 준비하기의 서류 안내(짧은 구조화 답)
     classify_model: str = "gemini-3.5-flash-lite"  # 과목 공지 갈래 나누기(F-53, 짧은 구조화 답)
+    summary_model: str = "gemini-3.5-flash-lite"  # 강의자료 요약(F-15 축소판, 입력이 길다)
+    # 강의자료 요약의 입력 토큰 상한(사용자 선택 10/21). 넘으면 요약하지 않고 413 MATERIAL_TOO_LONG이다
+    material_max_tokens: int = 30_000
     # 웹 푸시 VAPID(F-33). 비면 푸시를 보내지 않고 알림함에만 쌓는다.
     # 키는 `uv run python -m app.push.keys`로 만든다 — 레포에 넣지 않는다
     vapid_private_key: str = ""

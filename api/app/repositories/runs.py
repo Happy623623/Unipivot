@@ -18,6 +18,9 @@ from pydantic import ValidationError
 from app.db import get_conn
 from app.eligibility import KST
 from app.schemas.lms import ATTACHMENT_TOOL, SAVE_TOOL, LmsSyncResult, SyncCounts
+from app.schemas.materials import READ_TOOL as MATERIAL_READ
+from app.schemas.materials import SUMMARIZE_TOOL as MATERIAL_TOOL
+from app.schemas.materials import MaterialSummaryResult
 from app.schemas.opportunities import DocumentItem, ProcessStep
 from app.schemas.posters import (
     EXTRACT_LABEL,
@@ -55,12 +58,18 @@ SYLLABUS_LABELS = {
     SYLLABUS_READ: "계획서 글자 읽기",
     SYLLABUS_TOOL: "시험·발표 일정 저장",
 }
+# 강의자료 요약(F-15 축소판)
+MATERIAL_LABELS = {
+    MATERIAL_READ: "강의자료 글자 읽기",
+    MATERIAL_TOOL: "전체 요약",
+}
 FAILED_MESSAGE = "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요."
 # 코드를 남기지 못한 실패에 보여 줄 문구. 작업마다 할 말이 다르다(무엇을 하면 되는지)
 FAILED_MESSAGES = {
     "lms_sync": "LMS 자료를 가져오지 못했어요. 잠시 후 다시 시도해 주세요.",
     "syllabus_upload": "계획서를 읽다 멈췄어요. 다시 올려 주세요.",
     "poster_upload": "포스터를 읽다 멈췄어요. 다시 올려 주세요.",
+    "material_upload": "강의자료를 요약하다 멈췄어요. 다시 눌러 주세요.",
 }
 _CODED = re.compile(r"^([A-Z][A-Z_]+): (.+)$", re.S)  # agent_log.error_text의 "코드: 문구"
 logger = logging.getLogger(__name__)
@@ -94,6 +103,7 @@ def _label(tool_name: str) -> str:
         or POSTER_LABELS.get(tool_name)
         or LMS_LABELS.get(tool_name)
         or SYLLABUS_LABELS.get(tool_name)
+        or MATERIAL_LABELS.get(tool_name)
         or tool_name
     )
 
@@ -234,6 +244,21 @@ class RunRepository:
         except (KeyError, TypeError, ValueError, ValidationError):
             logger.warning("계획서 결과 모양이 달라 읽지 못했어요: run %s", run_id)
             return None
+
+    async def material_result(self, user_id: str, run_id: str) -> MaterialSummaryResult | None:
+        """그 실행이 만든 요약(F-15). 요약은 materials에 있다 — 같은 자료를 다시 요약해 이 실행의 요약이
+        아니게 됐거나 파일이 지워졌으면 None이다."""
+        row = await (
+            await self.conn.execute(
+                "select m.file_id::text as file_id, m.overall_summary from materials m"
+                " join files f on f.id = m.file_id"
+                " where m.agent_run_id = %s and f.user_id = %s and m.status = 'succeeded'",
+                (run_id, user_id),
+            )
+        ).fetchone()
+        if row is None or not row["overall_summary"]:
+            return None
+        return MaterialSummaryResult(file_id=row["file_id"], overall_summary=row["overall_summary"])
 
     async def poster_result(self, user_id: str, run_id: str) -> PosterExtractResult | None:
         """그 실행이 만든 초안. 기록이 지워졌거나 모양이 달라졌으면 None이다."""

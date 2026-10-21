@@ -1,8 +1,9 @@
 """파일 업로드와 문서함 (F-13·F-44, API 명세 6장).
 
-포스터(F-16)와 강의계획서(F-14)를 받는다. 강의자료(F-15)는 그 기능과 함께 연다. 문서함은 내
+포스터(F-16)·강의계획서(F-14)·강의자료(F-15)를 받는다. 문서함은 내
 강의자료(공지 첨부 포함)·계획서 목록과 5분짜리 받기 주소다(아래 `GET /files`·`GET /files/{id}/url`).
-받는 것은 종류마다 다르다 — 포스터는 사진과 2쪽 이하 PDF, 계획서는 **글자가 있는 PDF**다.
+받는 것은 종류마다 다르다 — 포스터는 사진과 2쪽 이하 PDF, 계획서·강의자료는 **글자가 있는 PDF**다.
+강의자료는 과목(`lms_course_id`)이나 새 자료 알림의 주차 항목(`lms_module_item_id`)을 붙여 올린다.
 
 차례: 20MB까지 읽기 → 바이트로 형식·쪽수 보기 → 같은 파일인지 보기 → 하루 한도 보기 →
 저장소에 올리기 → 기록 남기기.
@@ -37,6 +38,7 @@ from app.uploads import (
     day_reset,
     day_start,
     document_name,
+    inspect_lecture_material,
     inspect_poster,
     inspect_syllabus,
     read_upload,
@@ -56,8 +58,14 @@ router = APIRouter(prefix="/files", tags=["업로드"])
 
 POSTER = "poster"
 SYLLABUS = "syllabus"
-# 종류마다 받는 파일이 다르다. 여기 없는 종류(lecture_material)는 그 기능과 함께 연다
-INSPECT = {POSTER: inspect_poster, SYLLABUS: inspect_syllabus}
+LECTURE_MATERIAL = "lecture_material"
+# 종류마다 받는 파일이 다르다
+INSPECT = {
+    POSTER: inspect_poster,
+    SYLLABUS: inspect_syllabus,
+    LECTURE_MATERIAL: inspect_lecture_material,
+}
+COURSE_NOT_FOUND = "과목을 찾을 수 없어요. 학업 화면을 새로 고친 뒤 다시 올려 주세요."
 DOCUMENTS_LIMIT = 50  # 문서함 한 쪽 상한(명세 1장 목록 규칙: 1–50, 기본 20)
 # 기록은 있는데 저장소에 파일이 없을 때. 다시 눌러도 같으니 어디서 다시 받는지 알려 준다
 GONE = {
@@ -80,21 +88,43 @@ async def upload_file(
     response: Response,
     file: Annotated[UploadFile, File()],
     kind: Annotated[str, Form()],
+    lms_course_id: Annotated[UUID | None, Form()] = None,
+    lms_module_item_id: Annotated[UUID | None, Form()] = None,
 ) -> FileUploadResult:
-    """파일을 저장소에 올리고 `file_id`를 준다. 같은 파일을 다시 올리면 200과 기존 id다."""
+    """파일을 저장소에 올리고 `file_id`를 준다. 같은 파일을 다시 올리면 200과 기존 id다.
+
+    과목·주차 항목은 강의자료에만 붙인다(다른 종류는 무시한다 — 계획서는 `POST /syllabi/extract`로 붙인다).
+    내 과목이 아니면 404다. 이미 올린 파일을 다시 올리면 비어 있는 과목·주차 항목만 채운다(처음 붙인 자리는
+    그대로 — 파일 하나에 요약 하나라 다른 과목에서 올려도 같은 요약을 연다).
+    """
     inspect = INSPECT.get(kind)
     if inspect is None:
         raise ApiError(
             422,
             "VALIDATION_FAILED",
             "입력값을 확인해 주세요.",
-            {"fields": {"kind": "지금은 포스터와 강의계획서만 올릴 수 있어요."}},
+            {"fields": {"kind": "포스터·강의계획서·강의자료만 올릴 수 있어요."}},
         )
     data = await read_upload(file)
     found = inspect(data)
+    course_id = module_item_id = None
 
     async with repos() as repo:
+        if kind == LECTURE_MATERIAL:
+            place = await repo.material_place(
+                user.id,
+                course_id=str(lms_course_id) if lms_course_id else None,
+                module_item_id=str(lms_module_item_id) if lms_module_item_id else None,
+            )
+            if place is None:
+                raise ApiError(404, "NOT_FOUND", COURSE_NOT_FOUND)
+            course_id, module_item_id = place
         existing = await repo.existing(user.id, kind=kind, sha256=found.sha256)
+        if existing is not None and (course_id or module_item_id):
+            # 같은 강의자료를 다시 올렸다. 비어 있는 과목·주차 항목만 채운다(처음 붙인 자리는 그대로)
+            await repo.attach_place(
+                user.id, existing.id, course_id=course_id, module_item_id=module_item_id
+            )
         # 이미 올린 파일은 새로 저장하지 않으므로 하루 한도를 보지 않는다
         used = None if existing else await repo.uploads_since(user.id, day_start(now))
     if existing is not None:
@@ -130,6 +160,8 @@ async def upload_file(
                 page_count=found.page_count,
                 sha256=found.sha256,
                 original_name=clean_name(file.filename),
+                course_id=course_id,
+                module_item_id=module_item_id,
             )
             # 넣지 않았으면(같은 파일이 먼저 들어옴) 우리 경로를 가리키는 기록이 없어 지켜야 할 것도 없다
             added = saved is not None

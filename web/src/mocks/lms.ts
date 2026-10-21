@@ -170,7 +170,7 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
       {
         file_id: `${course.id}-material`,
         original_name: `${course.short_name}_8주차.pdf`,
-        status: "succeeded",
+        status: course.id === "database" ? "failed" : "succeeded", // 상한을 넘어 요약하지 않은 자료
       },
     ],
   };
@@ -181,29 +181,20 @@ export const courseDetails: Record<string, CourseDetail> = Object.fromEntries(
 );
 
 function makeMaterial(course: Course): MaterialDetail {
-  const overLimit = course.id === "database";
+  const overLimit = course.id === "database"; // 상한을 넘은 자료(요약하지 않았다)
   return {
     file_id: `${course.id}-material`,
-    original_name: `${course.short_name}_8주차.pdf`,
-    total_pages: overLimit ? 84 : 42,
-    page_start: 1,
-    page_end: 42,
+    file_name: `${course.short_name}_8주차.pdf`,
+    course: { lms_course_id: course.id, name: course.short_name },
+    source_language: null,
+    total_pages: overLimit ? 184 : 42,
+    processed_range: overLimit ? null : { start: 1, end: 42 },
+    status: overLimit ? "failed" : "succeeded",
+    overall_summary: overLimit
+      ? null
+      : `## 전체 요약\n${course.short_name} 8주차는 핵심 개념을 정의하고 예제로 익히는 자료예요.\n## 핵심 개념\n- 정의: 이번 주에 처음 나온 용어\n- 예제: 정의를 적용한 풀이\n## 시험 대비 포인트\n- 정의와 예제의 차이를 설명할 수 있어야 해요`,
     over_limit: overLimit,
-    overall_summary: `${course.short_name} 8주차 핵심 개념과 예제를 정리한 자료예요.`,
-    status: "succeeded",
-    sections: [1, 2, 3, 4, 5].map((seq) => ({
-      id: `${course.id}-section-${seq}`,
-      seq,
-      title: `${seq}부 핵심 개념`,
-      page_start: (seq - 1) * 8 + 1,
-      page_end: seq === 5 ? 42 : seq * 8,
-      summary: `${seq}부의 정의와 주요 예제를 요약했어요.`,
-      translation_status: seq === 1 ? "succeeded" : null,
-      translation_url:
-        seq === 1
-          ? `https://example.edu/materials/${course.id}/translation/1`
-          : null,
-    })),
+    run_id: null,
   };
 }
 

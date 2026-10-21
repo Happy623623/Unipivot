@@ -109,17 +109,20 @@ class FileRepository:
         page_count: int | None,
         sha256: str,
         original_name: str | None,
+        course_id: str | None = None,
+        module_item_id: str | None = None,
     ) -> str | None:
         """기록을 남긴다. 그새 같은 파일이 들어왔으면 None이다(부른 쪽이 기존 행을 돌려준다).
 
         id를 우리가 정해서 넣는다. 저장소 경로에 그 id가 들어가므로, 먼저 정해야 올릴 수 있다.
+        강의자료는 과목·주차 항목을 붙여 넣을 수 있다(F-15, 부른 쪽이 내 과목인지 먼저 본다).
         """
         row = await (
             await self.conn.execute(
                 "insert into files (id, user_id, kind, origin, storage_path, mime_type,"
-                " size_bytes, page_count, sha256, original_name)"
+                " size_bytes, page_count, sha256, original_name, lms_course_id, lms_module_item_id)"
                 " values (%(id)s, %(uid)s, %(kind)s, 'upload', %(path)s, %(mime)s, %(size)s,"
-                " %(pages)s, %(sha)s, %(name)s)"
+                " %(pages)s, %(sha)s, %(name)s, %(course)s, %(item)s)"
                 " on conflict (user_id, kind, sha256) where origin = 'upload' do nothing"
                 " returning id::text as id",
                 {
@@ -132,10 +135,52 @@ class FileRepository:
                     "pages": page_count,
                     "sha": sha256,
                     "name": original_name,
+                    "course": course_id,
+                    "item": module_item_id,
                 },
             )
         ).fetchone()
         return None if row is None else row["id"]
+
+    async def attach_place(
+        self, user_id: str, file_id: str, *, course_id: str | None, module_item_id: str | None
+    ) -> None:
+        """다시 올린 강의자료에 비어 있는 과목·주차 항목을 채운다. 이미 붙은 자리는 바꾸지 않는다."""
+        await self.conn.execute(
+            "update files set lms_course_id = coalesce(lms_course_id, %s),"
+            " lms_module_item_id = coalesce(lms_module_item_id, %s)"
+            " where id = %s and user_id = %s and kind = 'lecture_material'",
+            (course_id, module_item_id, file_id, user_id),
+        )
+
+    async def material_place(
+        self, user_id: str, *, course_id: str | None, module_item_id: str | None
+    ) -> tuple[str | None, str | None] | None:
+        """강의자료에 붙일 (과목 id, 주차 항목 id). 내 과목·내 과목의 항목이 아니면 None이다.
+
+        주차 항목만 주면 그 항목의 과목을 붙인다. 둘 다 주면 서로 맞아야 한다.
+        """
+        if course_id is None and module_item_id is None:
+            return (None, None)
+        if module_item_id is None:
+            row = await (
+                await self.conn.execute(
+                    "select id::text as id from lms_courses where id = %s and user_id = %s",
+                    (course_id, user_id),
+                )
+            ).fetchone()
+            return None if row is None else (row["id"], None)
+        row = await (
+            await self.conn.execute(
+                "select c.id::text as course_id, i.id::text as item_id from lms_module_items i"
+                " join lms_courses c on c.canvas_course_id = i.canvas_course_id and c.user_id = %s"
+                " where i.id = %s",
+                (user_id, module_item_id),
+            )
+        ).fetchone()
+        if row is None or (course_id is not None and row["course_id"] != course_id):
+            return None
+        return (row["course_id"], row["item_id"])
 
     # ── 공지 첨부 자동 저장 (F-54) ─────────────────────────────────────────────
 

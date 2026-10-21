@@ -28,6 +28,9 @@ MAX_BYTES = 20 * 1024 * 1024
 MAX_MB = MAX_BYTES // (1024 * 1024)
 POSTER_MAX_PAGES = 2
 SYLLABUS_MAX_PAGES = 10  # 강의계획서는 보통 2~6쪽이다(녹화한 포털 계획서 기준)
+# 강의자료(F-15). 요약은 글자 수(토큰 상한)로 막고, 쪽수 상한은 깨진 PDF·아주 긴 파일을 읽느라 서버가 멈추지
+# 않게 하는 것이다. 슬라이드 한 학기 묶음도 보통 이 안이다
+LECTURE_MAX_PAGES = 300
 PDF_TEXT_MAX_CHARS = 60_000  # 뽑은 글자 상한. 계획서 10쪽이면 2만 자 안쪽이다
 DAILY_UPLOAD_LIMIT = 20  # 사용자당 KST 하루 (API 명세 14장, 10/15 확정)
 _CHUNK_BYTES = 1024 * 1024
@@ -151,6 +154,32 @@ def inspect_syllabus(data: bytes) -> Inspected:
     return Inspected(found, pages, hashlib.sha256(data).hexdigest())
 
 
+def inspect_lecture_material(data: bytes) -> Inspected:
+    """강의자료로 받을 수 있는 파일인지 본다. **글자가 있는 PDF만** 받는다(F-15 축소판, 명세 6장).
+
+    스캔한 쪽은 읽지 않는다(Vision은 확장 범위). 글자를 하나도 못 뽑으면 요약할 것이 없어서 여기서 막는다.
+    """
+    found = sniff(data)
+    advice = "LMS에서 받은 PDF를 그대로 올려 주세요."
+    if found is not PDF:
+        raise ApiError(400, "UNSUPPORTED_FILE_TYPE", f"강의자료는 PDF만 올릴 수 있어요. {advice}")
+    pages = _pdf_pages(data, advice=advice)
+    if pages > LECTURE_MAX_PAGES:
+        raise ApiError(
+            413,
+            "PAGE_LIMIT_EXCEEDED",
+            f"PDF는 {LECTURE_MAX_PAGES}쪽까지만 올릴 수 있어요. 요약할 부분만 나눠서 올려 주세요.",
+        )
+    if not pdf_text(data, max_chars=1_000).strip():
+        raise ApiError(
+            400,
+            "UNSUPPORTED_FILE_TYPE",
+            "PDF에서 글자를 찾지 못했어요. 스캔한 자료는 아직 요약할 수 없어요."
+            " 글자를 고를 수 있는 PDF를 올려 주세요.",
+        )
+    return Inspected(found, pages, hashlib.sha256(data).hexdigest())
+
+
 def pdf_text(data: bytes, *, max_chars: int = PDF_TEXT_MAX_CHARS) -> str:
     """PDF에서 뽑은 글자(쪽마다 줄바꿈으로 잇는다). 읽지 못하면 빈 글자다.
 
@@ -172,6 +201,14 @@ def pdf_text(data: bytes, *, max_chars: int = PDF_TEXT_MAX_CHARS) -> str:
         if total >= max_chars:
             break
     return "\n".join(found)[:max_chars]
+
+
+def pdf_page_count(data: bytes) -> int | None:
+    """PDF 쪽수. 읽지 못하면 None이다(공지 첨부처럼 올릴 때 쪽수를 세지 않은 파일에 쓴다)."""
+    try:
+        return len(PdfReader(io.BytesIO(data)).pages)
+    except (PdfReadError, ValueError, OSError):
+        return None
 
 
 def _pdf_pages(data: bytes, *, advice: str = "사진으로 찍어서 올려 주세요.") -> int:

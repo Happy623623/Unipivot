@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { connectCalendar, getCourse } from "@/api/client";
 import CourseAnnouncements from "@/components/CourseAnnouncements";
 import CourseAssignments from "@/components/CourseAssignments";
@@ -46,7 +46,11 @@ export default function Course({
   const [summaryFileId, setSummaryFileId] = useState<string | null>(null);
   // 계획서를 확정하면 과목 상세를 다시 받아 확정 표시와 새 일정을 보여 준다
   const [reloads, setReloads] = useState(0);
-  const request = useAsyncData(() => getCourse(id), [id, reloads]);
+  // 다시 받는 동안 지난 상세를 둔다(뼈대로 바꾸면 요약 창과 안내가 내려간다)
+  const request = useAsyncData(() => getCourse(id), [id, reloads], { keep: true });
+  const reload = useCallback(() => setReloads((count) => count + 1), []);
+  // 다른 과목으로 옮겼으면 지난 과목의 상세는 쓰지 않는다(그 과목의 올리기 버튼이 남지 않게)
+  const loaded = request.data?.course.id === id ? request.data : null;
   const [toast, showToast] = useToast();
 
   useEffect(() => {
@@ -55,7 +59,7 @@ export default function Course({
   }, [id, initialTab]);
 
   // 계획서를 확정해 다시 받는 동안에는 뼈대로 갈아 치우지 않는다 — 화면이 번쩍이고 안내가 사라진다
-  if (request.loading && !request.data) {
+  if (request.loading && !loaded) {
     return (
       <>
         <Skeleton className="h-[70px] w-[360px]" />
@@ -64,7 +68,7 @@ export default function Course({
       </>
     );
   }
-  if (request.error || !request.data) {
+  if (!loaded) {
     return (
       <p className="rounded-[14px] bg-[#fef2f2] p-4 text-[#c53030]">
         {request.error ?? "과목 정보를 불러오지 못했어요."}
@@ -72,7 +76,7 @@ export default function Course({
     );
   }
 
-  const course = request.data;
+  const course = loaded;
   const lmsUrl = course.course.html_url;
 
   return (
@@ -91,6 +95,11 @@ export default function Course({
           </a>
         }
       />
+      {request.error && (
+        <p role="status" className="rounded-[14px] bg-[#fef2f2] p-4 text-[13px] text-[#c53030]">
+          과목 정보를 새로 받지 못해 지난 내용을 보여 주고 있어요. 잠시 후 이 화면을 다시 열어 주세요.
+        </p>
+      )}
       <nav className="flex gap-2 rounded-[14px] bg-white p-2">
         {tabs.map((item) => (
           <button
@@ -125,6 +134,7 @@ export default function Course({
             <CourseMaterials
               course={course}
               onOpenSummary={setSummaryFileId}
+              onUploaded={reload}
             />
           )}
           {tab === "announcements" && (
@@ -139,7 +149,7 @@ export default function Course({
               course={course}
               calendarConnected={calendarConnected}
               calendarResult={calendarResult}
-              onRefresh={() => setReloads((count) => count + 1)}
+              onRefresh={reload}
               onConnectCalendar={() => connectCalendar(courseHref(id))}
               onToast={showToast}
             />
@@ -147,8 +157,10 @@ export default function Course({
         </section>
         {tab === "materials" && summaryFileId && (
           <MaterialSummaryPanel
+            key={summaryFileId}
             fileId={summaryFileId}
             onClose={() => setSummaryFileId(null)}
+            onChange={reload}
           />
         )}
       </div>

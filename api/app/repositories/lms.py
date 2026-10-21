@@ -30,6 +30,7 @@ from app.lms.announcements import too_large
 from app.lms.assignments import SUBMITTED, CanvasAssignment
 from app.lms.modules import CanvasModuleItem
 from app.lms.parse import course_name, is_canvas_id
+from app.repositories.materials import RUN_ALIVE
 from app.repositories.opportunities import Cursor
 from app.schemas.lms import (
     AnnouncementAttachment,
@@ -751,8 +752,11 @@ class LmsRepository:
         """
         rows = await self._rows(
             "select f.id, f.original_name, f.created_at,"
-            " coalesce(m.status::text, 'pending') as status"
+            # 요약 실행이 멈춰(서버 재시작 등) running으로 남았으면 실패로 본다(app/repositories/materials.py)
+            " case when m.status = 'running' and not coalesce(" + RUN_ALIVE + ", false)"
+            " then 'failed' else coalesce(m.status::text, 'pending') end as status"
             " from files f left join materials m on m.file_id = f.id"
+            " left join agent_runs r on r.id = m.agent_run_id"
             " where f.user_id = %(uid)s and f.lms_course_id = %(course)s"
             "   and f.kind = 'lecture_material' and f.origin = 'upload'",
             {"uid": user_id, "course": course_id},

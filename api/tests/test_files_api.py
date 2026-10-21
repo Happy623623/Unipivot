@@ -36,6 +36,23 @@ class FakeFileRepository:
         self.commit_lost = False  # 커밋 응답을 못 받았다(커밋이 됐는지 모른다)
         self.borrows = 0  # 연결을 몇 번 빌렸는지
         self.open = 0  # 지금 빌려 쓰고 있는지
+        # 강의자료를 붙일 수 있는 (과목 id, 주차 항목 id) → 붙일 자리. 없으면 내 과목이 아니다
+        self.places: dict[tuple[str | None, str | None], tuple[str | None, str | None]] = {
+            (None, None): (None, None)
+        }
+        self.place_calls: list[tuple[str | None, str | None]] = []
+        self.attached: list[tuple[str, str | None, str | None]] = []
+
+    async def attach_place(
+        self, user_id: str, file_id: str, *, course_id: str | None, module_item_id: str | None
+    ) -> None:
+        self.attached.append((file_id, course_id, module_item_id))
+
+    async def material_place(
+        self, user_id: str, *, course_id: str | None, module_item_id: str | None
+    ) -> tuple[str | None, str | None] | None:
+        self.place_calls.append((course_id, module_item_id))
+        return self.places.get((course_id, module_item_id))
 
     async def existing(self, user_id: str, *, kind: str, sha256: str) -> StoredFile | None:
         for row in self.rows:
@@ -139,11 +156,12 @@ def upload(
     *,
     name: str = "poster.jpg",
     kind: str | None = "poster",
+    **form: str,
 ) -> Any:
     return client.post(
         FILES,
         files={"file": (name, data, "application/octet-stream")},
-        data={} if kind is None else {"kind": kind},
+        data=({} if kind is None else {"kind": kind}) | form,
         headers={"Authorization": f"Bearer {make_token()}"},
     )
 
@@ -292,12 +310,99 @@ def test_a_long_pdf_is_refused_as_a_syllabus(client: TestClient) -> None:
     assert f"{SYLLABUS_MAX_PAGES}쪽까지만" in response.json()["error"]["message"]
 
 
-def test_other_kinds_are_not_open_yet(client: TestClient) -> None:
-    response = upload(client, samples.pdf(["자료"]), name="자료.pdf", kind="lecture_material")
+COURSE = "00000000-0000-4000-8000-0000000000c1"
+ITEM = "00000000-0000-4000-8000-0000000000d1"
+
+
+def test_an_unknown_kind_is_a_validation_error(client: TestClient) -> None:
+    response = upload(client, samples.pdf(["자료"]), name="자료.pdf", kind="homework")
     assert response.status_code == 422
     error = response.json()["error"]
     assert error["code"] == "VALIDATION_FAILED"
-    assert "강의계획서" in error["details"]["fields"]["kind"]
+    assert "강의자료" in error["details"]["fields"]["kind"]
+
+
+def test_a_lecture_material_pdf_with_text_is_stored(
+    client: TestClient, files_repo: FakeFileRepository, storage: FakeStorage
+) -> None:
+    """강의자료(F-15): 글자가 있는 PDF. 과목을 안 붙이면 과목 없이 남는다(문서함에만 보인다)."""
+    response = upload(
+        client, samples.pdf(["1주차 강의", "선형 변환"]), name="01.pdf", kind="lecture_material"
+    )
+    assert response.status_code == 201
+    assert (response.json()["kind"], response.json()["page_count"]) == ("lecture_material", 2)
+    row = files_repo.rows[0]
+    assert (row["course_id"], row["module_item_id"]) == (None, None)
+    assert list(storage.objects)[0].startswith(f"{USER_ID}/lecture_material/")
+
+
+def test_a_lecture_material_gets_the_course_or_module_item_it_was_sent_with(
+    client: TestClient, files_repo: FakeFileRepository
+) -> None:
+    files_repo.places[(COURSE, None)] = (COURSE, None)
+    files_repo.places[(None, ITEM)] = (COURSE, ITEM)  # 주차 항목만 주면 그 과목을 붙인다
+    first = upload(
+        client, samples.pdf(["1주차"]), name="a.pdf", kind="lecture_material", lms_course_id=COURSE
+    )
+    second = upload(
+        client,
+        samples.pdf(["2주차"]),
+        name="b.pdf",
+        kind="lecture_material",
+        lms_module_item_id=ITEM,
+    )
+    assert (first.status_code, second.status_code) == (201, 201)
+    assert [(row["course_id"], row["module_item_id"]) for row in files_repo.rows] == [
+        (COURSE, None),
+        (COURSE, ITEM),
+    ]
+
+
+def test_a_course_that_is_not_mine_is_not_found(
+    client: TestClient, files_repo: FakeFileRepository, storage: FakeStorage
+) -> None:
+    response = upload(
+        client, samples.pdf(["자료"]), name="a.pdf", kind="lecture_material", lms_course_id=COURSE
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+    assert files_repo.rows == [] and storage.objects == {}  # 올리기 전에 막는다
+
+
+def test_the_course_is_ignored_for_other_kinds(
+    client: TestClient, files_repo: FakeFileRepository
+) -> None:
+    """계획서는 과목을 POST /syllabi/extract로 붙인다. 업로드에 실어도 보지 않는다."""
+    response = upload(
+        client, samples.pdf(["강의계획서"]), name="s.pdf", kind="syllabus", lms_course_id=COURSE
+    )
+    assert response.status_code == 201
+    assert files_repo.place_calls == [] and files_repo.rows[0]["course_id"] is None
+
+
+@pytest.mark.parametrize(
+    ("data", "code", "words"),
+    [
+        (samples.JPEG, "UNSUPPORTED_FILE_TYPE", "PDF만"),
+        (samples.pdf([None, None]), "UNSUPPORTED_FILE_TYPE", "스캔한 자료"),  # 글자가 없다
+    ],
+)
+def test_a_lecture_material_must_be_a_pdf_with_text(
+    client: TestClient, data: bytes, code: str, words: str
+) -> None:
+    response = upload(client, data, name="x.pdf", kind="lecture_material")
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == code and words in error["message"]
+
+
+def test_a_very_long_lecture_material_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("app.uploads.LECTURE_MAX_PAGES", 2)
+    response = upload(client, samples.pdf(["1", "2", "3"]), name="x.pdf", kind="lecture_material")
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "PAGE_LIMIT_EXCEEDED"
 
 
 def test_the_db_connection_is_not_held_while_the_file_goes_to_the_storage(
@@ -396,3 +501,20 @@ def test_without_a_token_nothing_is_uploaded(client: TestClient, storage: FakeSt
     response = client.post(FILES, files={"file": ("p.jpg", samples.JPEG, "image/jpeg")})
     assert response.status_code == 401
     assert not storage.objects
+
+
+def test_a_material_uploaded_again_fills_its_empty_place(
+    client: TestClient, files_repo: FakeFileRepository
+) -> None:
+    """같은 PDF를 주차 항목 옆에서 다시 올리면 같은 파일(요약도 하나)이고, 비어 있는 자리만 채운다."""
+    files_repo.places[(None, ITEM)] = (COURSE, ITEM)
+    data = samples.pdf(["1주차"])
+    first = upload(client, data, name="a.pdf", kind="lecture_material")
+    again = upload(client, data, name="a.pdf", kind="lecture_material", lms_module_item_id=ITEM)
+    plain = upload(client, data, name="a.pdf", kind="lecture_material")
+    assert (first.status_code, again.status_code, plain.status_code) == (201, 200, 200)
+    file_id = first.json()["file_id"]
+    assert again.json()["file_id"] == file_id
+    assert files_repo.attached == [
+        (file_id, COURSE, ITEM)
+    ]  # 자리를 안 실은 다시 올리기는 건드리지 않는다

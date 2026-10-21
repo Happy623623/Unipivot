@@ -40,6 +40,8 @@ PAIRS = [
     ("SyllabusConfirmResult", "SyllabusConfirmResult"),
     ("OpportunityItem", "OpportunityItem"),  # 피드·대체 공고(F-23·F-24)
     ("AlternativesResponse", "AlternativesResponse"),
+    ("MaterialDetail", "MaterialDetail"),  # F-15
+    ("MaterialSummaryResult", "MaterialSummaryResult"),
     # 보내는 몸통이지만 어긋나면 똑같이 깨진다(구독이 저장되지 않아 푸시가 통째로 안 온다)
     ("PushSubscriptionRequest", "PushSubscriptionRequest"),
 ]

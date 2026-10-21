@@ -174,26 +174,26 @@ export interface CourseDetail {
   }[];
 }
 
-// GET /materials/{file_id}: 강의자료 요약·구간 번역 (TODO(api): API 명세 8장 응답과 필드 이름 대조)
+// GET /materials/{file_id}: 강의자료 요약(F-15 축소판, API 명세 8장). 요약은 Markdown이다.
+// 구간 요약·번역은 확장 범위라 없다. 요약을 아직 안 했으면 status는 pending이다
 export interface MaterialDetail {
   file_id: string;
-  original_name: string | null;
-  total_pages: number;
-  page_start: number;
-  page_end: number;
-  over_limit: boolean;
-  overall_summary: string | null;
+  file_name: string | null;
+  course: { lms_course_id: string; name: string } | null;
+  source_language: string | null; // 축소판은 늘 null
+  total_pages: number | null;
+  processed_range: { start: number; end: number } | null;
   status: RunStatus;
-  sections: {
-    id: string;
-    seq: number;
-    title: string;
-    page_start: number;
-    page_end: number;
-    summary: string | null;
-    translation_status: RunStatus | null; // null이면 번역 요청 전
-    translation_url: string | null;
-  }[];
+  overall_summary: string | null;
+  over_limit: boolean; // 글자가 상한을 넘어 요약하지 않았다
+  run_id: string | null; // 마지막 요약 실행(진행·실패 이유는 GET /runs/{id})
+}
+
+// POST /materials가 끝났을 때 GET /runs/{id}의 result
+export interface MaterialSummaryResult {
+  kind: "material_summary";
+  file_id: string;
+  overall_summary: string;
 }
 
 // GET /lms/updates?since=&type=module_item,assignment&lms_course_id=&cursor=
