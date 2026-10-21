@@ -274,11 +274,18 @@ def _url_problem(settings: Settings) -> str | None:
         return f"{name} 값이 주소 모양이 아니에요(값은 보여 주지 않음). Supabase 프로젝트 주소를 넣으세요"
     if parts.scheme.lower() not in ("https", "http") or not parts.netloc:
         return f"{name} 값이 https://로 시작하지 않아요(값은 보여 주지 않음). Supabase 프로젝트 주소를 넣으세요"
-    if name == "SUPABASE_URL" and (parts.path.strip("/") or parts.query or parts.fragment):
+    # 빈 ?·#도 막는다(urlsplit은 비어 있으면 query·fragment를 ""로 줘서 못 본다). 뒤에 경로를 붙이면 쿼리가 된다
+    if name == "SUPABASE_URL" and (parts.path.strip("/") or "?" in url or "#" in url):
         return (
             "SUPABASE_URL 값에 경로가 붙어 있어요(…/rest/v1 같은 것. 값은 보여 주지 않음). 프로젝트 주소"
             "(https://<ref>.supabase.co)만 넣으세요 — 저장소 경로는 서버가 붙여요. 경로가 꼭 필요한 자체"
             " 호스팅이면 SUPABASE_STORAGE_BASE에 저장소 주소(…/storage/v1)를 따로 넣으세요"
+        )
+    # 따로 넣은 저장소 주소도 뒤에 경로를 붙이므로 ?·#가 있으면 안 된다
+    if "?" in url or "#" in url:
+        return (
+            f"{name} 값에 ?나 #가 들어 있어요(값은 보여 주지 않음)."
+            " 저장소 주소(…/storage/v1)까지만 넣으세요"
         )
     return None
 

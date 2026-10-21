@@ -57,6 +57,12 @@ class ProfileRepository:
             (user_id, display_name),
         )
 
+    async def lock_for_delete(self, user_id: str) -> None:
+        """탈퇴의 마지막 단계(파일 목록을 다시 받고 행을 지우기 직전)에 profiles 행을 잠근다(for update). 이 사용자의
+        행을 새로 넣는 다른 요청(파일 업로드·LMS 첨부 저장)은 외래 키 확인에서 탈퇴가 끝날 때까지 기다렸다가 프로필이
+        없어 실패한다 — 올린 파일은 그쪽이 지운다(app/account.py). 저장소·Google을 부르는 동안에는 쥐지 않는다."""
+        await self.conn.execute("select 1 from profiles where id = %s for update", (user_id,))
+
     async def delete(self, user_id: str) -> bool:
         """탈퇴(ERD 7장): profiles 행을 지우면 딸린 행은 cascade로 지워지고, 공유 공고의 업로더와
         실행 로그의 사용자는 null이 된다. 지운 행이 있었으면 True다."""

@@ -37,10 +37,16 @@ ANON = jwt.encode({"iss": "supabase", "role": "anon"}, "x" * 32, algorithm="HS25
 
 
 class FakeFileRepository:
-    def __init__(self, paths: list[str]) -> None:
+    def __init__(self, paths: list[str], profiles: FakeProfileRepository) -> None:
         self.paths = paths
+        self.profiles = profiles
+        self.listings: list[list[str]] = []  # 목록을 받을 때마다 그때 이미 잠근 사용자
+        self.arrives: str | None = None  # 첫 목록 뒤에 들어오는 파일(그사이 업로드·LMS 첨부)
 
     async def storage_paths(self, user_id: str) -> list[str]:
+        self.listings.append(list(self.profiles.deletion_locks))
+        if len(self.listings) > 1 and self.arrives:
+            self.paths = [*self.paths, self.arrives]
         return list(self.paths) if user_id == USER_ID else []
 
 
@@ -92,7 +98,7 @@ class World:
         storage_base: str = "",
     ):
         self.profiles = FakeProfileRepository()
-        self.files = FakeFileRepository(paths)
+        self.files = FakeFileRepository(paths, self.profiles)
         self.storage = FakeStorage(fail_on=fail_on)
         self.calendar = FakeCalendarRepository(settings.token_encryption_key, connected=connected)
         # 저장소 설정(기본은 맞는 secret key). 고칠 점이 있으면 파일을 지우기 전에 멈춘다
@@ -140,9 +146,27 @@ def test_deletion_removes_files_then_google_then_the_profile(
         assert USER_ID in world.profiles.profiles
         response = client.delete(ME, headers=auth)
         assert response.status_code == 204 and response.content == b""
+    # 첫 목록은 잠그지 않고, 지우기 직전에 잠근 뒤 다시 받는다(그 뒤 들어오는 기록은 탈퇴가 끝날 때까지 기다린다)
+    assert world.files.listings == [[], [USER_ID]]
     assert world.storage.removed == PATHS
     assert revoke.called and revoke.calls.last.request.content == b"token=refresh-1"
     assert world.calendar.tokens_row is None
+    assert USER_ID not in world.profiles.profiles
+
+
+@respx.mock
+def test_a_file_recorded_while_deleting_is_removed_too(
+    settings: Settings, auth: dict[str, str]
+) -> None:
+    """파일을 지우는 사이에 업로드·LMS 첨부가 새 파일을 남겼다. 잠근 뒤 다시 받은 목록으로 그것도 지운다
+    (지운 것은 다시 지우지 않는다)."""
+    world = World(settings, paths=PATHS, connected=True)
+    late = f"{USER_ID}/poster/late.png"
+    world.files.arrives = late
+    respx.post(REVOKE_URL).mock(return_value=httpx.Response(200, json={}))
+    for client in _signed_in(world):
+        assert client.delete(ME, headers=auth).status_code == 204
+    assert world.storage.removed == [*PATHS, late]
     assert USER_ID not in world.profiles.profiles
 
 

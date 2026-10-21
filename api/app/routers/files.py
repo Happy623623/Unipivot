@@ -116,21 +116,31 @@ async def upload_file(
             502, "STORAGE_API_ERROR", "파일을 저장하지 못했어요. 잠시 후 다시 시도해 주세요."
         ) from exc
 
-    async with repos() as repo:
-        saved = await repo.add(
-            user.id,
-            file_id=file_id,
-            kind=kind,
-            path=path,
-            mime_type=found.type.mime,
-            size_bytes=len(data),
-            page_count=found.page_count,
-            sha256=found.sha256,
-            original_name=clean_name(file.filename),
-        )
-        if saved is None:  # 올리는 사이에 같은 파일이 들어왔다. 방금 올린 것은 지운다
-            winner = await repo.existing(user.id, kind=kind, sha256=found.sha256)
-            assert winner is not None  # 충돌이 났다는 것은 그 행이 있다는 뜻이다
+    added = False  # 기록 넣기(add)가 끝났는지. 그 뒤(커밋 등)의 오류는 기록이 됐는지 몰라 파일을 지우지 않는다
+    try:
+        async with repos() as repo:
+            saved = await repo.add(
+                user.id,
+                file_id=file_id,
+                kind=kind,
+                path=path,
+                mime_type=found.type.mime,
+                size_bytes=len(data),
+                page_count=found.page_count,
+                sha256=found.sha256,
+                original_name=clean_name(file.filename),
+            )
+            # 넣지 않았으면(같은 파일이 먼저 들어옴) 우리 경로를 가리키는 기록이 없어 지켜야 할 것도 없다
+            added = saved is not None
+            if saved is None:  # 올리는 사이에 같은 파일이 들어왔다. 방금 올린 것은 지운다
+                winner = await repo.existing(user.id, kind=kind, sha256=found.sha256)
+                assert winner is not None  # 충돌이 났다는 것은 그 행이 있다는 뜻이다
+    except Exception:
+        # 기록을 넣지 못했다(그새 탈퇴해 프로필이 없어졌거나 DB가 멈췄다). 기록 없는 파일은 탈퇴로도 못 찾으니
+        # 방금 올린 것을 지우고 오류는 그대로 낸다(app/account.py). 연결을 돌려준 뒤에 지운다
+        if not added:
+            await _discard(storage, path)
+        raise
     if saved is None:
         await _discard(storage, path)
         return _reused(winner, response)

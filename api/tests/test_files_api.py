@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -31,6 +32,8 @@ class FakeFileRepository:
         self.rows: list[dict[str, Any]] = []
         self.used_today = 0
         self.steal: dict[str, Any] | None = None  # add 직전에 끼어드는 다른 요청
+        self.gone = False  # 올리는 사이에 탈퇴해 프로필이 없어졌다(기록을 넣으면 외래 키에 걸린다)
+        self.commit_lost = False  # 커밋 응답을 못 받았다(커밋이 됐는지 모른다)
         self.borrows = 0  # 연결을 몇 번 빌렸는지
         self.open = 0  # 지금 빌려 쓰고 있는지
 
@@ -44,6 +47,8 @@ class FakeFileRepository:
         return self.used_today
 
     async def add(self, user_id: str, *, file_id: str, kind: str, **row: Any) -> str | None:
+        if self.gone:
+            raise psycopg.errors.ForeignKeyViolation("files_user_id_fkey")
         if self.steal is not None:
             self.rows.append({"user_id": user_id, "kind": kind} | self.steal)
             self.steal = None
@@ -68,6 +73,7 @@ class FakeStorage:
         self.removed: list[str] = []
         self.broken = False
         self.open_while_uploading: list[int] = []
+        self.removed_while_open: list[int] = []  # 지울 때 연결을 쥐고 있었는지
 
     async def upload(self, path: str, data: bytes, content_type: str) -> None:
         self.open_while_uploading.append(self.repo.open)
@@ -80,6 +86,7 @@ class FakeStorage:
 
     async def remove(self, path: str) -> None:
         self.removed.append(path)
+        self.removed_while_open.append(self.repo.open)
         self.objects.pop(path, None)
 
 
@@ -100,8 +107,13 @@ def borrowing(repo: FakeFileRepository) -> Any:
     async def connect() -> AsyncIterator[FakeFileRepository]:
         repo.borrows += 1
         repo.open += 1
+        before = len(repo.rows)
         try:
             yield repo
+            if repo.commit_lost and len(repo.rows) > before:  # 기록을 넣은 연결의 커밋만
+                raise psycopg.OperationalError(
+                    "consuming input failed: server closed the connection"
+                )
         finally:
             repo.open -= 1
 
@@ -334,6 +346,44 @@ def test_two_requests_with_the_same_file_leave_one_record_and_one_object(
     assert response.json()["file_id"] == "11111111-1111-4111-8111-111111111111"
     assert len(files_repo.rows) == 1
     assert storage.removed and not storage.objects  # 방금 올린 것은 지운다
+
+
+def test_a_file_whose_record_cannot_be_kept_is_removed_from_storage(
+    client: TestClient, files_repo: FakeFileRepository, storage: FakeStorage
+) -> None:
+    """올리는 사이에 탈퇴했다. 탈퇴가 끝날 때까지 기다린 기록 넣기가 외래 키에 걸리면 방금 올린 파일을 지운다 —
+    기록 없는 파일은 탈퇴로도 못 찾아 저장소에 남는다(app/account.py)."""
+    files_repo.gone = True
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        upload(client)
+    assert len(storage.removed) == 1 and not storage.objects
+    assert not files_repo.rows
+    assert storage.removed_while_open == [0]  # 연결을 돌려준 뒤에 지운다
+
+
+def test_a_commit_that_may_have_landed_keeps_the_file(
+    client: TestClient, files_repo: FakeFileRepository, storage: FakeStorage
+) -> None:
+    """커밋 중 연결이 끊겼다. 기록이 들어갔을 수도 있으니 파일은 지우지 않는다(지우면 기록이 없는 파일을 가리킨다)."""
+    files_repo.commit_lost = True
+    with pytest.raises(psycopg.OperationalError):
+        upload(client)
+    assert not storage.removed and len(storage.objects) == 1
+
+
+def test_a_lost_commit_after_a_lost_race_still_removes_the_file(
+    client: TestClient, files_repo: FakeFileRepository, storage: FakeStorage
+) -> None:
+    """같은 파일이 먼저 들어와 넣지 않았는데 커밋 응답도 못 받았다. 우리 경로를 가리키는 기록은 없으니 지운다."""
+    files_repo.steal = {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "sha": JPEG_SHA,
+        "pages": None,
+    }
+    files_repo.commit_lost = True
+    with pytest.raises(psycopg.OperationalError):
+        upload(client)
+    assert len(storage.removed) == 1 and not storage.objects
 
 
 def test_without_a_token_nothing_is_uploaded(client: TestClient, storage: FakeStorage) -> None:

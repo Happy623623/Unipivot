@@ -438,6 +438,13 @@ def test_spaces_around_the_key_are_dropped() -> None:
         (SECRET, f"{PROJECT_URL}/rest/v1", "경로가 붙어 있어요"),
         (SECRET, f"{PROJECT_URL}/storage/v1", "경로가 붙어 있어요"),  # 서버가 붙이는 경로다
         (SECRET, f"{PROJECT_URL}?x=1", "경로가 붙어 있어요"),
+        (
+            SECRET,
+            f"{PROJECT_URL}?",
+            "경로가 붙어 있어요",
+        ),  # 빈 ?·#도(뒤에 붙이는 경로가 쿼리가 된다)
+        (SECRET, f"{PROJECT_URL}#", "경로가 붙어 있어요"),
+        (SECRET, f"{PROJECT_URL}/?", "경로가 붙어 있어요"),
         (SECRET, "abcdefghijklmnopqrst.supabase.co", "https://로 시작하지 않아요"),
         (SECRET, "ftp://abcdefghijklmnopqrst.supabase.co", "https://로 시작하지 않아요"),
         (SECRET, "https://", "https://로 시작하지 않아요"),
@@ -473,6 +480,11 @@ def test_storage_settings_problem(key: str, url: str, problem: str | None) -> No
         ("127.0.0.1:54321/storage/v1", "https://로 시작하지 않아요"),
         ("https://user:pw@storage.test/storage/v1", "계정 정보(@)"),
         ("https://<storage>/storage/v1", "예시 값이 남아 있어요"),
+        (
+            "https://storage.test/storage/v1?",
+            "?나 #가 들어 있어요",
+        ),  # 뒤에 붙이는 경로가 쿼리가 된다
+        ("https://storage.test/storage/v1#x", "?나 #가 들어 있어요"),
         ("  ", "경로가 붙어 있어요"),  # 빈칸뿐이면 없는 것이라 SUPABASE_URL을 본다(틀린 값)
     ],
 )

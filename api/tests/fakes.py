@@ -35,6 +35,7 @@ class FakeProfileRepository:
         self.tokens: dict[str, dict[str, str]] = {}
         self.settings: dict[str, Settings] = {}
         self.locks: list[str] = []
+        self.deletion_locks: list[str] = []  # 탈퇴할 때 잠근 사용자(for update)
 
     async def lock(self, user_id: str) -> None:
         self.locks.append(user_id)
@@ -126,6 +127,9 @@ class FakeProfileRepository:
 
     async def save_google_tokens(self, user_id: str, access_token: str, refresh_token: str) -> None:
         self.tokens[user_id] = {"access_token": access_token, "refresh_token": refresh_token}
+
+    async def lock_for_delete(self, user_id: str) -> None:
+        self.deletion_locks.append(user_id)
 
     async def delete(self, user_id: str) -> bool:
         """탈퇴. 실제 저장소는 cascade로 딸린 행을 지우므로 여기서도 토큰·설정을 함께 지운다."""

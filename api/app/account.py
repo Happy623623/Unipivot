@@ -10,6 +10,11 @@
 2. **Google 캘린더 권한**을 거둔다(되는 만큼. 연결 해제와 같은 함수)
 3. **profiles 행**을 지운다. 딸린 행(토큰·설정·알림·플래너·판정·파일 기록·구독)은 cascade로
    사라지고, 공유 포스터 공고의 업로더와 실행 로그의 사용자는 null이 된다(ERD 7장)
+   지우기 직전에 profiles 행을 잠그고(for update) 파일 목록을 **다시** 받아, 1 뒤에 들어온 파일(업로드·LMS
+   첨부)도 지운다. 잠근 뒤로 파일 기록을 넣는 요청은 탈퇴가 끝날 때까지 기다렸다가 프로필이 없어 실패하고, 그쪽이
+   방금 올린 파일을 지운다. 잠그지 않으면 목록을 받은 뒤 들어온 기록은 cascade로만 사라지고 파일은 저장소에 남는다.
+   잠금은 이 마지막 단계에서만 쥔다 — 저장소·Google을 부르는 동안 쥐고 있으면 그 사용자의 다른 요청(LMS 동기화·
+   준비하기)이 오래 기다리고, 딸린 행을 먼저 잠근 쪽과 교착이 생긴다(검토가 재현)
 
 Supabase 로그인 계정은 남는다 — ERD 7장이 탈퇴를 "profiles 삭제"로 정했다. 다시 로그인하면 동의부터
 새로 시작한다. Google 캘린더에 이미 넣은 일정은 지우지 않는다(명세 4장).
@@ -40,6 +45,20 @@ async def delete_account(
 ) -> bool:
     """탈퇴. 지울 프로필이 있었으면 True다(없어도 204 — 두 번 눌러도 같다)."""
     paths = await files.storage_paths(user_id)
+    await _remove_files(paths, storage, settings)
+    await calendar.disconnect(user_id)
+    await profiles.lock_for_delete(user_id)
+    removed = set(paths)
+    await _remove_files(
+        [path for path in await files.storage_paths(user_id) if path not in removed],
+        storage,
+        settings,
+    )
+    return await profiles.delete(user_id)
+
+
+async def _remove_files(paths: list[str], storage: SupabaseStorage, settings: Settings) -> None:
+    """저장소에서 지운다. 하나라도 못 지우면 502로 멈춘다."""
     # 파일이 없으면 저장소를 부르지 않으니 설정도 보지 않는다(저장소 설정이 없는 로컬에서도 탈퇴된다)
     if paths and (problem := storage_settings_problem(settings)):
         logger.warning("파일을 지우기 전에 탈퇴를 멈췄어요. 저장소 설정 확인: %s", problem)
@@ -50,5 +69,3 @@ async def delete_account(
         except StorageError as exc:
             logger.warning("탈퇴 중 파일을 지우지 못했어요: %s", exc)
             raise ApiError(502, "STORAGE_API_ERROR", STORAGE_FAILED) from exc
-    await calendar.disconnect(user_id)
-    return await profiles.delete(user_id)
