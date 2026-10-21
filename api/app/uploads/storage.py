@@ -38,6 +38,11 @@ KEY_SHAPE = re.compile(r"[A-Za-z0-9._-]+")  # 새 키와 JWT가 쓰는 글자. �
 SECRET_SHAPE = re.compile(r"sb_secret_[A-Za-z0-9_-]{20,}")  # 실제 키는 접두 뒤가 30자 남짓이다
 REASON_LIMIT = 120  # 거절 이유는 이만큼만 남긴다
 SIGNED_SECONDS = 300  # 받기 주소 수명(명세 1장: 서명 URL은 5분)
+LIST_PAGE = 100  # 목록 한 번에 받는 수(storage-js 기본값과 같다)
+LIST_MAX_PAGES = (
+    200  # 폴더 훑기 상한(한 번의 훑기에서 부르는 목록 수). 넘으면 멈춘다 — 끝없이 돌지 않게
+)
+LIST_MAX_DEPTH = 4  # <user_id>/<종류>/<파일>이라 2단이면 되지만 여유를 둔다
 SIGNED_PREFIX = "/object/sign/"  # 저장소가 주는 서명 경로의 앞부분
 MISSING = (
     "SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL이 있어야 포스터를 올리고 공지 첨부를 저장할 수 있어요"
@@ -65,8 +70,8 @@ class SupabaseStorage:
         return bool(self.base_url and self.bucket and KEY_SHAPE.fullmatch(self.service_key))
 
     def _url(self, path: str, action: str = "object") -> str:
-        quoted = quote(path, safe="/")
-        return f"{self.base_url}/{action}/{quote(self.bucket, safe='')}/{quoted}"
+        bucket = f"{self.base_url}/{action}/{quote(self.bucket, safe='')}"
+        return f"{bucket}/{quote(path, safe='/')}" if path else bucket  # 목록은 버킷까지만
 
     def _key_headers(self) -> dict[str, str]:
         """저장소 키를 싣는 머리값. 새 키는 `apikey`에만, 예전 JWT 키는 `Authorization`에도."""
@@ -89,6 +94,67 @@ class SupabaseStorage:
         누르면 앞서 지운 파일부터 다시 지우기 때문이다. 권한이 모자란 키(publishable 등)에도 저장소는 같은
         "없는 파일"로 답해서, 탈퇴는 지우기 전에 `storage_settings_problem`을 본다(app/account.py)."""
         await self._send("DELETE", path, gone_is_ok=True)
+
+    async def list_paths(self, folder: str) -> list[str]:
+        """`folder` 아래 파일 경로 전부(버킷 안 경로). 탈퇴가 기록이 없는 파일까지 지울 때 쓴다(app/account.py).
+
+        Supabase 목록(`POST /object/list/{bucket}`)은 폴더 하나의 바로 아래만 준다. 폴더는 `id`가 없는 항목이라
+        그 안으로 다시 들어간다(`LIST_MAX_DEPTH`단까지). `name`은 폴더 안의 이름이지만, 버킷 안 경로로 오더라도
+        맞게 붙인다. 답한 경로가 `folder/`로 시작하지 않거나 `..`·빈 칸이 섞였으면 버린다(다른 사람 폴더를
+        지우지 않게).
+        """
+        root = folder.strip("/")
+        found: list[str] = []
+        level, calls = [root], 0
+        for _ in range(LIST_MAX_DEPTH):
+            deeper: list[str] = []
+            for current in level:
+                offset = 0
+                while True:
+                    calls += 1
+                    if calls > LIST_MAX_PAGES:
+                        raise StorageError("파일 저장소 폴더가 너무 커서 다 훑지 못했어요.")
+                    entries = await self._list(current, offset)
+                    for name, is_folder in entries:
+                        path = name if name.startswith(f"{current}/") else f"{current}/{name}"
+                        parts = path.split("/")
+                        if not path.startswith(f"{root}/") or {"", ".", ".."} & set(parts):
+                            continue  # 내 폴더 밖이거나 경로 이동(..)이 섞였다
+                        (deeper if is_folder else found).append(path)
+                    if len(entries) < LIST_PAGE:
+                        break
+                    offset += LIST_PAGE
+            if not deeper:
+                return found
+            level = deeper
+        raise StorageError("파일 저장소 폴더가 너무 깊어 다 훑지 못했어요.")
+
+    async def _list(self, folder: str, offset: int) -> list[tuple[str, bool]]:
+        """폴더 바로 아래 항목 (이름, 폴더인지). storage-js `list`와 같은 본문을 보낸다."""
+        body = json.dumps(
+            {
+                "prefix": folder,
+                "limit": LIST_PAGE,
+                "offset": offset,
+                "sortBy": {"column": "name", "order": "asc"},
+            }
+        ).encode()
+        raw = await self._send(
+            "POST", "", content=body, content_type="application/json", action="object/list"
+        )
+        try:
+            entries = json.loads(raw)
+        except (ValueError, RecursionError):
+            raise StorageError("파일 저장소의 목록 답이 JSON이 아니에요.") from None
+        if not isinstance(entries, list):
+            raise StorageError("파일 저장소의 목록 답 모양이 달라요.")
+        parsed: list[tuple[str, bool]] = []
+        for entry in entries:
+            name = entry.get("name") if isinstance(entry, dict) else None
+            if not isinstance(name, str) or not name.strip("/"):
+                raise StorageError("파일 저장소의 목록 답 모양이 달라요.")
+            parsed.append((name.strip("/"), entry.get("id") is None))
+        return parsed
 
     async def signed_url(
         self, path: str, *, download_name: str | None = None, seconds: int = SIGNED_SECONDS

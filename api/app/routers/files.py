@@ -20,6 +20,7 @@ from datetime import timedelta
 from typing import Annotated
 from uuid import UUID, uuid4
 
+import psycopg
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 
 from app.auth import CurrentUserDep
@@ -135,11 +136,16 @@ async def upload_file(
             if saved is None:  # 올리는 사이에 같은 파일이 들어왔다. 방금 올린 것은 지운다
                 winner = await repo.existing(user.id, kind=kind, sha256=found.sha256)
                 assert winner is not None  # 충돌이 났다는 것은 그 행이 있다는 뜻이다
-    except Exception:
+    except Exception as exc:
         # 기록을 넣지 못했다(그새 탈퇴해 프로필이 없어졌거나 DB가 멈췄다). 기록 없는 파일은 탈퇴로도 못 찾으니
         # 방금 올린 것을 지우고 오류는 그대로 낸다(app/account.py). 연결을 돌려준 뒤에 지운다
         if not added:
             await _discard(storage, path)
+        if isinstance(exc, psycopg.errors.ForeignKeyViolation):
+            # 프로필이 없다(그새 탈퇴했다). 동의부터 하라고 답한다(프로필이 없으면 PATCH /me/profile도 같은 답이다)
+            raise ApiError(
+                403, "CONSENT_REQUIRED", "약관에 먼저 동의해 주세요.", {"consent": "terms_privacy"}
+            ) from exc
         raise
     if saved is None:
         await _discard(storage, path)

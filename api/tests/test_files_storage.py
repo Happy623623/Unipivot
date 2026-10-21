@@ -556,3 +556,106 @@ def test_startup_says_what_to_fix_in_the_storage_settings(
 def test_the_hint_survives_log_redaction_but_a_real_secret_does_not() -> None:
     assert redact(WHERE) == WHERE
     assert SECRET not in redact(f"apikey: {SECRET}")
+
+
+LIST = f"{BASE}/object/list/uploads"
+
+
+def _entries(*names: str, folders: tuple[str, ...] = ()) -> list[dict[str, object]]:
+    """Supabase 목록 답 흉내: 파일은 id가 있고, 폴더는 id·metadata가 null이다(storage-js list와 같은 모양)."""
+    files = [{"name": n, "id": f"id-{n}", "metadata": {"size": 1}} for n in names]
+    return [{"name": f, "id": None, "metadata": None} for f in folders] + files
+
+
+@respx.mock
+async def test_listing_a_folder_walks_into_its_subfolders() -> None:
+    """내 폴더 아래 파일을 전부 준다. 폴더(id 없음)는 안으로 들어가고, 본문은 storage-js list와 같다."""
+    answers = {
+        "user-1": _entries(folders=("poster", "lecture_material")),
+        "user-1/poster": _entries("a.jpg", "b.png"),
+        "user-1/lecture_material": _entries("c.pdf"),
+    }
+    route = respx.post(LIST).mock(
+        side_effect=lambda request: httpx.Response(
+            200, json=answers[json.loads(request.content)["prefix"]]
+        )
+    )
+    found = await storage(service_key=SECRET).list_paths("user-1")
+    assert sorted(found) == [
+        "user-1/lecture_material/c.pdf",
+        "user-1/poster/a.jpg",
+        "user-1/poster/b.png",
+    ]
+    first = json.loads(route.calls[0].request.content)
+    assert first == {
+        "prefix": "user-1",
+        "limit": 100,
+        "offset": 0,
+        "sortBy": {"column": "name", "order": "asc"},
+    }
+    assert route.calls[0].request.headers["apikey"] == SECRET
+    assert "authorization" not in route.calls[0].request.headers  # 새 키는 apikey에만
+
+
+@respx.mock
+async def test_listing_pages_through_a_full_folder() -> None:
+    """한 번에 100개씩 준다. 꽉 찬 쪽이 오면 offset을 늘려 다음 쪽을 받는다."""
+    names = [f"f{i:03}.jpg" for i in range(150)]
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["prefix"] == "user-1":
+            return httpx.Response(200, json=_entries(folders=("poster",)))
+        page = names[body["offset"] : body["offset"] + body["limit"]]
+        return httpx.Response(200, json=_entries(*page))
+
+    route = respx.post(LIST).mock(side_effect=answer)
+    found = await storage().list_paths("user-1")
+    assert len(found) == 150 and found[-1] == "user-1/poster/f149.jpg"
+    offsets = [json.loads(call.request.content)["offset"] for call in route.calls]
+    assert offsets == [0, 0, 100]
+
+
+@respx.mock
+async def test_listing_accepts_full_paths_and_drops_other_folders() -> None:
+    """지금 Supabase는 폴더 안 이름만 주지만, 버킷 안 경로로 와도 맞게 붙인다. 경로 이동(..)이 섞이면 버린다(남의
+    파일을 지우지 않게)."""
+    respx.post(LIST).mock(
+        return_value=httpx.Response(200, json=_entries("user-1/x.jpg", "../user-2/y.jpg"))
+    )
+    found = await storage().list_paths("user-1/")
+    assert found == ["user-1/x.jpg"]  # ..가 섞인 것은 버린다
+
+
+@respx.mock
+async def test_listing_a_missing_folder_is_empty() -> None:
+    respx.post(LIST).mock(return_value=httpx.Response(200, json=[]))
+    assert await storage().list_paths("user-1") == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        httpx.Response(400, json=REFUSED),
+        httpx.Response(200, content=b"<html>"),
+        httpx.Response(200, json={"items": []}),
+        httpx.Response(200, json={}),  # 빈 객체를 빈 폴더로 보면 안 된다
+        httpx.Response(200, json=[{"id": "x"}]),
+        httpx.Response(200, json=["a.jpg"]),
+    ],
+    ids=["refused", "not-json", "not-a-list", "empty-object", "no-name", "not-an-object"],
+)
+@respx.mock
+async def test_a_listing_that_cannot_be_read_is_a_storage_error(answer: httpx.Response) -> None:
+    """목록을 못 읽으면 지운 것으로 보지 않는다 — 탈퇴가 502로 멈춘다."""
+    respx.post(LIST).mock(return_value=answer)
+    with pytest.raises(StorageError):
+        await storage().list_paths("user-1")
+
+
+@respx.mock
+async def test_listing_that_never_ends_stops_with_an_error() -> None:
+    """폴더 안에 폴더가 끝없이 있다고 답하면(저장소 이상) 끝없이 돌지 않고 멈춘다."""
+    respx.post(LIST).mock(return_value=httpx.Response(200, json=_entries(folders=("deeper",))))
+    with pytest.raises(StorageError, match="너무 깊어"):
+        await storage().list_paths("user-1")

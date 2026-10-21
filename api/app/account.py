@@ -7,6 +7,9 @@
    못 보고 "없는 파일"(`NoSuchKey`)로 답하는데, 지우기는 그 답을 "이미 지웠다"로 받는다(다시 누를 때
    필요하다). 그대로 가면 파일은 저장소에 남고 기록만 사라진다. 그래서 설정에 고칠 점이 있으면 하나도
    지우지 않고 같은 502로 멈춘다(받기 주소가 그 404를 믿지 않는 것과 같은 기준)
+   그다음 저장소의 **내 폴더(`<user_id>/`)를 훑어** 기록이 없는 파일도 지운다(올린 뒤 기록의 커밋이 정말
+   실패해 남은 것 — 그런 파일은 기록이 없어 목록으로는 못 찾는다). 목록을 받지 못하면 같은 502로 멈춘다.
+   저장소 설정이 없거나 틀리면(로컬) 훑지 않는다 — 기록된 파일이 있었으면 위에서 이미 멈췄다
 2. **Google 캘린더 권한**을 거둔다(되는 만큼. 연결 해제와 같은 함수)
 3. **profiles 행**을 지운다. 딸린 행(토큰·설정·알림·플래너·판정·파일 기록·구독)은 cascade로
    사라지고, 공유 포스터 공고의 업로더와 실행 로그의 사용자는 null이 된다(ERD 7장)
@@ -46,15 +49,32 @@ async def delete_account(
     """탈퇴. 지울 프로필이 있었으면 True다(없어도 204 — 두 번 눌러도 같다)."""
     paths = await files.storage_paths(user_id)
     await _remove_files(paths, storage, settings)
+    removed = set(paths) | await _sweep_folder(user_id, set(paths), storage, settings)
     await calendar.disconnect(user_id)
     await profiles.lock_for_delete(user_id)
-    removed = set(paths)
     await _remove_files(
         [path for path in await files.storage_paths(user_id) if path not in removed],
         storage,
         settings,
     )
     return await profiles.delete(user_id)
+
+
+async def _sweep_folder(
+    user_id: str, removed: set[str], storage: SupabaseStorage, settings: Settings
+) -> set[str]:
+    """저장소의 내 폴더에 남은 파일(기록이 없는 것)을 지운다. 지운 경로를 돌려준다."""
+    if storage_settings_problem(settings):
+        return set()
+    try:
+        left = [path for path in await storage.list_paths(user_id) if path not in removed]
+    except StorageError as exc:
+        logger.warning("탈퇴 중 내 폴더를 훑지 못했어요: %s", exc)
+        raise ApiError(502, "STORAGE_API_ERROR", STORAGE_FAILED) from exc
+    if left:
+        logger.info("탈퇴: 기록이 없는 파일 %d개를 저장소에서 지워요", len(left))
+    await _remove_files(left, storage, settings)
+    return set(left)
 
 
 async def _remove_files(paths: list[str], storage: SupabaseStorage, settings: Settings) -> None:

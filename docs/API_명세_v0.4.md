@@ -38,6 +38,8 @@
 >
 > v0.4 보강(10/19, 탈퇴 저장소 가드): 파일이 있는데 서버의 저장소 설정에 고칠 점이 있으면 `DELETE /me`가 파일을 지우기 전에 `502 STORAGE_API_ERROR`로 멈춘다(publishable key로 지우면 저장소가 "없는 파일"로 답해 파일이 남는다). 지우기의 "이미 없음"은 저장소가 `NoSuchKey`로 답할 때만이다(`code` 없는 404는 실패)
 >
+> v0.4 보강(10/21, 탈퇴 폴더 훑기): `DELETE /me`는 기록된 파일을 지운 뒤 저장소의 내 폴더(`<user_id>/`)도 훑어 기록이 없는 파일까지 지운다(목록을 못 받으면 `502 STORAGE_API_ERROR`). 탈퇴하는 사이에 들어온 `POST /files`는 `403 CONSENT_REQUIRED`(`details.consent = terms_privacy`)다
+>
 > v0.4 보강(10/20, 포스터 원본 보기): 공고 상세의 `poster_url`을 `poster_kind`(`image`·`pdf`·`null`)로 바꾸고, 주소는 `GET /opportunities/{id}/poster-url`(5분, `no-store`)로 따로 받는다(W6). 내가 올린 포스터 공고만이고, 404·502 규칙은 `GET /files/{file_id}/url`과 같다
 >
 > v0.4 보강(10/20, 로그아웃): 설정의 로그아웃은 Supabase 세션만 끝낸다(새 API 없음). 그 전에 이 브라우저의 웹 푸시 구독을 지우고 `DELETE /push/subscriptions`를 부른다(10장 브라우저 쪽)
@@ -382,7 +384,9 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 ### `DELETE /me`
 
 `204`. Google·LMS 토큰, 프로필, 업로드 파일, 판정·플래너·캘린더 기록을 삭제한다. 사용자가 올린 공유 포스터 공고는 남기되 업로더를 비운다(ERD `on delete set null`). Google 캘린더에 이미 등록된 일정은 지우지 않는다.
-- 순서는 **파일 → Google 권한 → DB**다. 저장소의 파일(`files.storage_path` 전부)을 먼저 지우고, 하나라도 지우지 못하면 `502 STORAGE_API_ERROR`로 멈추며 아무것도 바꾸지 않는다(다시 누르면 처음부터 다시 한다. 이미 지운 파일은 없는 것으로 지나간다). 파일이 없으면 저장소를 부르지 않는다
+- 순서는 **파일 → Google 권한 → DB**다. 저장소의 파일(`files.storage_path` 전부)을 먼저 지우고, 하나라도 지우지 못하면 `502 STORAGE_API_ERROR`로 멈추며 아무것도 바꾸지 않는다(다시 누르면 처음부터 다시 한다. 이미 지운 파일은 없는 것으로 지나간다)
+- 그다음 저장소의 내 폴더(`<user_id>/`)를 훑어 기록이 없는 파일(올린 뒤 기록이 남지 못한 것)도 지운다. 목록을 받지 못하면 같은 `502 STORAGE_API_ERROR`로 멈춘다. 서버의 저장소 설정이 없거나 틀리면 훑지 않는다 — 그때 기록된 파일이 없으면 저장소를 부르지 않는다
+- 프로필을 지우기 직전에 `profiles` 행을 잠그고 파일 목록을 다시 받아, 그사이 들어온 파일도 지운다. 잠근 뒤 들어오는 `POST /files`는 `403 CONSENT_REQUIRED`가 되고 올린 파일은 지워진다
 - 지우기에서 "이미 없음"으로 지나가는 것은 저장소가 본문 `code: NoSuchKey`로 답한 때뿐이다(지금 Supabase는 HTTP 400). `code` 없는 404·410은 주소가 틀려 저장소가 아닌 곳이 답한 것일 수 있어 지우기 실패로 보고 `502 STORAGE_API_ERROR`로 멈춘다
 - 단 파일이 있는데 서버의 저장소 설정에 고칠 점이 있으면(publishable key 등 — 그런 키로 지우면 저장소가 파일을 못 보고 없는 파일처럼 `NoSuchKey`로 답해, 파일을 남긴 채 지운 것으로 넘어간다) 저장소를 부르지 않고 같은 `502 STORAGE_API_ERROR`로 멈춘다. 문구도 같고, 무엇을 고칠지는 서버 로그에만 남긴다. 파일이 없으면 설정을 보지 않는다
 - Google 캘린더 권한은 `DELETE /auth/google/tokens`와 같은 함수로 거둔다(거두지 못해도 계속한다)
@@ -662,7 +666,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 ```
 
 - 같은 사용자가 같은 파일(sha256)을 같은 kind로 다시 올리면 새로 저장하지 않고 `200`과 기존 `file_id`를 준다. 다섯 필드는 두 경우 모두 있다
-- 에러: `FILE_TOO_LARGE`(413), `PAGE_LIMIT_EXCEEDED`(413), `UNSUPPORTED_FILE_TYPE`(400), `DAILY_UPLOAD_LIMIT`(429, `details.reset_at`은 한도가 풀리는 KST 내일 0시), `STORAGE_API_ERROR`(502)
+- 에러: `FILE_TOO_LARGE`(413), `PAGE_LIMIT_EXCEEDED`(413), `UNSUPPORTED_FILE_TYPE`(400), `DAILY_UPLOAD_LIMIT`(429, `details.reset_at`은 한도가 풀리는 KST 내일 0시), `STORAGE_API_ERROR`(502), `CONSENT_REQUIRED`(403, `details.consent = terms_privacy` — 올리는 사이에 탈퇴해 프로필이 없어졌다. 올린 파일은 지운다)
 - 허용 형식: poster는 jpg·png·webp와 **2쪽 이하 PDF**, syllabus는 **글자가 있는 10쪽 이하 PDF**, lecture_material은 pdf다. 쪽수를 넘기면 `413 PAGE_LIMIT_EXCEEDED`. 크기는 20MB까지다. 안이 깨진 PDF는 `400 UNSUPPORTED_FILE_TYPE`이고, 무엇을 하면 되는지는 종류마다 다르다(포스터는 사진으로 다시 찍기, 계획서는 포털에서 PDF로 다시 저장하기)
 - 계획서(syllabus)는 **PDF에서 글자를 뽑을 수 있어야** 받는다. 사진을 PDF로 감싼 파일은 `400 UNSUPPORTED_FILE_TYPE`이고, 포털 계획서를 브라우저에서 PDF로 저장해 올리라고 안내한다
 - 형식은 파일 이름·Content-Type이 아니라 **앞부분 바이트**로 가린다. 이름만 `.jpg`로 바꾼 파일은 `400 UNSUPPORTED_FILE_TYPE`이다

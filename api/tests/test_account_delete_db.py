@@ -178,6 +178,9 @@ class LateUploadStorage(SupabaseStorage):
                 await other.close()
         self.removed.append(path)
 
+    async def list_paths(self, folder: str) -> list[str]:
+        return []  # 기록 없는 파일은 없다(이 시험은 기록으로 찾는 것만 본다)
+
 
 async def test_deletion_also_removes_a_file_recorded_while_it_ran() -> None:
     """탈퇴 전체(실제 SQL): 처음 목록을 지우는 사이 들어온 파일도, 잠근 뒤 다시 받은 목록으로 지운다."""

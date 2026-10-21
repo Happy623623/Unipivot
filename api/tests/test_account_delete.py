@@ -51,14 +51,26 @@ class FakeFileRepository:
 
 
 class FakeStorage(SupabaseStorage):
-    """지운 경로를 적어 두고, 정한 경로에서는 실패한다."""
+    """지운 경로를 적어 두고, 정한 경로에서는 실패한다. 폴더 목록은 아직 안 지운 파일(기록 있는 것 + 기록 없는 것)이다."""
 
-    def __init__(self, *, fail_on: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        fail_on: str | None = None,
+        stored: list[str],
+        list_fails: bool = False,
+        stale: bool = False,
+    ) -> None:
         super().__init__(
             base_url="https://storage.test/storage/v1", bucket="uploads", service_key="k"
         )
         self.removed: list[str] = []
         self.fail_on = fail_on
+        self.stored = list(stored)
+        self.list_fails = list_fails
+        self.stale = stale  # 목록이 늦게 따라와 방금 지운 파일도 아직 보인다
+        self.listed: list[str] = []
+        self.everything = list(stored)
 
     async def remove(self, path: str) -> None:
         if path == self.fail_on:  # 실제 거절 문구처럼 Supabase의 이유가 붙어 있다(로그용)
@@ -66,6 +78,15 @@ class FakeStorage(SupabaseStorage):
                 "파일 저장소가 요청을 거절했어요(400, AccessDenied: Invalid Compact JWS)."
             )
         self.removed.append(path)
+        if path in self.stored:
+            self.stored.remove(path)
+
+    async def list_paths(self, folder: str) -> list[str]:
+        self.listed.append(folder)
+        if self.list_fails:
+            raise StorageError("파일 저장소가 요청을 거절했어요(500).")
+        shown = self.everything if self.stale else self.stored
+        return [path for path in shown if path.startswith(f"{folder}/")]
 
 
 class FakeCalendarRepository:
@@ -96,10 +117,15 @@ class World:
         key: str = SECRET,
         url: str = PROJECT_URL,
         storage_base: str = "",
+        orphans: tuple[str, ...] = (),  # 저장소에만 있고 기록이 없는 파일
+        list_fails: bool = False,
+        stale: bool = False,
     ):
         self.profiles = FakeProfileRepository()
         self.files = FakeFileRepository(paths, self.profiles)
-        self.storage = FakeStorage(fail_on=fail_on)
+        self.storage = FakeStorage(
+            fail_on=fail_on, stored=[*paths, *orphans], list_fails=list_fails, stale=stale
+        )
         self.calendar = FakeCalendarRepository(settings.token_encryption_key, connected=connected)
         # 저장소 설정(기본은 맞는 secret key). 고칠 점이 있으면 파일을 지우기 전에 멈춘다
         tuned = settings.model_copy(
@@ -288,4 +314,52 @@ def test_without_files_or_calendar_nothing_outside_is_called(
         assert client.delete(ME, headers=auth).status_code == 204
         assert client.delete(ME, headers=auth).status_code == 204  # 두 번째도 같다
     assert world.storage.removed == [] and not revoke.called
+    assert world.storage.listed == []  # 설정이 없거나 틀리면 폴더도 훑지 않는다
     assert USER_ID not in world.profiles.profiles
+
+
+ORPHAN = f"{USER_ID}/poster/lost.png"
+
+
+@respx.mock
+def test_files_without_a_record_are_swept_from_my_folder(
+    settings: Settings, auth: dict[str, str]
+) -> None:
+    """기록이 없는 파일(올린 뒤 기록의 커밋이 정말 실패해 남은 것)도 내 폴더를 훑어 지운다. 기록 있는 파일은
+    한 번만 지운다."""
+    world = World(settings, paths=PATHS, connected=False, orphans=(ORPHAN,), stale=True)
+    for client in _signed_in(world):
+        assert client.delete(ME, headers=auth).status_code == 204
+    assert world.storage.listed == [USER_ID]
+    # 목록이 늦게 따라와 방금 지운 파일이 보여도 다시 지우지 않는다
+    assert world.storage.removed == [*PATHS, ORPHAN]
+    assert world.storage.stored == []
+
+
+@respx.mock
+def test_a_folder_is_swept_even_without_any_record(
+    settings: Settings, auth: dict[str, str]
+) -> None:
+    """기록된 파일이 하나도 없어도 저장소 설정이 맞으면 폴더를 훑는다."""
+    world = World(settings, paths=[], connected=False, orphans=(ORPHAN,))
+    for client in _signed_in(world):
+        assert client.delete(ME, headers=auth).status_code == 204
+    assert world.storage.removed == [ORPHAN]
+
+
+@respx.mock
+def test_a_folder_that_cannot_be_listed_stops_everything(
+    settings: Settings, auth: dict[str, str]
+) -> None:
+    """폴더 목록을 못 받으면 파일을 못 지운 것과 같다. 502로 멈추고 Google·프로필은 그대로다."""
+    world = World(settings, paths=PATHS, connected=True, list_fails=True)
+    revoke = respx.post(REVOKE_URL).mock(return_value=httpx.Response(200, json={}))
+    for client in _signed_in(world):
+        response = client.delete(ME, headers=auth)
+        assert response.status_code == 502
+        assert response.json()["error"]["code"] == "STORAGE_API_ERROR"
+    assert (
+        world.storage.removed == PATHS
+    )  # 기록 있는 파일은 먼저 지웠다(다시 누르면 없음으로 지나간다)
+    assert not revoke.called and world.calendar.tokens_row is not None
+    assert USER_ID in world.profiles.profiles

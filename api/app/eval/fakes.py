@@ -175,6 +175,10 @@ class RecordedStorage(SupabaseStorage):
         self.files.pop(path, None)
         self.removed.append(path)
 
+    async def list_paths(self, folder: str) -> list[str]:
+        """탈퇴의 폴더 훑기(app/account.py). 실제 저장소를 부르지 않게 메모리에서 답한다."""
+        return [path for path in self.files if path.startswith(f"{folder.strip('/')}/")]
+
     async def signed_url(
         self, path: str, *, download_name: str | None = None, seconds: int = SIGNED_SECONDS
     ) -> str:

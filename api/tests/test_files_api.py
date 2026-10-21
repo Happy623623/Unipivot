@@ -352,10 +352,16 @@ def test_a_file_whose_record_cannot_be_kept_is_removed_from_storage(
     client: TestClient, files_repo: FakeFileRepository, storage: FakeStorage
 ) -> None:
     """올리는 사이에 탈퇴했다. 탈퇴가 끝날 때까지 기다린 기록 넣기가 외래 키에 걸리면 방금 올린 파일을 지운다 —
-    기록 없는 파일은 탈퇴로도 못 찾아 저장소에 남는다(app/account.py)."""
+    기록 없는 파일은 탈퇴의 기록 목록으로는 못 찾는다(app/account.py). 답은 프로필이 없는 사용자에게 다른 API가
+    하듯 403 CONSENT_REQUIRED다(500이 아니다)."""
     files_repo.gone = True
-    with pytest.raises(psycopg.errors.ForeignKeyViolation):
-        upload(client)
+    response = upload(client)
+    assert response.status_code == 403
+    assert response.json()["error"] == {
+        "code": "CONSENT_REQUIRED",
+        "message": "약관에 먼저 동의해 주세요.",
+        "details": {"consent": "terms_privacy"},
+    }
     assert len(storage.removed) == 1 and not storage.objects
     assert not files_repo.rows
     assert storage.removed_while_open == [0]  # 연결을 돌려준 뒤에 지운다
