@@ -7,11 +7,13 @@ import {
   markNotificationRead,
   nowIso,
 } from "@/api/client";
+import { announceSavedRead as announce, onSavedRead, type SavedRead } from "@/lib/savedReads";
 import type { AppNotification, NotificationList } from "@/types/api";
 
 // 알림함 목록 상태. 헤더 패널(열릴 때만)과 전체 목록 화면이 각각 하나씩 쓴다.
 // 읽음 처리는 응답을 기다리지 않고 먼저 화면에 반영하고, 저장하지 못하면 되돌린다(F-45와 같은 방식).
-// 한쪽에서 저장한 읽음 처리는 같은 탭의 다른 목록에도 바로 반영한다(알림함 화면 위에서 패널의 "모두 읽음" 등).
+// 한쪽에서 저장한 읽음 처리는 같은 탭의 다른 목록과 다른 탭에도 바로 반영한다(알림함 화면 위에서 패널의 "모두 읽음",
+// 다른 탭에 열어 둔 알림함 등 — lib/savedReads.ts).
 // 그때 받던 중이던 쪽이 늦게 오거나 이쪽의 읽음 저장이 실패해 되돌릴 때도 그새 저장된 읽음 처리는 다시 입힌다
 interface Options {
   enabled?: boolean; // 패널은 열려 있을 때만 받는다
@@ -32,20 +34,7 @@ export interface NotificationsState {
   readAll: () => Promise<boolean>;
 }
 
-// 저장된 읽음 처리. ids가 "all"이면 전체 읽음이다. 서버는 그때 보낼 때가 된 알림만 읽음으로 하므로, 누른 시각(readAt)
-// 뒤에 보낼 때가 된 알림(그사이 받은 첫 쪽에 섞여 올 수 있다)에는 입히지 않는다
-interface SavedRead {
-  ids: string[] | "all";
-  readAt: string; // 누를 때 시각(nowIso)
-  unread: number; // 서버가 센 안 읽은 수
-}
-
-const listeners = new Set<(saved: SavedRead) => void>();
 const KEEP = 50; // 받던 중에 들은 읽음 처리를 다시 입히려고 최근 것만 들고 있는다
-
-function announce(saved: SavedRead): void {
-  listeners.forEach((listener) => listener(saved));
-}
 
 function applyRead(items: AppNotification[], saved: SavedRead): AppNotification[] {
   const until = Date.parse(saved.readAt);
@@ -81,10 +70,7 @@ export default function useNotifications({
       // 아직 목록을 받지 않은 쪽(닫혀 있던 패널)은 받을 때까지 null로 둔다 — 받기 전에는 "모두 읽음"을 막는다
       setUnread((current) => (current === null ? null : saved.unread));
     };
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
+    return onSavedRead(listener);
   }, []);
 
   // since(seq) 뒤에 들은 읽음 처리를 list에 다시 입힌다. 안 읽은 수는 그중 마지막 것(없으면 fallback)
