@@ -16,7 +16,7 @@ import Button from "@/components/Button";
 import ConnectedServices, { type CalendarResult } from "@/components/ConnectedServices";
 import Header from "@/components/Header";
 import IncomeConsentSetting from "@/components/IncomeConsentSetting";
-import Modal, { ModalCancelButton } from "@/components/Modal";
+import Modal, { ModalCancelButton, ModalDescription } from "@/components/Modal";
 import NotificationSettings from "@/components/NotificationSettings";
 import ProfileForm from "@/components/ProfileForm";
 import SignOutSetting from "@/components/SignOutSetting";
@@ -213,9 +213,9 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
         />
       </Modal>
       <Modal open={deleteOpen} title="계정 탈퇴" onClose={() => setDeleteOpen(false)} busy={deleting}>
-        <p className="text-[14px] leading-6 text-[#344054]">
+        <ModalDescription>
           모든 개인 정보와 토큰, 올린 파일을 지워요. 공유한 포스터 공고는 이름 없이 남고, 캘린더에 이미 넣은 일정은 그대로 남아요.
-        </p>
+        </ModalDescription>
         <label className="mt-4 block text-[13px] font-semibold">
           확인을 위해 탈퇴를 입력해 주세요
           <input value={deleteText} onChange={(event) => setDeleteText(event.target.value)} className="mt-2 h-[42px] w-full rounded-[10px] border border-[#e5e7eb] px-3 outline-none focus:border-[#c53030]" />

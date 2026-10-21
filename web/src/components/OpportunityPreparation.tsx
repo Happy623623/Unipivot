@@ -11,7 +11,7 @@ import {
 import Badge from "@/components/Badge";
 import Button, { ButtonLink } from "@/components/Button";
 import DeadlineCalendarRow, { calendarFailure } from "@/components/DeadlineCalendarRow";
-import Modal from "@/components/Modal";
+import Modal, { ModalDescription } from "@/components/Modal";
 import PreparationProgress from "@/components/PreparationProgress";
 import StatusBadge from "@/components/StatusBadge";
 import { formatKstDate, getDdayValue, isDeadlineSoon } from "@/lib/format";
@@ -263,9 +263,9 @@ export default function OpportunityPreparation({
         </div>
       )}
       <Modal open={confirmOpen} title="그래도 준비하기" onClose={() => setConfirmOpen(false)}>
-        <p className="text-[14px] leading-6 text-[#344054]">
+        <ModalDescription>
           지원 조건을 충족하지 못한 공고예요. 그래도 준비 일정을 만들까요?
-        </p>
+        </ModalDescription>
         <div className="mt-6 flex justify-end gap-2">
           <Button secondary onClick={() => setConfirmOpen(false)}>취소</Button>
           <Button onClick={() => startPreparation(true)}>그래도 만들기</Button>

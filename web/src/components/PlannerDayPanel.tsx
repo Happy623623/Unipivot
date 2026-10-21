@@ -1,9 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import Modal, { ModalCancelButton } from "@/components/Modal";
 import { formatKstLongDate } from "@/lib/format";
 import { getPlannerTaskMeta } from "@/lib/planner";
+import { focusIfLost } from "@/lib/useFocusHandoff";
 import type { PlannerMarker, PlannerTask } from "@/types/api";
 
 interface PlannerDayPanelProps {
@@ -43,6 +44,13 @@ export default function PlannerDayPanel({
   const [saving, setSaving] = useState(false);
   const menuButton = useRef<HTMLButtonElement | null>(null); // 마지막으로 연 "⋯" — 메뉴에서 연 창이 닫히면 여기로 초점을 돌린다
   const [toggling, setToggling] = useState<ReadonlySet<string>>(new Set()); // 저장 중인 할 일(할 일마다 따로 잠근다)
+  const [deleting, setDeleting] = useState<ReadonlySet<string>>(new Set()); // 지우는 중인 할 일(연타로 두 번 지우지 않게)
+  const heading = useRef<HTMLHeadingElement>(null); // 지운 할 일과 함께 "⋯"도 사라지면 초점을 받을 곳
+  // 삭제가 끝나 다시 그린 뒤에 초점을 맞춘다(그리기 전에 보면 아직 "지우는 중" 버튼에 있어서 놓친다, 검토)
+  const [refocus, setRefocus] = useState(0);
+  useEffect(() => {
+    if (refocus > 0) focusIfLost(() => [menuButton.current, heading.current]);
+  }, [refocus]);
   const formRound = useRef(0); // 창을 연 횟수. 15초 잠금이 풀려 닫고 새로 연 창을 앞 저장의 결과가 닫지 않게 한다
 
   const openForm = (task?: PlannerTask) => {
@@ -77,7 +85,7 @@ export default function PlannerDayPanel({
       <div className="min-h-[650px] rounded-2xl border border-[#e5e7eb] bg-white p-5">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-[20px] font-bold">{formatKstLongDate(date)}</h2>
+            <h2 ref={heading} tabIndex={-1} className="text-[20px] font-bold outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]">{formatKstLongDate(date)}</h2>
             <p className="mt-1 text-[12px] text-[#667085]">할 일 {tasks.length}개</p>
           </div>
           <button type="button" onClick={() => openForm()} className="text-[13px] font-semibold text-[#4f6ef7]">+ 일정 추가</button>
@@ -134,10 +142,33 @@ export default function PlannerDayPanel({
                       {editable(task).title ? "수정" : "날짜 옮기기"}
                     </button>
                     {editable(task).remove && (
-                      <button type="button" onClick={async () => {
-                        await onDelete(task.id);
-                        setMenuOpen(null);
-                      }} className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] text-[#c53030] hover:bg-[#fef2f2]">삭제</button>
+                      <button
+                        type="button"
+                        // 지우는 동안 다시 누르면 두 번째 요청이 "없는 일정"으로 실패해 오류가 떴다. 누름은 무시한다
+                        aria-disabled={deleting.has(task.id) || undefined}
+                        aria-busy={deleting.has(task.id) || undefined}
+                        onClick={async (event) => {
+                          if (deleting.has(task.id)) return;
+                          // 초점이 있던 사람(키보드)만 옮긴다. Safari에서 마우스로 누르면 초점이 없어 그대로 둔다
+                          const hadFocus = event.currentTarget === event.currentTarget.ownerDocument.activeElement;
+                          setDeleting((current) => new Set(current).add(task.id));
+                          try {
+                            await onDelete(task.id);
+                          } finally {
+                            setDeleting((current) => {
+                              const next = new Set(current);
+                              next.delete(task.id);
+                              return next;
+                            });
+                            setMenuOpen((open) => (open === task.id ? null : open)); // 그새 연 다른 메뉴는 두고
+                            // 지우면 이 할 일(메뉴·"⋯")이 사라진다. 실패해 남았으면 "⋯"로, 아니면 날짜 제목으로
+                            if (hadFocus) setRefocus((count) => count + 1);
+                          }
+                        }}
+                        className="block w-full rounded-[8px] px-3 py-2 text-left text-[12px] text-[#c53030] hover:bg-[#fef2f2] aria-disabled:cursor-wait aria-disabled:opacity-45"
+                      >
+                        {deleting.has(task.id) ? "지우는 중" : "삭제"}
+                      </button>
                     )}
                   </div>
                 )}

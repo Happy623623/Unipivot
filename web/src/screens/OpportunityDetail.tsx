@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { errorMessage, getOpportunity, setOpportunityMark } from "@/api/client";
 import Button from "@/components/Button";
 import AiProcessPanel from "@/components/AiProcessPanel";
@@ -68,6 +68,7 @@ export default function OpportunityDetail({
   const [markChange, setMarkChange] = useState<{ id: string; mark: OpportunityMark | null } | null>(null);
   const [marking, setMarking] = useState<string | null>(null); // 표시를 저장하는 공고 id
   const [toast, showToast] = useToast();
+  const judgeHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     setOverride(null);
@@ -165,7 +166,8 @@ export default function OpportunityDetail({
       />
       <section className="grid grid-cols-[1.3fr_1fr] gap-5 max-[900px]:grid-cols-1">
         <div className="min-h-[400px] rounded-2xl border border-[#e5e7eb] bg-white p-[22px]">
-          <h2 className="text-[18px] font-semibold">AI 자격 판정</h2>
+          {/* 정보 입력 창이 닫힐 때 연 버튼이 없으면(알림함 화면·푸시·주소로 ?focus=profile_input을 바로 엶) 여기로 초점이 온다 */}
+          <h2 ref={judgeHeading} tabIndex={-1} className="text-[18px] font-semibold outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]">AI 자격 판정</h2>
           <p className="mt-2 text-[13px] text-[#667085]">행을 누르면 판정에 사용한 공고 원문을 확인할 수 있어요.</p>
           <OpportunityConditions eligibility={detail.eligibility} />
         </div>
@@ -178,6 +180,7 @@ export default function OpportunityDetail({
         missingFields={detail.eligibility.missing_fields}
         onClose={() => setProfileOpen(false)}
         onSaved={reloadAfterProfile}
+        returnFocusRef={judgeHeading}
       />
       {posterOpen && posterKind && (
         <PosterOriginal opportunityId={detail.id} kind={posterKind} title={detail.title} onClose={() => setPosterOpen(false)} />

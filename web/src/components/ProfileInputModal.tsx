@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
 import {
   consentRequired,
   errorMessage,
@@ -35,6 +35,8 @@ interface ProfileInputModalProps {
   missingFields: string[]; // eligibility.missing_fields (요건 항목)
   onClose: () => void;
   onSaved: () => Promise<void>; // 공고를 다시 불러온다(서버가 그 자리에서 다시 판정한다)
+  // 연 버튼이 없을 때(알림에서 바로 열림) 또는 저장 뒤 사라졌을 때(정보 입력 → 준비 일정 만들기) 초점이 갈 곳
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 interface Loaded {
@@ -66,7 +68,14 @@ function inputKeys(field: string, profile: Profile): ProfileKey[] {
 }
 
 // 정보 입력(F-03): 판정에 빠진 항목만 받아 PATCH /me/profile로 저장한다. 창을 띄우면 profile_prompt_shown을 남긴다
-export default function ProfileInputModal({ open, opportunityId, missingFields, onClose, onSaved }: ProfileInputModalProps) {
+export default function ProfileInputModal({
+  open,
+  opportunityId,
+  missingFields,
+  onClose,
+  onSaved,
+  returnFocusRef,
+}: ProfileInputModalProps) {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [values, setValues] = useState<ProfileFormValues | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -163,7 +172,7 @@ export default function ProfileInputModal({ open, opportunityId, missingFields, 
   };
 
   return (
-    <Modal open={open} title="정보 입력" onClose={onClose} busy={saving || agreeing}>
+    <Modal open={open} title="정보 입력" onClose={onClose} busy={saving || agreeing} returnFocusRef={returnFocusRef}>
       {loadError ? (
         <p role="alert" className="text-[13px] text-[#c53030]">{loadError}</p>
       ) : !loaded || !values ? (

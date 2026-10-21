@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import Button from "@/components/Button";
 import { ITEM_LABELS } from "@/components/SyllabusReviewTable";
 import { formatKstLongDate, getKstTimeKey } from "@/lib/format";
+import useFocusHandoff from "@/lib/useFocusHandoff";
 import type { SyllabusItemView } from "@/types/api";
 
 // 확정한 계획서 일정 목록 (F-14). 이 탭의 평소 모습이다.
@@ -31,6 +33,13 @@ export default function SyllabusConfirmedList({
   onReview,
   onUpload,
 }: SyllabusConfirmedListProps) {
+  // 넣고 나면 버튼이 "캘린더에 넣었어요"로 바뀌어 사라진다. 초점이 <body>로 빠지지 않게 그 글로 넘긴다
+  const handoff = useFocusHandoff();
+  const { cancel } = handoff;
+  // 넣지 못하고 끝나면(버튼이 남음) 기억을 지운다. 그대로 두면 나중에 다른 길로 "넣었어요"가 될 때 초점을 가져간다
+  useEffect(() => {
+    if (busyItem === null) cancel();
+  }, [busyItem, cancel]);
   return (
     <>
       {items.length === 0 && (
@@ -58,7 +67,13 @@ export default function SyllabusConfirmedList({
                   : "일정 미정"}
               </span>
               {added.includes(item.id) || item.calendar_registered ? (
-                <span className="text-[12px] font-semibold text-[#15803d]">캘린더에 넣었어요</span>
+                <span
+                  ref={handoff.target(item.id)}
+                  tabIndex={-1}
+                  className="text-[12px] font-semibold text-[#15803d] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]"
+                >
+                  캘린더에 넣었어요
+                </span>
               ) : (
                 item.starts_at &&
                 (calendarConnected ? (
@@ -66,7 +81,9 @@ export default function SyllabusConfirmedList({
                     type="button"
                     // 넣는 동안 disabled로 막으면 초점이 빠진다. aria-disabled로 알리고 누름은 무시한다
                     onClick={() => {
-                      if (busyItem === null) onAddToCalendar(item);
+                      if (busyItem !== null) return;
+                      handoff.mark(item.id);
+                      onAddToCalendar(item);
                     }}
                     aria-disabled={busyItem !== null || undefined}
                     aria-busy={busyItem === item.id || undefined}

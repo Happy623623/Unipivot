@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { disconnectCalendar, disconnectLms, errorMessage, nowIso, reconnectCalendar } from "@/api/client";
 import Button from "@/components/Button";
-import Modal, { ModalCancelButton } from "@/components/Modal";
+import Modal, { ModalCancelButton, ModalDescription } from "@/components/Modal";
 import { formatRelativeTime } from "@/lib/format";
 import type { LmsConnection, Me } from "@/types/api";
 
@@ -115,10 +115,10 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
         </div>
       </div>
       <Modal open={calendarOpen} title="Google Calendar 연결 해제" onClose={() => setCalendarOpen(false)} busy={calendarDisconnecting}>
-        <p className="text-[14px] leading-6 text-[#344054]">
+        <ModalDescription>
           연결을 해제하면 이 앱의 캘린더 권한을 거두고 저장한 토큰을 지워요. 이미 넣은 일정은 캘린더에 그대로 남고,
           새 일정은 다시 연결할 때까지 넣지 않아요.
-        </p>
+        </ModalDescription>
         {calendarDisconnectError && <p role="alert" className="mt-3 text-[13px] text-[#c53030]">{calendarDisconnectError}</p>}
         <div className="mt-6 flex justify-end gap-2">
           <ModalCancelButton />
@@ -128,9 +128,9 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
         </div>
       </Modal>
       <Modal open={disconnectOpen} title="LearningX 연결 해제" onClose={() => setDisconnectOpen(false)} busy={disconnecting}>
-        <p className="text-[14px] leading-6 text-[#344054]">
+        <ModalDescription>
           연결을 해제하면 토큰을 바로 지워요. LearningX 설정에서도 토큰을 삭제해 주세요.
-        </p>
+        </ModalDescription>
         {disconnectError && <p role="alert" className="mt-3 text-[13px] text-[#c53030]">{disconnectError}</p>}
         <div className="mt-6 flex justify-end gap-2">
           <ModalCancelButton />

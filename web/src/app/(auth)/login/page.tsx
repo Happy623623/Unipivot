@@ -3,6 +3,7 @@
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserSupabase } from "@/lib/supabase/client";
+import useLateAnnouncement from "@/lib/useLateAnnouncement";
 
 const useMocks = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 
@@ -39,6 +40,9 @@ function LoginCard() {
   const [error, setError] = useState<string | null>(
     errorCode ? (errorMessages[errorCode] ?? errorMessages.auth) : null,
   );
+  // 로그아웃·탈퇴·만료 안내는 이 화면을 열 때 이미 정해져 있다. 그대로 그리면 화면 읽기 프로그램이 읽지 않아서 늦춰 넣는다
+  const shownError = useLateAnnouncement(error);
+  const shownNotice = useLateAnnouncement(error ? null : notice);
 
   const signIn = async () => {
     setPending(true);
@@ -80,16 +84,17 @@ function LoginCard() {
       <p className="mt-3 text-[12px] leading-5 text-[#667085]">
         Google 계정으로 로그인해요. 캘린더는 마감일을 처음 등록할 때 따로 연결해요.
       </p>
-      {error && (
-        <p role="alert" className="mt-4 rounded-[10px] bg-[#fef2f2] p-3 text-[13px] text-[#c53030]">
-          {error}
-        </p>
-      )}
-      {!error && notice && (
-        <p role="status" className="mt-4 rounded-[10px] bg-[#ecfdf3] p-3 text-[13px] text-[#15803d]">
-          {notice}
-        </p>
-      )}
+      {/* 안내 자리는 늘 그려 두고(빈 live 영역) 글만 나중에 넣는다(lib/useLateAnnouncement.ts) */}
+      <div role="alert">
+        {shownError && (
+          <p className="mt-4 rounded-[10px] bg-[#fef2f2] p-3 text-[13px] text-[#c53030]">{shownError}</p>
+        )}
+      </div>
+      <div role="status">
+        {shownNotice && (
+          <p className="mt-4 rounded-[10px] bg-[#ecfdf3] p-3 text-[13px] text-[#15803d]">{shownNotice}</p>
+        )}
+      </div>
     </section>
   );
 }

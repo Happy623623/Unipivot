@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { errorMessage, updateIncomeConsent } from "@/api/client";
 import Button from "@/components/Button";
-import Modal, { ModalCancelButton } from "@/components/Modal";
+import Modal, { ModalCancelButton, ModalDescription } from "@/components/Modal";
 
 interface IncomeConsentSettingProps {
   consented: boolean; // GET /me의 income_info_consented
@@ -56,9 +56,9 @@ export default function IncomeConsentSetting({ consented, onChanged }: IncomeCon
       </div>
       {error && <p role="alert" className="mt-2 text-[12px] text-[#c53030]">{error}</p>}
       <Modal open={confirmOpen} title="소득·수급 정보 동의 철회" onClose={() => setConfirmOpen(false)} busy={saving}>
-        <p className="text-[14px] leading-6 text-[#344054]">
+        <ModalDescription>
           입력한 소득·수급 정보가 바로 지워져요. 소득 조건이 있는 공고는 다시 판정해요.
-        </p>
+        </ModalDescription>
         <div className="mt-6 flex justify-end gap-2">
           <ModalCancelButton />
           <Button busy={saving} onClick={() => change(false)}>동의 철회</Button>
