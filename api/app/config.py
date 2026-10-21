@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,8 +30,12 @@ class Settings(BaseSettings):
     extraction_max_tokens: int = 150_000
     youth_api_key: str = ""  # 온통청년 OPEN API 인증키(청년정책 수집, app/youth)
     # 포스터·계획서 업로드(F-13)와 공지 첨부(F-54) 파일을 두는 Supabase Storage. 버킷은 대시보드에서
-    # 비공개로 만든다. 키는 API Keys의 secret key(sb_secret_…)다. 이름은 예전 service_role 키 시절 그대로 둔다
-    supabase_service_role_key: str = ""
+    # 비공개로 만든다. 키는 API Keys의 secret key(sb_secret_…)다. 환경 변수 이름은 SUPABASE_SECRET_KEY이고, 예전 이름
+    # SUPABASE_SERVICE_ROLE_KEY도 그대로 읽는다(둘 다 있으면 새 이름). 예전 service_role JWT 키도 받는다
+    supabase_secret_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("supabase_secret_key", "supabase_service_role_key"),
+    )
     supabase_storage_bucket: str = "uploads"
     # 마감일 캘린더 등록(F-32). Supabase Google 로그인에 쓰는 OAuth 앱의 값과 같아야 한다.
     # 비워 두면 access token(55분)이 만료된 뒤 다시 연결해야 한다(갱신을 못 한다)

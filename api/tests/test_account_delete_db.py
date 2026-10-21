@@ -193,7 +193,7 @@ async def test_deletion_also_removes_a_file_recorded_while_it_ran() -> None:
     try:
         settings = Settings(
             supabase_url="https://abcdefghijklmnopqrst.supabase.co",
-            supabase_service_role_key="sb_secret_" + "Tq7" * 10 + "x",  # 시험용 값이다
+            supabase_secret_key="sb_secret_" + "Tq7" * 10 + "x",  # 시험용 값이다
         )
         deleted = await delete_account(
             me,

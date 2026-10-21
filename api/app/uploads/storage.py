@@ -9,7 +9,7 @@
   `code` 없는 404는 저장소의 답이 아닐 수 있어 지나가지 않는다)
 - 받기 주소: POST {base}/object/sign/{bucket}/{path} → 5분짜리 서명 경로(문서함 받기 F-44, 포스터 원본 W6)
 
-저장소 키(`SUPABASE_SERVICE_ROLE_KEY`)는 두 모양이 있고 싣는 곳이 다르다.
+저장소 키(`SUPABASE_SECRET_KEY`)는 두 모양이 있고 싣는 곳이 다르다.
 - **secret key `sb_secret_…`**: 2025년 11월 뒤 만든 프로젝트에는 이것만 있다. `apikey` 머리값에만
   싣는다. `Authorization: Bearer`로만 보내면 저장소가 JWT로 읽으려다 `Invalid Compact JWS`로 거절한다.
   10/19 실제 프로젝트에서 Bearer만 400, apikey만 200, 같은 값을 둘 다 실으면 200이었다. Supabase
@@ -44,9 +44,7 @@ LIST_MAX_PAGES = (
 )
 LIST_MAX_DEPTH = 4  # <user_id>/<종류>/<파일>이라 2단이면 되지만 여유를 둔다
 SIGNED_PREFIX = "/object/sign/"  # 저장소가 주는 서명 경로의 앞부분
-MISSING = (
-    "SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL이 있어야 포스터를 올리고 공지 첨부를 저장할 수 있어요"
-)
+MISSING = "SUPABASE_SECRET_KEY·SUPABASE_URL이 있어야 포스터를 올리고 공지 첨부를 저장할 수 있어요"
 WHERE = "Supabase 대시보드 Project Settings > API Keys의 Secret keys 값(sb_secret_…)을 넣으세요"
 
 
@@ -192,7 +190,7 @@ class SupabaseStorage:
     ) -> bytes:
         if not self.ready:
             raise StorageError(
-                "파일 저장소 설정이 비었거나 키 모양이 아니에요(SUPABASE_SERVICE_ROLE_KEY)."
+                "파일 저장소 설정이 비었거나 키 모양이 아니에요(SUPABASE_SECRET_KEY)."
             )
         headers = self._key_headers()
         if content_type:
@@ -286,7 +284,7 @@ def storage_settings_problem(settings: Settings) -> str | None:
     `SUPABASE_URL`(`…/rest/v1`)이면 저장소가 아닌 곳(API 게이트웨이)이 404로 답해서 역시 원인이 안 보인다.
     어떤 값이 와도 예외를 내지 않는다 — 여기서 터지면 서버가 뜨지 않는다.
     """
-    key = settings.supabase_service_role_key.strip()
+    key = settings.supabase_secret_key.strip()
     if not key or not settings.storage_base_url:
         return MISSING
     if problem := _url_problem(settings):
@@ -295,24 +293,24 @@ def storage_settings_problem(settings: Settings) -> str | None:
         return "SUPABASE_STORAGE_BUCKET이 비어 있어요. 대시보드 Storage에서 만든 비공개 버킷 이름을 넣으세요"
     if not KEY_SHAPE.fullmatch(key):
         return (
-            "SUPABASE_SERVICE_ROLE_KEY에 빈칸·따옴표·보이지 않는 글자처럼 키에 없는 글자가 섞여 있어요"
+            "SUPABASE_SECRET_KEY에 빈칸·따옴표·보이지 않는 글자처럼 키에 없는 글자가 섞여 있어요"
             "(값은 보여 주지 않음). 복사 버튼으로 다시 복사해 넣으세요"
         )
     if key.startswith("sb_secret_"):
         if SECRET_SHAPE.fullmatch(key):
             return None
-        return f"SUPABASE_SERVICE_ROLE_KEY의 secret key가 너무 짧아요(잘려서 복사된 것 같아요). {WHERE}"
+        return f"SUPABASE_SECRET_KEY의 secret key가 너무 짧아요(잘려서 복사된 것 같아요). {WHERE}"
     if key.startswith("sb_publishable_"):
         return (
-            "SUPABASE_SERVICE_ROLE_KEY에 publishable key가 들어 있어요. 권한이 없어 파일을 못"
+            "SUPABASE_SECRET_KEY에 publishable key가 들어 있어요. 권한이 없어 파일을 못"
             f" 올려요. {WHERE}"
         )
     try:
         claims = jwt.decode(key, options={"verify_signature": False})
     except (jwt.PyJWTError, ValueError, RecursionError):
-        return f"SUPABASE_SERVICE_ROLE_KEY가 키 모양이 아니에요(값은 보여 주지 않음). {WHERE}"
+        return f"SUPABASE_SECRET_KEY가 키 모양이 아니에요(값은 보여 주지 않음). {WHERE}"
     if claims.get("role") != "service_role":
-        return f"SUPABASE_SERVICE_ROLE_KEY가 service_role 키가 아니에요(anon 키 같은 것). {WHERE}"
+        return f"SUPABASE_SECRET_KEY가 service_role 키가 아니에요(anon 키 같은 것). {WHERE}"
     return None
 
 
@@ -360,7 +358,7 @@ def get_storage(settings: Annotated[Settings, Depends(get_settings)]) -> Supabas
     return SupabaseStorage(
         base_url=settings.storage_base_url,
         bucket=settings.supabase_storage_bucket,
-        service_key=settings.supabase_service_role_key.strip(),
+        service_key=settings.supabase_secret_key.strip(),
     )
 
 

@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
-  "pydantic-settings>=2.4",
+  "pydantic-settings>=2.14",  # 2.14 아래는 AliasChoices(설정 이름 두 개)의 우선순위가 틀린다
   "psycopg[binary,pool]>=3.2",
   "pyjwt[crypto]>=2.9",
   "cryptography>=43",

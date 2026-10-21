@@ -51,7 +51,7 @@
 | `TOKEN_ENCRYPTION_KEY` | Google·LMS 토큰 암호화 |
 | `GOOGLE_CLOUD_PROJECT` | Gemini(요건 추출·공지 분류). 없으면 모델이 필요한 일만 실패한다 |
 | `GOOGLE_OAUTH_CLIENT_ID` · `GOOGLE_OAUTH_CLIENT_SECRET` | Google 캘린더(증분 승인) |
-| `SUPABASE_SERVICE_ROLE_KEY` · 버킷 | 포스터·공지 첨부 파일 저장. 값은 API Keys의 Secret keys(`sb_secret_…`) |
+| `SUPABASE_SECRET_KEY` · 버킷 | 포스터·공지 첨부 파일 저장. 값은 API Keys의 Secret keys(`sb_secret_…`). 예전 이름 `SUPABASE_SERVICE_ROLE_KEY`도 읽는다 |
 | `YOUTH_API_KEY` | 온통청년 수집 |
 | `VAPID_PRIVATE_KEY` · `VAPID_SUBJECT` | 웹 푸시(`uv run python -m app.push.keys`로 만든다) |
 | `INTERNAL_API_KEY` | `/internal/*` 서비스 키 |

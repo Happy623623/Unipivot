@@ -109,9 +109,7 @@ def make_client(settings: Settings, repo: FakeDocuments, storage: FakeStorage) -
 @pytest.fixture
 def settings(settings: Settings) -> Settings:
     """저장소 설정이 맞는 서버. 설정에 고칠 점이 있으면 "없는 파일"을 믿지 않는다(아래 시험)."""
-    return settings.model_copy(
-        update={"supabase_url": PROJECT_URL, "supabase_service_role_key": SECRET}
-    )
+    return settings.model_copy(update={"supabase_url": PROJECT_URL, "supabase_secret_key": SECRET})
 
 
 @pytest.fixture
@@ -256,7 +254,7 @@ def test_a_missing_answer_is_not_trusted_when_the_storage_key_is_wrong(
     settings: Settings, repo: FakeDocuments, storage: FakeStorage
 ) -> None:
     """publishable key에도 저장소는 `NoSuchKey`로 답한다. 그때 404를 주면 설정 문제가 "없는 파일"로 숨는다."""
-    wrong = settings.model_copy(update={"supabase_service_role_key": PUBLISHABLE})
+    wrong = settings.model_copy(update={"supabase_secret_key": PUBLISHABLE})
     repo.files[FILE_ID] = DocumentFile(PATH, "a.pdf", "lms_attachment")
     storage.error = StorageMissing(MISSING_OBJECT)
     with make_client(wrong, repo, storage) as test_client:

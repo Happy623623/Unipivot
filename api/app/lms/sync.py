@@ -805,7 +805,7 @@ def lms_sync_service_for(
         encryption_key=settings.token_encryption_key,
         runner=runner,
         announcer=announcer,
-        # 저장소 설정(SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL)이 없으면 공지 첨부를 받지 않는다(F-54)
+        # 저장소 설정(SUPABASE_SECRET_KEY·SUPABASE_URL)이 없으면 공지 첨부를 받지 않는다(F-54)
         storage=storage if storage.ready else None,
     )
 

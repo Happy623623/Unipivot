@@ -391,12 +391,12 @@ async def test_empty_settings_fail_before_any_request() -> None:
         with pytest.raises(StorageError):
             await storage(**empty).upload(PATH, b"x", "image/jpeg")
     assert not route.called
-    blank = Settings(supabase_url=PROJECT_URL, supabase_service_role_key=" \n")
+    blank = Settings(supabase_url=PROJECT_URL, supabase_secret_key=" \n")
     assert not get_storage(blank).ready  # 빈칸뿐인 키는 없는 키다(동기화가 첨부를 건너뛴다)
 
 
 def test_the_base_url_comes_from_supabase_url_unless_a_test_one_is_set() -> None:
-    settings = Settings(supabase_url="https://ref.supabase.co", supabase_service_role_key=KEY)
+    settings = Settings(supabase_url="https://ref.supabase.co", supabase_secret_key=KEY)
     assert get_storage(settings).base_url == "https://ref.supabase.co/storage/v1"
     assert get_storage(settings).bucket == "uploads"
     settings = settings.model_copy(update={"supabase_storage_base": BASE + "/"})
@@ -406,7 +406,7 @@ def test_the_base_url_comes_from_supabase_url_unless_a_test_one_is_set() -> None
 
 def test_spaces_around_the_key_are_dropped() -> None:
     """따옴표 안에 빈칸이 붙으면 머리값이 깨져 요청이 나가지도 못한다."""
-    settings = Settings(supabase_url=PROJECT_URL, supabase_service_role_key=f" {SECRET}\n")
+    settings = Settings(supabase_url=PROJECT_URL, supabase_secret_key=f" {SECRET}\n")
     assert get_storage(settings).service_key == SECRET
 
 
@@ -454,7 +454,7 @@ def test_spaces_around_the_key_are_dropped() -> None:
     ],
 )
 def test_storage_settings_problem(key: str, url: str, problem: str | None) -> None:
-    found = storage_settings_problem(Settings(supabase_url=url, supabase_service_role_key=key))
+    found = storage_settings_problem(Settings(supabase_url=url, supabase_secret_key=key))
     if problem is None:
         assert found is None
         return
@@ -494,7 +494,7 @@ def test_a_separate_storage_base_is_checked_by_shape_but_may_have_a_path(
     """시험·개발용 저장소 주소(SUPABASE_STORAGE_BASE)를 넣었으면 그것을 본다. SUPABASE_URL은 안 본다."""
     settings = Settings(
         supabase_url=f"{PROJECT_URL}/rest/v1",  # 틀렸지만 저장소 주소를 따로 넣었으니 상관없다
-        supabase_service_role_key=SECRET,
+        supabase_secret_key=SECRET,
         supabase_storage_base=base,
     )
     found = storage_settings_problem(settings)
@@ -508,7 +508,7 @@ def test_a_separate_storage_base_is_checked_by_shape_but_may_have_a_path(
 
 def test_an_empty_bucket_is_named_at_startup() -> None:
     settings = Settings(
-        supabase_url=PROJECT_URL, supabase_service_role_key=SECRET, supabase_storage_bucket=" "
+        supabase_url=PROJECT_URL, supabase_secret_key=SECRET, supabase_storage_bucket=" "
     )
     assert storage_settings_problem(settings) == (
         "SUPABASE_STORAGE_BUCKET이 비어 있어요. 대시보드 Storage에서 만든 비공개 버킷 이름을 넣으세요"
@@ -521,7 +521,7 @@ def test_an_empty_bucket_is_named_at_startup() -> None:
         (
             PUBLISHABLE,
             PROJECT_URL,
-            "파일 저장소 설정 확인: SUPABASE_SERVICE_ROLE_KEY에 publishable key가 들어 있어요",
+            "파일 저장소 설정 확인: SUPABASE_SECRET_KEY에 publishable key가 들어 있어요",
         ),
         ("", PROJECT_URL, f"파일 저장소 설정 확인: {MISSING}"),
         (SECRET, PROJECT_URL, None),
@@ -540,7 +540,7 @@ def test_startup_says_what_to_fix_in_the_storage_settings(
         database_url="",
         supabase_url=url,
         supabase_jwt_secret="legacy-secret-legacy-secret-legacy-secret",
-        supabase_service_role_key=key,
+        supabase_secret_key=key,
     )
     with caplog.at_level(logging.WARNING, logger="app"), TestClient(create_app(settings)):
         pass  # 시작(lifespan)만 한다

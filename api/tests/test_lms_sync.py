@@ -1754,7 +1754,7 @@ def test_without_a_file_store_no_attachment_is_fetched(
     attachment_files: FakeFiles,
     log: FakeLogConnection,
 ) -> None:
-    """저장소 설정(SUPABASE_SERVICE_ROLE_KEY)이 없는 서버는 첨부를 받지 않는다. 동기화는 그대로다."""
+    """저장소 설정(SUPABASE_SECRET_KEY)이 없는 서버는 첨부를 받지 않는다. 동기화는 그대로다."""
     route = _guide_route(canvas)
     response = client.post(SYNC)
     assert response.status_code == 202
@@ -2071,7 +2071,7 @@ def test_the_service_gets_a_file_store_only_when_it_is_set(settings: Settings) -
     bare = lms_sync_service_for(FakeState(), settings=settings, llm=None, runner=runner)
     assert bare.storage is None
     configured = settings.model_copy(
-        update={"supabase_url": "https://ref.supabase.co", "supabase_service_role_key": "k"}
+        update={"supabase_url": "https://ref.supabase.co", "supabase_secret_key": "k"}
     )
     ready = lms_sync_service_for(FakeState(), settings=configured, llm=None, runner=runner)
     assert ready.storage is not None and ready.storage.ready

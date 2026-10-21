@@ -132,7 +132,7 @@ class World:
             update={
                 "google_revoke_url": REVOKE_URL,
                 "supabase_url": url,
-                "supabase_service_role_key": key,
+                "supabase_secret_key": key,
                 "supabase_storage_base": storage_base,
             }
         )
@@ -222,7 +222,7 @@ def test_a_file_that_cannot_be_removed_stops_everything(
         (PUBLISHABLE, "publishable key가 들어 있어요"),
         (ANON, "service_role 키가 아니에요"),
         (SECRET[:16], "너무 짧아요"),  # 가려진 화면 글자만 옮겨 적었다
-        ("", "SUPABASE_SERVICE_ROLE_KEY·SUPABASE_URL이 있어야"),
+        ("", "SUPABASE_SECRET_KEY·SUPABASE_URL이 있어야"),
     ],
     ids=["publishable", "anon", "short", "empty"],
 )
