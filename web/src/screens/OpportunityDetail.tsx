@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { errorMessage, getOpportunity, setOpportunityMark } from "@/api/client";
 import Button from "@/components/Button";
 import AiProcessPanel from "@/components/AiProcessPanel";
+import OpportunityAlternatives from "@/components/OpportunityAlternatives";
 import Header from "@/components/Header";
 import OpportunityConditions from "@/components/OpportunityConditions";
 import OpportunityDocuments from "@/components/OpportunityDocuments";
@@ -69,6 +70,7 @@ export default function OpportunityDetail({
   const [marking, setMarking] = useState<string | null>(null); // 표시를 저장하는 공고 id
   const [toast, showToast] = useToast();
   const judgeHeading = useRef<HTMLHeadingElement>(null);
+  const alternativesHeading = useRef<HTMLHeadingElement>(null); // 대체 공고 제목. 초점을 주면 그 자리로 스크롤된다
 
   useEffect(() => {
     setOverride(null);
@@ -163,6 +165,7 @@ export default function OpportunityDetail({
         originalHref={originalHref}
         onOpenPoster={openPoster}
         onDetailChange={setOverride}
+        onShowAlternatives={() => alternativesHeading.current?.focus()}
       />
       <section className="grid grid-cols-[1.3fr_1fr] gap-5 max-[900px]:grid-cols-1">
         <div className="min-h-[400px] rounded-2xl border border-[#e5e7eb] bg-white p-[22px]">
@@ -173,6 +176,14 @@ export default function OpportunityDetail({
         </div>
         <OpportunityDocuments detail={detail} onChange={setOverride} onError={showToast} />
       </section>
+      {detail.eligibility.status === "ineligible" && (
+        <OpportunityAlternatives
+          opportunityId={detail.id}
+          judgedKey={`${detail.eligibility.requirements_version}:${detail.eligibility.reason_text ?? ""}`}
+          headingRef={alternativesHeading}
+          navigate={navigate}
+        />
+      )}
       <AiProcessPanel detail={detail} />
       <ProfileInputModal
         open={profileOpen && detail.eligibility.missing_fields.length > 0}

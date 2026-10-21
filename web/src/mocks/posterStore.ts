@@ -52,7 +52,7 @@ export function registerStoredPoster(
       summary: "모든 조건 충족",
       missing_fields: [],
     },
-    recommend_reason: "직접 등록한 포스터 공고예요.",
+    recommend_reason: null, // 포스터 초안은 판정 전이라 추천 사유가 없다
     needs_review: draft.low_confidence_fields.length > 0,
     uploaded_by_me: true,
     course_name: null,

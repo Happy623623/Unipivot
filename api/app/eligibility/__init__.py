@@ -12,6 +12,7 @@ from app.eligibility.describe import (
     condition_text,
     label,
     reason_text,
+    recommend_reason,
     user_value_text,
 )
 from app.eligibility.engine import (
@@ -59,6 +60,7 @@ __all__ = [
     "evaluate_condition",
     "label",
     "reason_text",
+    "recommend_reason",
     "requirement_problem",
     "resolve_basis_date",
     "to_kst_date",

@@ -19,6 +19,7 @@ import {
   updateStoredManualTask,
 } from "@/mocks/store";
 import type {
+  AlternativesResponse,
   CalendarEvent,
   Category,
   FeedResponse,
@@ -100,6 +101,14 @@ export async function getOpportunity(id: string): Promise<OpportunityDetail> {
     }
     throw error;
   }
+}
+
+// GET /opportunities/{id}/alternatives (F-23). 지원하기 어려운 공고면 같은 카테고리의 지원 가능 공고를
+// 서류 수가 비슷한 순으로 최대 3개 준다. 지원 어려움이 아니면 빈 목록이다
+export async function getAlternatives(id: string): Promise<OpportunityItem[]> {
+  if (USE_MOCKS) return mock.getAlternatives(id);
+  const page = await apiFetch<AlternativesResponse>(`/opportunities/${encodeURIComponent(id)}/alternatives`);
+  return page.items;
 }
 
 // PUT·DELETE /opportunities/{id}/mark (F-45). 관심·관심 없음 표시를 바꾸고, null이면 지운다

@@ -52,6 +52,12 @@ class OpportunityItem(BaseModel):
     my_mark: OpportunityMark | None = None  # 내 표시(F-45). 없으면 null
 
 
+class AlternativesResponse(BaseModel):
+    """GET /opportunities/{id}/alternatives (F-23). 피드 아이템과 같은 모양, 최대 3개."""
+
+    items: list[OpportunityItem]
+
+
 class FeedCounts(BaseModel):
     """홈 요약 카드. 카테고리·출처·판정 필터와 상관없이 활성 공고 전체 기준이다. 관심 없음 공고는 세지 않는다."""
 

@@ -28,6 +28,7 @@ interface OpportunityPreparationProps {
   originalHref: string | null; // 공고 원문 주소(http·https만)
   onOpenPoster: (() => void) | null; // 포스터 원본 이미지가 있으면 창으로 연다
   onDetailChange: (detail: OpportunityDetail) => void;
+  onShowAlternatives: () => void; // 지원 어려움: 아래 대체 공고(F-23)로 초점을 옮긴다
 }
 
 const FAILED = "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요.";
@@ -57,6 +58,7 @@ export default function OpportunityPreparation({
   originalHref,
   onOpenPoster,
   onDetailChange,
+  onShowAlternatives,
 }: OpportunityPreparationProps) {
   const [steps, setSteps] = useState<ProcessStep[] | null>(null);
   const [result, setResult] = useState<PrepareResult | null>(null);
@@ -205,9 +207,7 @@ export default function OpportunityPreparation({
     }
     return (
       <div className="flex gap-2">
-        <span title="대체 공고 추천은 준비 중이에요">
-          <Button disabled>대체 공고 보기</Button>
-        </span>
+        <Button onClick={onShowAlternatives}>대체 공고 보기</Button>
         <Button secondary onClick={() => setConfirmOpen(true)} busy={running}>
           그래도 준비하기
         </Button>

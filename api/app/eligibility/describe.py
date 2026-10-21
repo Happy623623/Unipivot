@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from decimal import Decimal
 from typing import Any
 
@@ -26,6 +26,52 @@ from app.eligibility.models import (
     index_departments,
 )
 from app.eligibility.regions import normalize_sido, normalize_sigungu
+
+RECOMMEND_NAMES = 3  # 추천 사유에 이름을 쓰는 조건 수. 넘으면 "외 N개"
+# 추천 사유에 이름을 쓰는 항목. 소득·수급(민감 정보 — 홈 카드에 드러내지 않는다), 유학생 여부("외국인 유학생
+# 조건이 맞아요"가 유학생이라는 뜻으로 읽힌다), 학위과정(모든 과정을 받는 조건도 충족이라 뜻이 없다),
+# 기타 조건(이름이 없다)은 쓰지 않는다
+RECOMMEND_FIELDS = frozenset(
+    {
+        "department",
+        "college",
+        "field_group",
+        "grade",
+        "enrollment_status",
+        "semesters_completed",
+        "credits_total",
+        "credits_last_semester",
+        "gpa_total",
+        "gpa_last_semester",
+        "age",
+        "region",
+        "job_status",
+    }
+)
+
+
+def recommend_reason(status: str, passed: Sequence[str]) -> str | None:
+    """피드 카드의 추천 사유 한 줄(F-24). 내 정보로 맞는다고 판정한 조건의 이름을 원문 순서로 쓴다.
+
+    passed는 충족한 조건의 항목이다(학과 조건은 비교 단위 department·college·field_group).
+    지원 어려움이거나 이름을 쓸 조건이 없으면(조건 없는 공고, RECOMMEND_FIELDS 밖의 조건만 맞음) None이다.
+    판정과 함께 저장하지 않고 읽을 때 만드는 문구라 ENGINE_VERSION과 상관없다.
+    """
+    if status == "ineligible":
+        return None
+    names = [
+        DEPARTMENT_LEVELS.get(key) or FIELD_LABELS.get(key)
+        for key in passed
+        if key in RECOMMEND_FIELDS
+    ]
+    unique = list(dict.fromkeys(name for name in names if name))
+    if not unique:
+        return None
+    shown = "·".join(unique[:RECOMMEND_NAMES])
+    if len(unique) > RECOMMEND_NAMES:
+        shown += f" 외 {len(unique) - RECOMMEND_NAMES}개"
+    # 확인할 조건이 남은 공고(정보 필요·원문 확인)는 "맞는 것도 있다"는 뜻으로 쓴다
+    return f"{shown} 조건이 맞아요" if status == "eligible" else f"{shown} 조건은 맞아요"
 
 
 def label(req: Requirement) -> str:

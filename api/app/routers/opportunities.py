@@ -19,6 +19,7 @@ from app.schemas.opportunities import (
     CATEGORIES,
     ELIGIBILITY_STATUSES,
     SOURCE_TYPES,
+    AlternativesResponse,
     FeedResponse,
     MarkRequest,
     MarkResult,
@@ -125,6 +126,23 @@ async def read_opportunity(
     if detail is None:
         raise ApiError(404, "NOT_FOUND", "공고를 찾을 수 없어요.")
     return detail
+
+
+@router.get("/{opportunity_id}/alternatives", response_model=AlternativesResponse)
+async def read_alternatives(
+    opportunity_id: UUID, user: CurrentUserDep, repo: OpportunityRepoDep, now: NowDep
+) -> AlternativesResponse:
+    """대체 공고(F-23). 내가 지원하기 어려운 공고면 같은 카테고리의 지원 가능 공고를 최대 3개 준다.
+
+    필수 서류 수가 비슷한 순, 같으면 마감이 이른 순이다. 지원 어려움이 아니면 빈 목록이다.
+    상세를 열 수 없는 공고는 404 NOT_FOUND다. 후보(피드의 활성 공고)의 낡은 판정을 먼저 새로 하고,
+    기준 공고는 상세처럼 그 자리에서 판정한다(마감·숨김 공고일 수 있다).
+    """
+    await repo.refresh_judgments(user.id, now=now, display_name=user.name)
+    items = await repo.alternatives(user.id, str(opportunity_id), now=now)
+    if items is None:
+        raise ApiError(404, "NOT_FOUND", "공고를 찾을 수 없어요.")
+    return AlternativesResponse(items=items)
 
 
 @router.get("/{opportunity_id}/poster-url", response_model=PosterUrl)

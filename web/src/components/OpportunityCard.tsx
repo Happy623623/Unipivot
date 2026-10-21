@@ -78,6 +78,8 @@ export default function OpportunityCard({ item, pending, found = false, navigate
           <b>{statusMarks[displayStatus]}</b>
           <span className="min-w-0 truncate">{item.eligibility.summary}</span>
         </div>
+        {/* 추천 사유(F-24): 내 정보로 맞는다고 판정한 조건. 지원 어려움·맞는 조건이 없으면 서버가 비운다 */}
+        {item.recommend_reason && <p className="mt-2 text-[12px] font-medium text-[#344054]">추천 이유 · {item.recommend_reason}</p>}
         {/* 오른쪽 아래 관심·숨기기 자리를 비워 둔다. 좁은 화면에서는 글이 줄을 바꾼다 */}
         <p className="mt-3 pr-[148px] text-[12px] leading-[26px] text-[#667085]">
           {getSourceLabel(item.source_type)} · {sourceAction}

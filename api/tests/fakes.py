@@ -171,6 +171,10 @@ class FakeOpportunityRepository:
         self.details: dict[str, OpportunityDetail] = {}  # 공고 id → 상세. 없으면 404
         self.detail_calls: list[tuple[str, str, str | None]] = []  # (user_id, 공고 id, 이름)
         self.openable: set[str] = set()  # 표시를 붙일 수 있는 공고 id. 없으면 404
+        # 대체 공고(F-23): 기준 공고 id → 목록. 없으면 404
+        self.alternative_items: dict[str, list[OpportunityItem]] = {}
+        # (user_id, 공고 id, 그때까지 다시 판정한 횟수) — 다시 판정한 뒤에 고르는지 본다
+        self.alternative_calls: list[tuple[str, str, int]] = []
         self.marks: dict[tuple[str, str], tuple[str, datetime]] = {}  # (user, 공고) → (표시, 시각)
         self.mark_calls: list[
             tuple[str, str, str | None, str | None]
@@ -203,6 +207,13 @@ class FakeOpportunityRepository:
 
     async def feed_counts(self, user_id: str, *, now: datetime) -> FeedCounts:
         return self.counts
+
+    async def alternatives(
+        self, user_id: str, opportunity_id: str, *, now: datetime
+    ) -> list[OpportunityItem] | None:
+        self.alternative_calls.append((user_id, opportunity_id, len(self.refreshes)))
+        found = self.alternative_items.get(opportunity_id)
+        return None if found is None else list(found)
 
     async def detail(
         self,

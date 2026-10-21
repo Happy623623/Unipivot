@@ -56,6 +56,7 @@ from app.eligibility import (
     check_eligibility,
     clause_rows,
     condition_rows,
+    recommend_reason,
     resolve_basis_date,
     to_kst_date,
 )
@@ -306,6 +307,22 @@ def _stale_sql(scope: str) -> str:
     )
 
 
+# 추천 사유(F-24)에 쓸 충족 조건의 항목. 학과 조건은 비교 단위(department·college·field_group)로 준다.
+# 같은 항목은 한 번, 원문 순서(조항 번호 → 넣은 순서 → id). 지금 요건으로 낸 판정일 때만 읽는다(다시 추출하면
+# 요건 id가 바뀐다). condition_results가 배열이 아니면 비운다(피드 전체가 깨지지 않게)
+_PASSED = (
+    "case when " + _JUDGED + " and e.requirements_version = o.requirements_version"
+    " and jsonb_typeof(e.condition_results) = 'array'"
+    " then array(select coalesce(case when r.field::text = 'department'"
+    " then r.basis end, r.field::text) as key"
+    " from jsonb_array_elements(e.condition_results) cr join requirements r"
+    " on r.opportunity_id = o.id and r.id::text = cr->>'requirement_id'"
+    " where cr->>'outcome' = 'pass' group by key"
+    " order by min(r.clause_no), min(r.created_at), min(r.id::text))"
+    " else '{}' end"
+)
+
+
 def _feed_sql(where: str, outer: str, order: str) -> str:
     return (
         "with feed as (select o.id, o.title, o.organizer, o.category::text as category,"
@@ -320,10 +337,38 @@ def _feed_sql(where: str, outer: str, order: str) -> str:
         " case when " + _JUDGED + " then e.status::text else 'undetermined' end as eff_status,"
         " case when " + _JUDGED + " then coalesce(e.missing_fields, '{}') else '{}' end"
         " as eff_missing,"
-        " e.reason_text, m.mark as my_mark"
+        " e.reason_text, m.mark as my_mark, " + _PASSED + " as passed_fields"
         " from opportunities o" + COURSE_JOIN + _RESULT_JOIN + _MARK_JOIN + " where" + where + ")"
         " select * from feed" + outer + " order by " + order + " limit %(limit)s"
     )
+
+
+# 대체 공고(F-23)의 서류 수: 상세처럼 필수 여부가 비어 있으면 필수로 센다
+_REQUIRED_DOCUMENTS = (
+    "(select count(*) from opportunity_documents d where d.opportunity_id = {} and"
+    " coalesce(d.is_required, true))"
+)
+# 기준 공고(상세를 열 수 있어야 한다)와 그 자리에서 판정할 요건. 상세처럼 그 자리에서 판정한다 — 준비한 뒤
+# 숨김·병합된 공고나 끝난 과목의 공지는 피드의 다시 판정에 들어가지 않는다
+_ALTERNATIVE_TARGET = (
+    "select o.id, o.category::text as category, o.requirements_version, o.eligibility_basis_date,"
+    " o.deadline_at, o.apply_start_at, o.source_type::text as source_type, o.needs_review,"
+    " o.extraction_run_id, "
+    + _REQUIRED_DOCUMENTS.format("o.id")
+    + " as documents, "
+    + _REQUIREMENTS_JSON
+    + " as requirements from opportunities o"
+    + COURSE_JOIN
+    + _PREP_JOIN
+    + " where o.id = %(oid)s and"
+    + _OPENABLE
+)
+ALTERNATIVES_LIMIT = 3
+# 필수 서류 수가 기준 공고와 비슷한 순(사용자 선택, 10/21) → 마감이 이른 순 → id
+_ALTERNATIVE_ORDER = (
+    "abs(" + _REQUIRED_DOCUMENTS.format("feed.id") + " - %(documents)s),"
+    " deadline_at asc nulls last, id asc"
+)
 
 
 @dataclass(frozen=True)
@@ -632,6 +677,47 @@ class OpportunityRepository:
             next_cursor = encode_cursor(cursor)
         return FeedPage(items=[_item(row, today) for row in page], next_cursor=next_cursor)
 
+    async def alternatives(
+        self, user_id: str, opportunity_id: str, *, now: datetime
+    ) -> list[OpportunityItem] | None:
+        """대체 공고(F-23). 기준 공고가 지원 어려움이면 같은 카테고리의 지원 가능 공고를 최대 3개 준다.
+
+        기준 공고를 열 수 없으면 None(404). 기준 공고는 상세처럼 그 자리에서 판정해 저장한다(피드 잠금 아래).
+        지원 어려움이 아니면 빈 목록이다. 후보는 피드에 나오는 공고(활성·공개 범위 안·관심 없음 아님)이고
+        필수 서류 수가 비슷한 순, 같으면 마감이 이른 순이다. 후보의 판정은 부르는 쪽이 refresh_judgments로
+        먼저 새로 한다.
+        """
+        profile_row = await self._lock_profile(user_id, None)
+        params: dict[str, Any] = {"uid": user_id, "oid": opportunity_id}
+        target = await (await self.conn.execute(_ALTERNATIVE_TARGET, params)).fetchone()
+        if target is None:
+            return None
+        if target["extraction_run_id"] is None:  # 요건을 못 읽은 공고는 판정하지 않는다(원문 확인)
+            return []
+        today = now.astimezone(KST).date()
+        judged = _judge(target, Profile.from_row(profile_row), await self._departments(), today)
+        await self._upsert(user_id, [_payload(target, judged.stored)], now)
+        if judged.stored["status"] != "ineligible":
+            return []
+        params.update(
+            now=now,
+            new_since=now - timedelta(days=NEW_DAYS),
+            limit=ALTERNATIVES_LIMIT,
+            category=target["category"],
+            documents=target["documents"],
+        )
+        where = [
+            _ACTIVE,
+            VISIBLE,
+            _SHOWN,
+            _NOT_DISMISSED,
+            " o.category::text = %(category)s",
+            " o.id <> %(oid)s",
+        ]
+        sql = _feed_sql(" and".join(where), " where eff_status = 'eligible'", _ALTERNATIVE_ORDER)
+        rows = await (await self.conn.execute(sql, params)).fetchall()
+        return [_item(row, today) for row in rows]
+
     async def feed_counts(self, user_id: str, *, now: datetime) -> FeedCounts:
         """홈 요약 카드: 필터와 상관없이 지금 보이는 활성 공고 전체 기준."""
         row = await (
@@ -713,6 +799,7 @@ def _item(row: dict[str, Any], today: date) -> OpportunityItem:
             summary=(row["reason_text"] or "") if row["judged"] else UNJUDGED_SUMMARY,
             missing_fields=missing,
         ),
+        recommend_reason=recommend_reason(status, row["passed_fields"] or ()),
         needs_review=bool(row["needs_review"]),
         uploaded_by_me=row["uploaded_by_me"],
         course_name=_short_course(row["course_name"]),

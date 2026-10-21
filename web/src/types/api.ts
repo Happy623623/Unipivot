@@ -140,6 +140,10 @@ export interface FeedCounts {
   ineligible: number; deadline_soon: number;
 }
 export interface FeedResponse { items: OpportunityItem[]; next_cursor: string | null; counts: FeedCounts; }
+// GET /opportunities/{id}/alternatives (F-23): 피드 아이템 모양, 최대 3개
+export interface AlternativesResponse {
+  items: OpportunityItem[];
+}
 
 // GET /opportunities/{id}
 export type Outcome = "pass" | "fail" | "unknown";

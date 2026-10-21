@@ -42,6 +42,7 @@ import type {
   Me,
   NotificationList,
   OpportunityDetail,
+  OpportunityItem,
   OpportunityMark,
   Profile,
   PushSubscriptionRequest,
@@ -187,6 +188,18 @@ export function getOpportunity(id: string): Promise<OpportunityDetail> {
   const detail = rejudgeStoredOpportunity(id, getStoredProfile());
   if (!detail) return Promise.reject(new Error("공고를 찾을 수 없어요."));
   return respond(detail);
+}
+
+// 대체 공고(F-23). 목데이터에는 서류 수가 없어 마감이 이른 순으로만 고른다
+export function getAlternatives(id: string): Promise<OpportunityItem[]> {
+  const target = rejudgeStoredOpportunity(id, getStoredProfile());
+  if (!target) return rejectAfter(new ApiError("NOT_FOUND", "공고를 찾을 수 없어요.", 404));
+  if (target.eligibility.status !== "ineligible") return respond([]);
+  const items = opportunities
+    .filter((item) => item.id !== id && item.category === target.category && item.eligibility.status === "eligible")
+    .filter((item) => item.my_mark !== "not_interested" && (item.d_day === null || item.d_day >= 0))
+    .sort((a, b) => (a.d_day ?? Number.MAX_SAFE_INTEGER) - (b.d_day ?? Number.MAX_SAFE_INTEGER));
+  return respond(items.slice(0, 3));
 }
 
 // 실제 API처럼 없는 공고에 표시를 붙이면 404 NOT_FOUND이고, 지우기는 늘 된다

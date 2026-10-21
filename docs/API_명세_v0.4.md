@@ -100,6 +100,8 @@
 >
 > v0.4 보강(10/18, 웹 푸시 2부): 브라우저 쪽 규칙(서비스 워커 `/sw.js`, 권한을 묻는 때, 기기마다 하는 구독, 앱을 열 때 되올림)을 10장에 적었다. 공개 키(`NEXT_PUBLIC_VAPID_PUBLIC_KEY`)가 없으면 web은 켜는 자리를 숨긴다
 >
+> v0.4 보강(10/21, F-23·F-24): 피드 아이템의 `recommend_reason`을 채운다(맞는 조건 이름 한 줄). `GET /opportunities/{id}/alternatives`의 "비슷한 난이도"를 필수 서류 수로 정하고 기준 공고·후보·오류를 적었다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -443,7 +445,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
         "summary": "직전학기 이수학점을 입력하면 판정할 수 있어요",
         "missing_fields": ["credits_last_semester"]
       },
-      "recommend_reason": "인공지능학과 · 성적장학",
+      "recommend_reason": "학과·직전학기 평점 조건이 맞아요",
       "needs_review": false,
       "uploaded_by_me": false,
       "course_name": null,
@@ -476,7 +478,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 ```
 
 - `uploaded_by_me`: 내가 올린 포스터인지. 포스터 카드는 주최 옆에 "내가 올린 포스터"를 붙이고, 상세는 부제에 쓴다. 업로더 이름은 표시하지 않는다
-- `recommend_reason`(F-24, P1)은 MVP 초기엔 `null`이어도 된다
+- `recommend_reason`(F-24): 내 정보로 맞는다고 판정한 조건의 이름(원문 순서, 셋까지, 넘으면 "외 N개"). 지원 가능은 "… 조건이 맞아요", 정보 필요·원문 확인은 "… 조건은 맞아요", 지원 어려움·이름을 쓸 조건이 없으면 `null`이다. 학과 조건은 비교 단위(학과·단과대학·계열)로 쓰고, 소득·수급·유학생 여부·학위과정·기타 조건은 쓰지 않는다. 저장하지 않고 읽을 때 만든다
 - `eligibility.display_status`: `eligible` \| `missing_info` \| `needs_review` \| `ineligible`. 화면 라벨(지원 가능·정보 필요·원문 확인 필요·지원 어려움)에 1:1로 대응한다
 - `easy_summary`는 카드 설명 한 줄, `is_new`는 등록 7일 이내이고 아직 상세를 열지 않은 지원 가능 공고다
 - `my_mark`(F-45): 내 표시. `interested`(관심) \| `not_interested`(관심 없음, 화면 이름 "숨기기") \| null(표시 없음)
@@ -627,7 +629,12 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 
 ### `GET /opportunities/{id}/alternatives` (P1)
 
-부적격 공고에 대해 같은 카테고리·비슷한 난이도의 **적격** 공고 최대 3개. 응답은 피드 아이템과 같은 형식의 `items` 배열.
+부적격 공고에 대해 같은 카테고리의 **적격** 공고 최대 3개. 응답은 피드 아이템과 같은 형식의 `items` 배열(`{ "items": [...] }`).
+
+- 비슷한 난이도 = **필수 서류 수**가 기준 공고와 비슷한 순(필수 여부가 비어 있으면 필수로 센다), 같으면 마감이 이른 순(마감 없는 공고는 뒤), 그다음 id 순 (10/21 확정)
+- 기준 공고는 상세를 열 수 있는 공고다(공개 범위 안의 활성·마감 공고, 내가 준비한 공고). 그 밖과 없는 공고는 `404 NOT_FOUND`, 형식이 틀린 id는 `422 VALIDATION_FAILED`(`details.fields.opportunity_id`)
+- 기준 공고는 상세처럼 그 자리에서 판정해 저장한다. 지원 어려움이 아니면(지원 가능·정보 필요·원문 확인) `items`는 빈 배열이다
+- 후보는 피드에 나오는 공고(활성·공개 범위 안·관심 없음 아님) 중 지원 가능인 것이다. 기준 공고는 빼고, 원문 확인 배지(`needs_review`)가 있는 공고도 넣는다. 응답 전에 후보의 낡은 판정을 다시 계산한다
 
 ### `POST /opportunities/{id}/reports` (P1)
 
