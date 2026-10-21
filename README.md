@@ -77,6 +77,7 @@
     uv run python -m app.crawl.cli import <공지 폴더>   # 저장한 학교 공지 넣기 + 요건 추출
     uv run python -m app.eval.cli                      # 테스트 시나리오 전부 실행(시험용 DB에서만)
     uv run python -m app.eval.cli --out eval_baseline.json   # 베이스라인 저장(결과 JSON은 레포에 넣지 않는다)
+    uv run python -m app.eval.compare <공지 폴더> --posters <포스터 폴더> --md compare.md   # 모델 비교(실제 Gemini, 결과는 레포에 넣지 않는다)
     uv run python -m app.push.keys                     # 웹 푸시 VAPID 키 만들기
 
 ## 검사

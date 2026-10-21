@@ -4,3 +4,5 @@ __pycache__/
 .ruff_cache/
 .env
 eval_baseline.json
+compare*.json
+compare*.md
