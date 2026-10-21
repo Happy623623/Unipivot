@@ -6,10 +6,12 @@
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import lru_cache
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 import jwt
 from fastapi import Depends, Header
@@ -39,6 +41,10 @@ def _jwks_client(jwks_url: str) -> jwt.PyJWKClient:
     return jwt.PyJWKClient(jwks_url, cache_keys=True, timeout=JWKS_TIMEOUT_SECONDS)
 
 
+# 프로젝트 주소 뒤에 붙으면 안 되는 Supabase API 경로(대시보드에서 복사할 때 따라온다)
+_API_PATH = re.compile(r"(?i)/(rest|auth|storage|functions|realtime|graphql)/v1(/|$)")
+
+
 def auth_settings_problem(settings: Settings) -> str | None:
     """로그인 확인 설정에서 고칠 점. 없으면 None이다. 앱을 시작할 때와 공개키를 받기 전에 본다.
 
@@ -54,10 +60,22 @@ def auth_settings_problem(settings: Settings) -> str | None:
             "SUPABASE_URL에 계정 정보(@)가 들어 있어요(값은 보여 주지 않음). DB 주소 대신"
             " Supabase 프로젝트 주소(https://….supabase.co)를 넣으세요"
         )
-    if not url.lower().startswith(("https://", "http://")):
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # "http://[" 같은 값. 여기서 터지면 서버가 뜨지 않는다
+        return "SUPABASE_URL이 주소 모양이 아니에요(값은 보여 주지 않음). Supabase 프로젝트 주소를 넣으세요"
+    if parts.scheme.lower() not in ("https", "http") or not parts.netloc:
         return "SUPABASE_URL이 https://로 시작하지 않아요(값은 보여 주지 않음). Supabase 프로젝트 주소를 넣으세요"
     if "<" in url or ">" in url:
         return f"SUPABASE_URL에 예시 값이 남아 있어요: {url}. Supabase 프로젝트 주소로 바꾸세요"
+    # 공개키 주소는 {SUPABASE_URL}/auth/v1/…라서 대시보드의 API 주소(…/rest/v1)를 그대로 넣으면 엉뚱한 곳이 404로
+    # 답하고 로그인이 모두 503이 된다. 원인이 안 보여서 여기서 알린다. 경로는 Supabase API 경로일 때만 막는다 —
+    # 앞단에 경로를 붙인 자체 호스팅(https://example.com/supabase)은 그대로 된다(검토). ?·#는 늘 막는다
+    if _API_PATH.search(parts.path) or "?" in url or "#" in url:
+        return (
+            "SUPABASE_URL에 경로가 붙어 있어요(…/rest/v1 같은 것. 값은 보여 주지 않음). 프로젝트 주소"
+            "(https://<ref>.supabase.co)만 넣으세요"
+        )
     return None
 
 

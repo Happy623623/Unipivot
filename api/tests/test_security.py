@@ -1,6 +1,7 @@
 """토큰 암호화 키 교체와 로그 마스킹 (PRD 7장 토큰 보안)."""
 
 import logging
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -197,3 +198,28 @@ def test_log_argument_that_cannot_be_stringified_does_not_break_the_caller() -> 
     logger.setLevel(logging.INFO)  # 레코드를 만든다(가리기는 여기서 돈다)
     logger.propagate = False  # 처리기가 없어 서식은 만들지 않는다
     logger.info("값 %s", Unprintable())
+
+
+def test_a_sensitive_format_hides_any_kind_of_argument(caplog: pytest.LogCaptureFixture) -> None:
+    """서식에 token·secret이 있으면 그 자리의 값은 문자열이 아니어도 가린다(숫자·None은 그대로)."""
+    install_log_redaction()
+
+    class Holder:  # 패턴에 안 맞는 토큰을 든 객체(SecretStr·주소 객체 같은 것)
+        def __str__(self) -> str:
+            return "opaque-value-123"
+
+        def __repr__(self) -> str:
+            return "Holder(opaque-value-123)"
+
+    logger = logging.getLogger("unipivot.test.sensitive")
+    with caplog.at_level(logging.INFO, logger="unipivot.test.sensitive"):
+        logger.info("refresh token=%s", Holder())
+        logger.info("refresh token=%r", Holder())
+        logger.info("client secret %s", b"opaque-bytes-456")
+        logger.info("token count %d, secret %s", 3, None)
+        logger.info("token cost %.2f, %d", Decimal("1.5"), True)  # 숫자는 서식이 깨지지 않게 그대로
+    for value in ("opaque-value-123", "opaque-bytes-456"):
+        assert value not in caplog.text
+    assert caplog.text.count("[REDACTED]") == 3
+    assert "token count 3, secret None" in caplog.text  # 숫자·None은 가리지 않는다
+    assert "token cost 1.50, 1" in caplog.text

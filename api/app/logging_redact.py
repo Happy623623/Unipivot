@@ -5,10 +5,12 @@ LearningX(Canvas) 개인 액세스 토큰, Fernet 암호문, Anthropic·Google A
 (`sb_secret_…`), 주소에 붙은 API 키(온통청년 apiKeyNm=… 등), 공지 첨부 주소의 열쇠(Canvas
 `verifier=…`, 파일 저장소 서명 `X-Amz-Signature=…`·`X-Amz-Credential=…`). 요청 주소처럼 문자열이
 아닌 인자도 `str()`·`repr()`로 바꿔 보고 가릴 것이 있으면 가린다 — 예외를 `%r`로 찍는 로그가 많고,
-`repr()`에만 나오는 값(요청 주소·헤더를 든 예외)도 있다.
+`repr()`에만 나오는 값(요청 주소·헤더를 든 예외)도 있다. 서식 문자열에 token·secret·password 같은 말이
+있으면 그 인자는 숫자·None 말고는 무엇이든 통째로 가린다.
 """
 
 import logging
+import numbers
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -47,7 +49,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         r"\1" + _REDACTED,
     ),
 )
-# 이런 말이 든 서식 문자열이면 인자(문자열)를 통째로 가린다: logger.info("Authorization: %s", value)
+# 이런 말이 든 서식 문자열이면 인자를 통째로 가린다(숫자·None 말고는 종류를 가리지 않는다): logger.info("Authorization: %s", value)
 _SENSITIVE_FORMAT = re.compile(r"(?i)authorization|bearer|token|secret|password|api[_-]?key")
 
 
@@ -103,8 +105,12 @@ def install_log_redaction() -> None:
             def clean(item: Any) -> Any:
                 if isinstance(item, str):
                     return _REDACTED if mask_all else redact(item)
-                if item is None or isinstance(item, int | float):
-                    return item
+                if item is None or isinstance(item, numbers.Number):
+                    return item  # 숫자(bool·Decimal 포함)는 %d·%f 자리라 바꾸면 서식이 깨진다
+                if mask_all:
+                    # 서식에 token·secret이 들어 있으면 그 자리의 값은 무엇이든 가린다. 문자열만 가리면 bytes·
+                    # SecretStr·주소 객체로 넘긴 토큰이 패턴에 안 맞을 때 그대로 찍혔다(숫자·None은 그대로 둔다)
+                    return _Redacted(_REDACTED, _REDACTED)
                 try:  # httpx 요청 로그의 주소(httpx.URL) 같은 객체, `%r`로 찍는 예외
                     text = str(item)
                 except Exception:

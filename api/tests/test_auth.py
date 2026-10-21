@@ -249,6 +249,7 @@ def test_empty_or_wrong_project_url_is_503_without_showing_secrets(
             "postgresql://postgres.abcd:pw-1234@pooler.example.com:5432/postgres",
             "로그인 확인 실패(503): SUPABASE_URL에 계정 정보(@)가 들어 있어요",
         ),
+        (PROJECT_URL + "/rest/v1", "로그인 확인 실패(503): SUPABASE_URL에 경로가 붙어 있어요"),
     ):
         jwks = StaticJwks(JWKS)
         with jwks_app(monkeypatch, jwks, supabase_url=url) as client:
@@ -272,6 +273,25 @@ def test_empty_or_wrong_project_url_is_503_without_showing_secrets(
         ("sb_secret_pasted-by-mistake", "", "https://로 시작하지 않아요", False),
         ("postgresql://postgres:pw-1234@db.example.com:5432/postgres", "", "계정 정보(@)", False),
         ("https://user:pw-1234@abcdefghijklmnopqrst.supabase.co", "", "계정 정보(@)", False),
+        (
+            PROJECT_URL + "/rest/v1",
+            "",
+            "경로가 붙어 있어요",
+            False,
+        ),  # 대시보드 API 주소를 그대로 복사
+        (PROJECT_URL + "/auth/v1/", "", "경로가 붙어 있어요", False),
+        (PROJECT_URL + "?x=1", "", "경로가 붙어 있어요", False),
+        (PROJECT_URL + "?", "", "경로가 붙어 있어요", False),  # 빈 ?도 공개키 주소를 틀어 놓는다
+        ("https://example.com/supabase", "", None, True),  # 앞단 경로가 붙은 자체 호스팅은 그대로
+        ("https://example.com/supabase/rest/v1", "", "경로가 붙어 있어요", False),
+        ("http://", "", "https://로 시작하지 않아요", False),  # 주소가 없다
+        ("http://[", "", "주소 모양이 아니에요", False),  # urlsplit이 ValueError를 낸다
+        (
+            PROJECT_URL + "/rest/v1",
+            "legacy-secret-legacy-secret-legacy-secret",
+            None,
+            True,
+        ),  # 비밀키면 안 쓴다
     ],
 )
 def test_auth_settings_problem(url: str, secret: str, problem: str | None, shown: bool) -> None:
