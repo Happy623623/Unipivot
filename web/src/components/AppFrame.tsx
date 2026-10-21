@@ -8,6 +8,7 @@ import StatusPreview from "@/dev/StatusPreview";
 import { pathnameToRoute, useAppNavigate } from "@/lib/routes";
 import { syncPushSubscription } from "@/lib/usePushSubscription";
 import useAsyncData from "@/lib/useAsyncData";
+import useRouteFocus from "@/lib/useRouteFocus";
 import useSessionWatch from "@/lib/useSessionWatch";
 import type { Me } from "@/types/api";
 
@@ -30,6 +31,7 @@ export default function AppFrame({ children }: { children: ReactNode }) {
   const openRecorded = useRef(false);
   const pushSynced = useRef(false);
   useSessionWatch();
+  useRouteFocus(pathname); // 화면을 옮겨 초점이 빠지면 새 화면 제목으로
 
   useEffect(() => {
     setUnread(null);

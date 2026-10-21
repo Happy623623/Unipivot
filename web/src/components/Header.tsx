@@ -20,7 +20,13 @@ export default function Header({ title, subtitle, action }: HeaderProps) {
         <div className="min-w-0">
           {/* 좁은 화면에서 제목과 버튼이 한 줄에 다 들어가지 않으면 버튼을 다음 줄로 내린다 */}
           <div className="flex items-center gap-3 max-[760px]:flex-wrap max-[760px]:gap-y-1">
-            <h1 className="truncate text-[28px] font-bold leading-[1.45] text-[#181a20]">{title}</h1>
+            {/* 다른 화면에서 옮겨 오면 초점을 받는다(lib/useRouteFocus.ts). Tab 순서에는 넣지 않는다 */}
+            <h1
+              tabIndex={-1}
+              className="truncate text-[28px] font-bold leading-[1.45] text-[#181a20] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]"
+            >
+              {title}
+            </h1>
             {action}
           </div>
           <p className="mt-[2px] text-[14px] leading-[1.45] text-[#667085]">{subtitle}</p>

@@ -16,6 +16,33 @@ const FOCUSABLE = [
 
 const openDialogs: HTMLElement[] = []; // 열린 창, 나중에 연 것이 끝
 
+// Safari·macOS Firefox는 버튼을 마우스로 눌러도 버튼에 초점을 주지 않는다. 그러면 창을 열 때 초점이 <body>라 연 버튼을
+// 몰라 닫아도 돌아가지 못했다. 마지막으로 누른 버튼을 기억해 두고, 초점이 없을 때 그것을 연 버튼으로 본다
+const PRESS_FRESH_MS = 1000;
+let lastPress: { element: HTMLElement; at: number } | null = null;
+let pressWatched = false;
+
+function watchPresses(doc: Document): void {
+  if (pressWatched) return;
+  pressWatched = true;
+  doc.addEventListener(
+    "pointerdown",
+    (event) => {
+      const target = event.target instanceof Element ? event.target.closest<HTMLElement>("button, a[href], [role=button]") : null;
+      lastPress = target ? { element: target, at: Date.now() } : null;
+    },
+    true,
+  );
+}
+
+// 한 번 누름은 창 하나에만 쓴다(쓰고 나면 비운다 — 떼어진 요소를 붙잡고 있지도 않는다)
+function pressedOpener(dialog: HTMLElement): HTMLElement | null {
+  const press = lastPress;
+  lastPress = null;
+  if (!press || Date.now() - press.at > PRESS_FRESH_MS) return null;
+  return press.element.isConnected && !dialog.contains(press.element) ? press.element : null;
+}
+
 function focusables(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((element) => element.getClientRects().length > 0);
 }
@@ -37,11 +64,16 @@ export default function useDialogFocus(
   }, [onClose]);
 
   useEffect(() => {
+    watchPresses(document);
+  }, []);
+
+  useEffect(() => {
     const dialog = dialogRef.current;
     if (!open || !dialog) return;
     const doc = dialog.ownerDocument;
     const active = doc.activeElement;
-    const opener = active instanceof HTMLElement && active !== doc.body && !dialog.contains(active) ? active : null;
+    const opener =
+      active instanceof HTMLElement && active !== doc.body && !dialog.contains(active) ? active : pressedOpener(dialog);
     openDialogs.push(dialog);
     const isTop = () => openDialogs[openDialogs.length - 1] === dialog;
     if (!dialog.contains(doc.activeElement)) dialog.focus({ preventScroll: true });
