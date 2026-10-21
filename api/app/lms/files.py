@@ -127,6 +127,7 @@ class AttachmentSaver:
                 "공지 첨부를 저장소에 올리지 못했어요: file %s, %s", attachment.canvas_file_id, exc
             )
             return "failed"
+        recorded = False  # 기록 넣기가 끝났는지. 그 뒤(커밋) 오류는 기록이 됐는지 몰라 파일을 지우지 않는다
         try:
             async with self.transaction() as conn:
                 added = await self.files(conn).add_lms_attachment(
@@ -140,7 +141,19 @@ class AttachmentSaver:
                     sha256=hashlib.sha256(got.data).hexdigest(),
                     original_name=attachment.name,
                 )
-        except Exception as exc:  # 그새 탈퇴했거나 DB가 멈췄다. 올린 것을 지우고 다음 첨부로 간다
+                # 넣지 않았으면(같은 첨부가 먼저 들어옴) 우리 경로를 가리키는 기록이 없어 지켜야 할 것도 없다
+                recorded = added is not None
+        except Exception as exc:
+            if recorded:
+                # 커밋 중 연결이 끊겼다. 기록이 됐으면 지운 파일을 가리키게 되므로 파일은 둔다(안 됐으면 주인 없는
+                # 파일이 하나 남고, 다음 동기화가 새 번호로 다시 받는다)
+                logger.warning(
+                    "공지 첨부 기록이 저장됐는지 몰라 올린 파일은 그대로 둬요: file %s, %s",
+                    attachment.canvas_file_id,
+                    type(exc).__name__,
+                )
+                return "failed"
+            # 그새 탈퇴했거나 DB가 멈췄다. 올린 것을 지우고 다음 첨부로 간다
             logger.warning(
                 "공지 첨부 기록을 남기지 못해 올린 파일을 지워요: file %s, %s",
                 attachment.canvas_file_id,

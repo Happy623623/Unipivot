@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import psycopg
 import pytest
 
 from app.agent_log import agent_run, using
@@ -75,12 +76,15 @@ class FakeFiles:
     asked: list[list[str]] = field(default_factory=list)
     fail: bool = False
     race: bool = False  # 넣으려는 순간 다른 쪽이 같은 첨부를 넣었다
+    commit_lost: bool = False  # 기록을 넣으려 한 연결의 커밋 응답을 못 받는다
+    adds: int = 0  # add_lms_attachment를 부른 횟수
 
     async def lms_attachment_refs(self, user_id: str, refs: list[str]) -> set[str]:
         self.asked.append(refs)
         return {ref for (uid, ref) in self.rows if uid == user_id and ref in refs}
 
     async def add_lms_attachment(self, user_id: str, **values: Any) -> str | None:
+        self.adds += 1
         if self.fail:
             raise RuntimeError("DB가 멈췄다")
         key = (user_id, values["ref"])
@@ -135,7 +139,11 @@ def log() -> FakeLogConnection:
 def saver(lms: FakeLms, storage: FakeStorage, files: FakeFiles) -> AttachmentSaver:
     @asynccontextmanager
     async def transaction() -> AsyncIterator[Any]:
+        before = files.adds
         yield None  # 가짜 저장소는 연결을 쓰지 않는다
+        # 기록을 넣으려 한 연결의 커밋 응답을 못 받았다(커밋이 됐는지 모른다)
+        if files.commit_lost and files.adds > before:
+            raise psycopg.OperationalError("consuming input failed: server closed the connection")
 
     return AttachmentSaver(
         transaction=transaction,
@@ -284,6 +292,27 @@ async def test_an_upload_without_a_record_is_taken_back(
     made = await save(lms, storage, files, log, [notice(1, [attachment()])])
     assert (made.saved, made.failed) == (0, 0)  # 이미 들어온 것이라 실패로 세지 않는다
     assert storage.objects == {} and len(storage.removed) == 2
+
+
+async def test_a_commit_that_may_have_landed_keeps_the_file(
+    lms: FakeLms, storage: FakeStorage, files: FakeFiles, log: FakeLogConnection
+) -> None:
+    """기록은 넣었는데 커밋 중 연결이 끊겼다. 기록이 됐을 수 있으니 파일은 지우지 않는다(지우면 문서함의 그 파일이
+    "없어졌어요"가 되고, 같은 첨부로 기록돼 있어 다음 동기화도 다시 받지 않는다)."""
+    files.commit_lost = True
+    made = await save(lms, storage, files, log, [notice(1, [attachment()])])
+    assert (made.saved, made.failed) == (0, 1)
+    assert len(storage.objects) == 1 and storage.removed == []
+
+
+async def test_a_lost_commit_after_a_lost_race_still_takes_the_file_back(
+    lms: FakeLms, storage: FakeStorage, files: FakeFiles, log: FakeLogConnection
+) -> None:
+    """같은 첨부가 먼저 들어와 넣지 않았는데 커밋 응답도 못 받았다. 우리 경로를 가리키는 기록은 없으니 지운다."""
+    files.race, files.commit_lost = True, True
+    made = await save(lms, storage, files, log, [notice(1, [attachment()])])
+    assert made.failed == 1
+    assert storage.objects == {} and len(storage.removed) == 1
 
 
 async def test_an_html_attachment_may_be_html(
