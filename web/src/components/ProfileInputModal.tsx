@@ -13,6 +13,7 @@ import {
 import Button from "@/components/Button";
 import Modal, { ModalCancelButton } from "@/components/Modal";
 import ProfileFieldInput from "@/components/profile/ProfileFieldInput";
+import Toast from "@/components/Toast";
 import {
   buildProfileSteps,
   changeValue,
@@ -27,6 +28,7 @@ import {
   type ProfileFormValues,
   type ProfileKey,
 } from "@/lib/profileFields";
+import useLateOutcome, { lateFailure } from "@/lib/useLateOutcome";
 import type { Department, Profile } from "@/types/api";
 
 interface ProfileInputModalProps {
@@ -83,6 +85,7 @@ export default function ProfileInputModal({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [agreeing, setAgreeing] = useState(false);
+  const late = useLateOutcome(open);
   const shown = useRef(false);
   const fieldsKey = missingFields.join(",");
 
@@ -132,8 +135,10 @@ export default function ProfileInputModal({
     try {
       await updateIncomeConsent(true);
       setLoaded((current) => current && { ...current, incomeConsented: true });
+      late.report("소득·수급 정보 수집·이용에 동의했어요.");
     } catch (caught) {
       setError(errorMessage(caught, "동의하지 못했어요. 잠시 후 다시 눌러 주세요."));
+      late.report(lateFailure(caught, "소득·수급 정보 수집·이용에 동의하지 못했어요.", "정보 입력을 다시 눌러 동의해 주세요."));
     } finally {
       setAgreeing(false);
     }
@@ -161,10 +166,18 @@ export default function ProfileInputModal({
       if (consentRequired(caught) === "income_info") {
         setLoaded({ ...loaded, incomeConsented: false });
         setError("소득·수급 정보는 선택 동의를 해야 저장할 수 있어요.");
+        late.report("내 정보를 저장하지 못했어요. 소득·수급 정보는 선택 동의가 필요해요. 정보 입력을 다시 눌러 동의해 주세요.");
         return;
       }
-      setErrors(fieldErrors(caught));
+      const found = fieldErrors(caught);
+      setErrors(found);
       setError(errorMessage(caught, "저장하지 못했어요. 잠시 후 다시 눌러 주세요."));
+      // 15초 뒤에 창을 닫았으면 창 안 오류가 안 보인다(성공은 화면이 알린다). 칸별 오류는 다시 열면 지워진다
+      late.report(
+        Object.keys(found).length > 0
+          ? "내 정보를 저장하지 못했어요. 정보 입력을 다시 눌러 입력한 값을 확인해 주세요."
+          : lateFailure(caught, "내 정보를 저장하지 못했어요.", "정보 입력을 다시 눌러 저장해 주세요."),
+      );
       return;
     }
     await onSaved();
@@ -172,56 +185,59 @@ export default function ProfileInputModal({
   };
 
   return (
-    <Modal open={open} title="정보 입력" onClose={onClose} busy={saving || agreeing} returnFocusRef={returnFocusRef}>
-      {loadError ? (
-        <p role="alert" className="text-[13px] text-[#c53030]">{loadError}</p>
-      ) : !loaded || !values ? (
-        <p className="text-[13px] text-[#667085]">내 정보를 불러오고 있어요.</p>
-      ) : (
-        <form noValidate onSubmit={submit}>
-          <p className="mb-4 text-[13px] text-[#667085]">이 공고를 판정하는 데 필요한 정보예요. 저장하면 바로 다시 판정해요.</p>
-          {needsIncome && (
-            <div className="mb-4 rounded-[10px] bg-[#fff8e1] p-3 text-[12px] text-[#b7791f]">
-              {loaded.incomeConsented ? (
-                <p>자격 판정에만 쓰고, 탈퇴하면 바로 지워요</p>
-              ) : (
-                <>
-                  <p>소득·수급 정보는 선택 동의를 하면 입력할 수 있어요. 자격 판정에만 쓰고, 탈퇴하면 바로 지워요.</p>
-                  <div className="mt-2">
-                    <Button secondary onClick={agreeIncome} busy={agreeing}>
-                      {agreeing ? "동의하는 중" : "동의하고 입력하기"}
-                    </Button>
-                  </div>
-                </>
-              )}
+    <>
+      <Modal open={open} title="정보 입력" onClose={onClose} busy={saving || agreeing} returnFocusRef={returnFocusRef}>
+        {loadError ? (
+          <p role="alert" className="text-[13px] text-[#c53030]">{loadError}</p>
+        ) : !loaded || !values ? (
+          <p className="text-[13px] text-[#667085]">내 정보를 불러오고 있어요.</p>
+        ) : (
+          <form noValidate onSubmit={submit}>
+            <p className="mb-4 text-[13px] text-[#667085]">이 공고를 판정하는 데 필요한 정보예요. 저장하면 바로 다시 판정해요.</p>
+            {needsIncome && (
+              <div className="mb-4 rounded-[10px] bg-[#fff8e1] p-3 text-[12px] text-[#b7791f]">
+                {loaded.incomeConsented ? (
+                  <p>자격 판정에만 쓰고, 탈퇴하면 바로 지워요</p>
+                ) : (
+                  <>
+                    <p>소득·수급 정보는 선택 동의를 하면 입력할 수 있어요. 자격 판정에만 쓰고, 탈퇴하면 바로 지워요.</p>
+                    <div className="mt-2">
+                      <Button secondary onClick={agreeIncome} busy={agreeing}>
+                        {agreeing ? "동의하는 중" : "동의하고 입력하기"}
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            <div className="flex flex-col gap-4">
+              {editable.map((field) => (
+                <ProfileFieldInput
+                  key={field.key}
+                  field={resolveField(field, values)}
+                  value={values[field.key]}
+                  error={errors[field.key]}
+                  onChange={(value) => {
+                    setValues((current) => current && changeValue(current, field.key, value));
+                    setErrors((current) => withoutError(current, field.key));
+                  }}
+                />
+              ))}
             </div>
-          )}
-          <div className="flex flex-col gap-4">
-            {editable.map((field) => (
-              <ProfileFieldInput
-                key={field.key}
-                field={resolveField(field, values)}
-                value={values[field.key]}
-                error={errors[field.key]}
-                onChange={(value) => {
-                  setValues((current) => current && changeValue(current, field.key, value));
-                  setErrors((current) => withoutError(current, field.key));
-                }}
-              />
-            ))}
-          </div>
-          {fields.length === 0 && (
-            <p className="text-[13px] text-[#667085]">여기서 입력할 수 있는 항목이 없어요. 원문을 확인해 주세요.</p>
-          )}
-          {error && <p role="alert" className="mt-4 text-[13px] text-[#c53030]">{error}</p>}
-          <div className="mt-6 flex justify-end gap-2">
-            <ModalCancelButton />
-            <Button type="submit" disabled={!saving && editable.length === 0} busy={saving}>
-              {saving ? "다시 판정 중" : "저장하고 다시 판정"}
-            </Button>
-          </div>
-        </form>
-      )}
-    </Modal>
+            {fields.length === 0 && (
+              <p className="text-[13px] text-[#667085]">여기서 입력할 수 있는 항목이 없어요. 원문을 확인해 주세요.</p>
+            )}
+            {error && <p role="alert" className="mt-4 text-[13px] text-[#c53030]">{error}</p>}
+            <div className="mt-6 flex justify-end gap-2">
+              <ModalCancelButton />
+              <Button type="submit" disabled={!saving && editable.length === 0} busy={saving}>
+                {saving ? "다시 판정 중" : "저장하고 다시 판정"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+      <Toast toast={late.toast} onHold={late.hold} />
+    </>
   );
 }

@@ -2,7 +2,9 @@ import { useState } from "react";
 import { disconnectCalendar, disconnectLms, errorMessage, nowIso, reconnectCalendar } from "@/api/client";
 import Button from "@/components/Button";
 import Modal, { ModalCancelButton, ModalDescription } from "@/components/Modal";
+import Toast from "@/components/Toast";
 import { formatRelativeTime } from "@/lib/format";
+import useLateOutcome, { lateFailure } from "@/lib/useLateOutcome";
 import type { LmsConnection, Me } from "@/types/api";
 
 export type CalendarResult = "connected" | "error";
@@ -30,6 +32,9 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [calendarDisconnectError, setCalendarDisconnectError] = useState<string | null>(null);
   const [calendarDisconnecting, setCalendarDisconnecting] = useState(false);
+  // 해제가 15초를 넘겨 창을 닫은 뒤에 끝나면 결과를 아래 안내로 알린다(창 안의 글은 안 보인다)
+  const lmsLate = useLateOutcome(disconnectOpen);
+  const calendarLate = useLateOutcome(calendarOpen);
   // 돌아온 결과는 지금 상태와 맞을 때만 보여 준다(연결됐는데 "못 했어요"를 띄우지 않는다)
   const notice = calendarResult && (calendarResult === "connected") === me.calendar_connected
     ? RESULT_NOTICE[calendarResult]
@@ -54,9 +59,12 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
     setDisconnecting(true);
     try {
       setLms(await disconnectLms());
+      lmsLate.report("LearningX 연결을 해제했어요."); // 창을 닫기 전에 본다(평소 성공에는 안내를 안 띄운다)
       setDisconnectOpen(false);
     } catch (caught) {
-      setDisconnectError(errorMessage(caught, "연결을 해제하지 못했어요. 잠시 후 다시 눌러 주세요."));
+      const message = errorMessage(caught, "연결을 해제하지 못했어요. 잠시 후 다시 눌러 주세요.");
+      setDisconnectError(message);
+      lmsLate.report(lateFailure(caught, "LearningX 연결을 해제하지 못했어요.", "연결 해제를 다시 눌러 주세요."));
     } finally {
       setDisconnecting(false);
     }
@@ -68,9 +76,14 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
     setCalendarDisconnecting(true);
     try {
       onMeChange(await disconnectCalendar());
+      calendarLate.report("Google Calendar 연결을 해제했어요.");
       setCalendarOpen(false);
     } catch (caught) {
-      setCalendarDisconnectError(errorMessage(caught, "연결을 해제하지 못했어요. 잠시 후 다시 눌러 주세요."));
+      const message = errorMessage(caught, "연결을 해제하지 못했어요. 잠시 후 다시 눌러 주세요.");
+      setCalendarDisconnectError(message);
+      calendarLate.report(
+        lateFailure(caught, "Google Calendar 연결을 해제하지 못했어요.", "연결 해제를 다시 눌러 주세요."),
+      );
     } finally {
       setCalendarDisconnecting(false);
     }
@@ -139,6 +152,8 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
           </Button>
         </div>
       </Modal>
+      <Toast toast={lmsLate.toast} onHold={lmsLate.hold} />
+      <Toast toast={calendarLate.toast} onHold={calendarLate.hold} />
     </section>
   );
 }

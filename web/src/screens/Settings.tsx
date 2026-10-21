@@ -23,8 +23,10 @@ import NotificationSettings from "@/components/NotificationSettings";
 import ProfileForm from "@/components/ProfileForm";
 import SignOutSetting from "@/components/SignOutSetting";
 import Skeleton from "@/components/Skeleton";
+import Toast from "@/components/Toast";
 import { DEGREE_LABELS, regionText, type ProfileErrors } from "@/lib/profileFields";
 import useAsyncData from "@/lib/useAsyncData";
+import useLateOutcome, { lateFailure } from "@/lib/useLateOutcome";
 import type { Me, Profile, Settings as SettingsData } from "@/types/api";
 import type { Route } from "@/types/route";
 
@@ -67,6 +69,8 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
   const [deleteText, setDeleteText] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const profileLate = useLateOutcome(profileOpen);
+  const deleteLate = useLateOutcome(deleteOpen);
   const [accountGone, setAccountGone] = useState(false); // 탈퇴는 끝났고 이 기기의 세션만 남았다
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState<{ message: string; fields: ProfileErrors } | null>(null);
@@ -132,7 +136,14 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
       if (consent === "terms_privacy") navigate({ name: "onboarding" });
       // 다른 곳에서 소득 동의를 철회했다: 내 정보를 다시 받아 소득 입력란을 닫는다
       if (consent === "income_info") getMe().then(setMeOverride).catch(() => undefined);
-      setProfileError({ message: errorMessage(caught, PROFILE_FAILED), fields: fieldErrors(caught) as ProfileErrors });
+      const message = errorMessage(caught, PROFILE_FAILED);
+      setProfileError({ message, fields: fieldErrors(caught) as ProfileErrors });
+      // 15초 뒤에 창을 닫았으면 창 안 오류가 안 보인다. 칸별 오류는 다시 열면 지워지므로 수정을 눌러 확인하라고 한다
+      profileLate.report(
+        Object.keys(fieldErrors(caught)).length > 0
+          ? "프로필을 저장하지 못했어요. 수정을 눌러 입력한 값을 확인해 주세요."
+          : lateFailure(caught, "프로필을 저장하지 못했어요.", "수정을 눌러 다시 저장해 주세요."),
+      );
     } finally {
       setSavingProfile(false);
     }
@@ -149,10 +160,14 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
       // 이 화면을 떠나면(다른 화면에서 다시 동의하고 돌아오는 등) 잊는다 — 그때는 처음부터 탈퇴한다
       const gone = accountGone || caught instanceof SessionLeftError;
       if (gone) setAccountGone(true);
-      setDeleteError(
+      const message = gone
+        ? "탈퇴는 끝났어요. 이 기기의 로그인을 지우지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요."
+        : errorMessage(caught, "탈퇴하지 못했어요. 잠시 후 다시 눌러 주세요.");
+      setDeleteError(message);
+      deleteLate.report(
         gone
-          ? "탈퇴는 끝났어요. 이 기기의 로그인을 지우지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요."
-          : errorMessage(caught, "탈퇴하지 못했어요. 잠시 후 다시 눌러 주세요."),
+          ? "탈퇴는 끝났어요. 이 기기의 로그인을 지우지 못했어요. 탈퇴를 다시 눌러 마무리해 주세요."
+          : lateFailure(caught, "탈퇴하지 못했어요.", "탈퇴를 다시 눌러 주세요."),
       );
       setDeleting(false);
     }
@@ -242,6 +257,8 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
           {toast}
         </div>
       )}
+      <Toast toast={profileLate.toast} onHold={profileLate.hold} />
+      <Toast toast={deleteLate.toast} onHold={deleteLate.hold} />
     </>
   );
 }

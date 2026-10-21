@@ -90,9 +90,11 @@ function UpdateItem({
 
 export default function Academics({ navigate }: AcademicsProps) {
   const [syncedAt, setSyncedAt] = useState(0); // 동기화가 끝나면 올려서 목록을 다시 받는다
+  // 다시 받는 동안 지난 목록을 둔다. 뼈대로 바꾸면 연결 창이 내려가 창 안 완료 글·닫은 뒤의 안내가 사라진다
   const request = useAsyncData(
     () => Promise.all([getLmsConnection(), getCourses(), getLmsUpdates()]),
     [syncedAt],
+    { keep: true },
   );
   const [connectionOverride, setConnectionOverride] =
     useState<LmsConnection | null>(null);
@@ -106,7 +108,7 @@ export default function Academics({ navigate }: AcademicsProps) {
 
   // 화면을 열면 LMS를 한 번 받아 온다(명세 9장). 마지막 동기화가 5분 안이면 서버가 건너뛴다.
   // 받는 동안에도 저장해 둔 과제·자료를 그대로 보여 주고, 새로 받으면 그때 다시 그린다.
-  // 다시 받는 동안에는 status가 잠깐 비므로, 화면을 열어 둔 동안 한 번만 부르게 막아 둔다
+  // 연결을 끊었다 다시 이어 status가 바뀌어도 화면을 열어 둔 동안 한 번만 부르게 막아 둔다
   const asked = useRef(false);
   useEffect(() => {
     if (status !== "active" || asked.current) return;
@@ -120,14 +122,20 @@ export default function Academics({ navigate }: AcademicsProps) {
     };
   }, [status]);
 
-  if (request.loading) return <AcademicsSkeleton />;
-  if (request.error || !request.data) {
+  if (request.loading && !request.data) return <AcademicsSkeleton />;
+  if (!request.data) {
     return (
       <p className="rounded-[14px] bg-[#fef2f2] p-4 text-[#c53030]">
         {request.error ?? "학업 정보를 불러오지 못했어요."}
       </p>
     );
   }
+  // 다시 받지 못했으면 지난 목록을 두고 위에 알린다(연결 창·안내가 사라지지 않게)
+  const reloadFailed = request.error && (
+    <p role="status" className="rounded-[14px] bg-[#fef2f2] p-4 text-[13px] text-[#c53030]">
+      목록을 새로 받지 못해 지난 목록을 보여 주고 있어요. 잠시 후 이 화면을 다시 열어 주세요.
+    </p>
+  );
 
   const [, courses, updates] = request.data;
   const connection = connectionOverride ?? request.data[0];
@@ -136,6 +144,7 @@ export default function Academics({ navigate }: AcademicsProps) {
     return (
       <>
         <Header title="학업" subtitle="LMS 과제와 새 자료를 확인하고 강의자료를 요약할 수 있어요." />
+        {reloadFailed}
         <section className="flex min-h-[480px] flex-col items-center justify-center rounded-[18px] border border-[#e5e7eb] bg-white p-8 text-center">
           <Badge tone="yellow">LearningX 미연결</Badge>
           <h2 className="mt-4 text-[24px] font-bold">LearningX를 연결해 주세요</h2>
@@ -159,6 +168,7 @@ export default function Academics({ navigate }: AcademicsProps) {
   return (
     <>
       <Header title="학업" subtitle="LMS 과제와 새 자료를 확인하고 강의자료를 요약할 수 있어요." />
+      {reloadFailed}
       {connection.status === "error" ? (
         <section className="flex items-center justify-between gap-4 rounded-[14px] bg-[#fef2f2] p-[18px]">
           <p className="text-[13px] font-semibold text-[#c53030]">
@@ -201,12 +211,13 @@ export default function Academics({ navigate }: AcademicsProps) {
       </section>
       {courses.length === 0 && (
         <section className="rounded-2xl border border-[#e5e7eb] bg-white p-8 text-center">
-          <p className="text-[14px] font-semibold">아직 받아온 과목이 없어요</p>
+          {/* 다시 받는 동안에는 지난(빈) 목록을 두므로 받는 중이라고 쓴다(연결한 바로 뒤에도 그렇다) */}
+          <p className="text-[14px] font-semibold">{request.loading ? "과목을 받아오고 있어요" : "아직 받아온 과목이 없어요"}</p>
           <p className="mt-2 text-[13px] text-[#667085]">
             이번 학기 수강 과목이 LearningX에 올라와 있는지 확인하고 다시 받아와 주세요.
           </p>
           <div className="mt-5">
-            <Button secondary onClick={() => setSyncedAt(Date.now())}>다시 받아오기</Button>
+            <Button secondary onClick={() => setSyncedAt(Date.now())} busy={request.loading}>다시 받아오기</Button>
           </div>
         </section>
       )}
