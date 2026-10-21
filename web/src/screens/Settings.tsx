@@ -10,7 +10,9 @@ import {
   getProfile,
   getSettings,
   saveProfile,
+  retryDeletion,
   saveSettings,
+  SessionLeftError,
 } from "@/api/client";
 import Button from "@/components/Button";
 import ConnectedServices, { type CalendarResult } from "@/components/ConnectedServices";
@@ -65,6 +67,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
   const [deleteText, setDeleteText] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [accountGone, setAccountGone] = useState(false); // 탈퇴는 끝났고 이 기기의 세션만 남았다
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState<{ message: string; fields: ProfileErrors } | null>(null);
   const [toast, setToast] = useState("");
@@ -139,10 +142,18 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
     setDeleteError(null);
     setDeleting(true);
     try {
-      await deleteAccount();
+      await (accountGone ? retryDeletion() : deleteAccount());
       navigate({ name: "onboarding" });
     } catch (caught) {
-      setDeleteError(errorMessage(caught, "탈퇴하지 못했어요. 잠시 후 다시 눌러 주세요."));
+      // 탈퇴가 끝난 뒤의 실패(세션이 남음)는 "탈퇴하지 못했어요"가 아니다. 다시 누르면 세션만 다시 지운다.
+      // 이 화면을 떠나면(다른 화면에서 다시 동의하고 돌아오는 등) 잊는다 — 그때는 처음부터 탈퇴한다
+      const gone = accountGone || caught instanceof SessionLeftError;
+      if (gone) setAccountGone(true);
+      setDeleteError(
+        gone
+          ? "탈퇴는 끝났어요. 이 기기의 로그인을 지우지 못했어요. 인터넷 연결을 확인하고 다시 눌러 주세요."
+          : errorMessage(caught, "탈퇴하지 못했어요. 잠시 후 다시 눌러 주세요."),
+      );
       setDeleting(false);
     }
   };
@@ -192,7 +203,7 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
         <button
           type="button"
           onClick={() => {
-            setDeleteError(null);
+            if (!accountGone) setDeleteError(null); // 탈퇴가 끝났다는 안내는 창을 다시 열어도 남긴다
             setDeleteOpen(true);
           }}
           className="mt-4 text-[13px] font-semibold text-[#c53030]"

@@ -192,15 +192,43 @@ export async function signOut(): Promise<void> {
   return new Promise<void>(() => {}); // 페이지가 바뀌므로 끝나지 않는다
 }
 
+// 탈퇴는 서버에서 끝났는데 이 기기의 세션을 지우지 못했다(로그아웃과 같은 경우). 부르는 쪽은 "탈퇴하지 못했어요" 대신
+// 이 경우의 문구를 보이고, 다시 누르면 retryDeletion을 부른다
+export class SessionLeftError extends Error {
+  constructor() {
+    super("탈퇴했지만 이 기기의 세션이 남았어요");
+    this.name = "SessionLeftError";
+  }
+}
+
 // DELETE /me (4장, F-06). 서버가 파일·Google 권한·프로필을 지운다. 끝나면 이 기기의 세션을 지우고
 // 로그인 화면으로 간다(로그인 계정은 남아, 다시 로그인하면 동의부터 새로 시작한다). 세션을 지우기 직전에 다른 탭에
-// 알려 그 탭들도 "탈퇴했어요"로 간다.
+// 알려 그 탭들도 "탈퇴했어요"로 간다. 세션 지우기는 로그아웃처럼 8초까지 기다리고, 세션 쿠키가 남았으면
+// SessionLeftError를 던진다 — 그대로 로그인 화면으로 가면 남은 세션 때문에 다시 앱으로 들어가 동의 화면이 나온다
+// (그 뒤에 지워지면 useSessionWatch가 이 탭도 "탈퇴했어요"로 옮긴다).
 // 목 모드는 그 자리에서 동의 전 상태로 돌아간다(부르는 쪽이 온보딩으로 보낸다)
 export async function deleteAccount(): Promise<void> {
   if (USE_MOCKS) return mock.deleteAccount();
   await apiFetch<void>("/me", { method: "DELETE" });
+  return finishDeletion();
+}
+
+// SessionLeftError 뒤에 다시 누를 때. 세션을 불러올 수 있으면(연결이 돌아왔다) DELETE /me부터 다시 한다 — 그새 다른
+// 탭에서 다시 동의했으면 새 프로필도 지워야 한다(지울 것이 없으면 204). 못 불러오면 세션만 다시 지운다 — 그대로
+// DELETE /me를 부르면 토큰 없이 가서 401(로그인 화면)이 된다
+export async function retryDeletion(): Promise<void> {
+  if (USE_MOCKS) return mock.deleteAccount();
+  const loaded = await within(createBrowserSupabase().auth.getSession(), 8000).catch(() => undefined);
+  if (loaded?.data.session) return deleteAccount();
+  return finishDeletion();
+}
+
+// 탈퇴가 서버에서 끝난 뒤의 일: 다른 탭에 알리고, 이 기기의 세션을 지우고, 로그인 화면으로 간다.
+// signOut이 오류를 던져도 세션 쿠키가 남았는지만 본다(던진 오류로 "탈퇴하지 못했어요"가 되면 안 된다)
+async function finishDeletion(): Promise<void> {
   announceLeaving("deleted");
-  await createBrowserSupabase().auth.signOut({ scope: "local" });
+  await within(createBrowserSupabase().auth.signOut({ scope: "local" }), 8000).catch(() => undefined);
+  if (hasStoredSession()) throw new SessionLeftError();
   window.location.replace("/login?notice=deleted"); // 뒤로 가기로 지운 계정의 화면이 돌아오지 않게
   return new Promise<void>(() => {}); // 페이지가 바뀌므로 끝나지 않는다
 }
