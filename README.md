@@ -79,6 +79,7 @@
     uv run python -m app.eval.cli --out eval_baseline.json   # 베이스라인 저장(결과 JSON은 레포에 넣지 않는다)
     uv run python -m app.eval.compare <공지 폴더> --posters <포스터 폴더> --md compare.md   # 모델 비교(실제 Gemini, 결과는 레포에 넣지 않는다)
     uv run python -m app.push.keys                     # 웹 푸시 VAPID 키 만들기
+    uv run python -m app.deploy.cloudrun deploy --web-origin https://<웹 주소> --dry-run   # Cloud Run 배포 미리 보기(docs/배포_절차.md)
 
 ## 검사
 
@@ -98,6 +99,8 @@
 | 배포 주소 | 데모 계정 |
 | --- | --- |
 | 배포한 뒤 적는다 | 데모 전용 Google 계정(팀 메모에 있다 — 여기에는 적지 않는다) |
+
+배포(api는 Cloud Run, web은 Vercel)는 `docs/배포_절차.md`를 따른다.
 
 | 순서 | 보여 줄 것 | 기능 · 시나리오 |
 | --- | --- | --- |

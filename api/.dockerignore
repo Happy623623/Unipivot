@@ -1,0 +1,14 @@
+# 이미지에 넣지 않는 것(Docker 문법: 하위 폴더까지는 **/를 붙인다).
+# .env가 들어가면 서버가 로컬 비밀값을 읽는다 — 배포 명령이 이 줄을 확인한다
+.env
+.env.*
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+tests
+scripts
+eval_baseline.json
+compare*.json
+compare*.md
