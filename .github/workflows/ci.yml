@@ -12,8 +12,8 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -37,7 +37,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 마이그레이션 적용 (auth 흉내 → supabase/migrations 이름 순)
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/ci/auth_stub.sql
@@ -46,7 +46,7 @@ jobs:
           done
       - name: 스키마 점검 (RLS·FK 인덱스)
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/ci/schema_checks.sql
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - run: uv sync
         working-directory: api
       - run: uv run ruff check . && uv run ruff format --check .
