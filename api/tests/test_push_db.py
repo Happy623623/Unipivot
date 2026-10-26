@@ -4,15 +4,19 @@
 발송 대상 고르기(푸시를 끈 사람·구독 없는 사람 빼기)를 실제 스키마에 대고 본다.
 """
 
+import asyncio
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
 import httpx
+import psycopg
 import pytest
 import respx
+from psycopg.rows import dict_row
 
 from app.push.keys import b64u, generate_keys, load_keys
-from app.push.send import PushSender
+from app.push.send import PushResult, PushSender, PushTarget
 from app.repositories.notifications import NotificationRepository
 from app.repositories.push import PushRepository
 from app.routers.internal import send_notifications
@@ -281,3 +285,117 @@ async def test_without_vapid_keys_the_job_only_closes_the_rows() -> None:
         assert (result.sent, result.pushable, result.pushed) == (1, 1, 0)
         assert not route.called  # 설정이 비면 푸시 서비스를 부르지 않는다
         assert await repo.count(student) == 1  # 구독은 그대로 둔다
+
+
+# ── 두 발송이 겹칠 때 (배포 중 인스턴스 둘, 스케줄러와 수동 호출) ──────────────
+
+
+async def _tx_conn() -> psycopg.AsyncConnection:
+    """요청 풀처럼 autocommit이 아닌 연결(블록이 끝날 때 커밋·롤백한다)."""
+    return await psycopg.AsyncConnection.connect(
+        DATABASE_URL, row_factory=dict_row, prepare_threshold=None
+    )
+
+
+async def _wait_until_blocked(watcher: psycopg.AsyncConnection, pid: int) -> None:
+    """그 연결이 다른 트랜잭션의 행 잠금을 기다리기 시작할 때까지 본다(최대 10초)."""
+    for _ in range(200):
+        row = await (
+            await watcher.execute(
+                "select wait_event_type from pg_stat_activity where pid = %s", (pid,)
+            )
+        ).fetchone()
+        if row and row["wait_event_type"] == "Lock":
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("두 번째 발송이 잠금을 기다리지 않았다")
+
+
+async def test_of_two_overlapping_sends_only_the_one_that_closed_the_row_pushes_it() -> None:
+    """두 발송이 같은 알림을 골라도 행을 닫은 쪽만 그 번호를 돌려준다(푸시 대상).
+
+    늦은 쪽의 UPDATE는 먼저 쪽이 끝날 때까지 기다렸다가 `status = 'pending'`을 다시 보고 건너뛴다.
+    """
+    async with world() as built:
+        student = await built.user()
+        await _save(PushRepository(built.conn), student, ENDPOINT)
+        opportunity = await built.opportunity("겹친 발송 장학", days=10)
+        await built.judge(student, opportunity, "eligible")
+        await built.repo.schedule(now=NOW)
+        sent_at = NOW + timedelta(days=1)
+
+        first, second = await _tx_conn(), await _tx_conn()
+        late: asyncio.Task[Any] | None = None
+        try:
+            one = await NotificationRepository(first).send(now=sent_at)  # 닫았지만 아직 확정 전
+            late = asyncio.create_task(NotificationRepository(second).send(now=sent_at))
+            await _wait_until_blocked(built.conn, second.info.backend_pid)
+            await first.commit()
+            two = await late
+            await second.commit()
+
+            assert (one.result.due, one.result.sent, one.result.pushable) == (1, 1, 1)
+            assert len(one.ids) == 1
+            assert (two.result.due, two.result.sent, two.result.pushable) == (1, 0, 0)
+            assert two.ids == []  # 같은 푸시를 두 번 보내지 않는다
+        finally:
+            if late is not None and not late.done():
+                late.cancel()
+                await asyncio.gather(late, return_exceptions=True)
+            await first.close()
+            await second.close()
+
+
+class _CheckingSender:
+    """푸시를 보내는 순간 그 알림이 이미 확정(커밋)됐는지 다른 연결로 본다. 멈춤도 흉내 낸다."""
+
+    def __init__(self, watcher: psycopg.AsyncConnection, *, stop: bool = False) -> None:
+        self.watcher = watcher
+        self.stop = stop
+        self.seen: list[str] = []
+
+    async def send(self, targets: Sequence[PushTarget]) -> PushResult:
+        for target in targets:
+            row = await (
+                await self.watcher.execute(
+                    "select status::text as status from notifications where id = %s",
+                    (target.payload.notification_id,),
+                )
+            ).fetchone()
+            assert row is not None
+            self.seen.append(row["status"])
+        if self.stop:  # 배포 중 옛 인스턴스가 꺼지며 작업이 취소된 것과 같다
+            raise asyncio.CancelledError
+        return PushResult(sent=len(targets))
+
+
+async def test_the_job_commits_the_closed_rows_before_pushing() -> None:
+    """푸시보다 행 확정이 먼저다. 그래서 푸시 도중 작업이 멈춰(롤백) 다음 발송이 같은 푸시를 또 보내지 않는다."""
+    async with world() as built:
+        student = await built.user()
+        await _save(PushRepository(built.conn), student, ENDPOINT)
+        opportunity = await built.opportunity("확정 먼저 장학", days=10)
+        await built.judge(student, opportunity, "eligible")
+        await built.repo.schedule(now=NOW)
+        sent_at = NOW + timedelta(days=1)
+
+        stopping = _CheckingSender(built.conn, stop=True)
+        conn = await _tx_conn()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await send_notifications(
+                    repo=NotificationRepository(conn),
+                    push_repo=PushRepository(conn),
+                    sender=stopping,  # type: ignore[arg-type]
+                    now=sent_at,
+                    _=None,
+                )
+            await conn.rollback()  # 풀 연결은 예외가 나면 블록을 나가며 롤백한다
+        finally:
+            await conn.close()
+        assert stopping.seen == ["succeeded"]  # 푸시를 보낼 때 다른 연결에서도 이미 닫혀 보였다
+
+        again = _CheckingSender(built.conn)
+        result = await _job(built, again, sent_at + timedelta(minutes=5))
+        assert (result.due, result.sent) == (0, 0)
+        assert again.seen == []  # 다음 발송은 다시 보내지 않는다

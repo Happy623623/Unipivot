@@ -120,7 +120,7 @@ class MaterialNotice:
 
 @dataclass(frozen=True)
 class Sent:
-    """발송 한 번의 결과와 **보낸 알림 번호**. 번호는 푸시 발송에만 쓴다(응답에는 없다)."""
+    """발송 한 번의 결과와 **이번에 닫은 알림 번호**. 번호는 푸시 발송에만 쓴다(응답에는 없다)."""
 
     result: SendResult
     ids: list[str]
@@ -325,16 +325,33 @@ class NotificationRepository:
         )
         return int(row["count"]) if row else 0
 
-    async def mark_sent(self, ids: Sequence[str], *, now: datetime) -> int:
-        """보낸 알림을 닫는다. 푸시를 못 보내도 알림함에는 남아야 하므로 succeeded다(ERD)."""
+    async def mark_sent(self, ids: Sequence[str], *, now: datetime) -> list[str]:
+        """보낸 알림을 닫고, **이번에 실제로 닫은** 번호를 돌려준다(넘긴 순서대로).
+
+        푸시를 못 보내도 알림함에는 남아야 하므로 succeeded다(ERD). 다른 발송이 먼저 닫은 알림은
+        빠진다 — 새 버전을 올리는 동안 인스턴스 둘이 겹치거나 스케줄러와 수동 호출이 겹쳐 같은 알림을
+        함께 골라도, 행을 닫은 쪽만 푸시를 보낸다. 늦은 쪽의 UPDATE는 먼저 쪽이 끝날 때까지 기다렸다가
+        `status = 'pending'`을 다시 보고 그 행을 건너뛴다.
+        """
         if not ids:
-            return 0
-        cursor = await self.conn.execute(
+            return []
+        rows = await self._rows(
             "update notifications set status = 'succeeded', sent_at = %(now)s"
-            " where id = any(%(ids)s::uuid[]) and status = 'pending'",
+            " where id = any(%(ids)s::uuid[]) and status = 'pending' returning id",
             {"ids": list(ids), "now": now},
         )
-        return cursor.rowcount
+        closed = {row["id"] for row in rows}  # UUID로 비교한다(넘긴 글자 모양·대소문자와 상관없이)
+        return [item for item in ids if UUID(item) in closed]
+
+    async def commit_sent(self) -> None:
+        """닫은 알림을 먼저 확정한다. 푸시를 보내기 **전에** 부른다(app/jobs.py).
+
+        확정하기 전에 푸시를 보내면, 그 뒤 이 발송이 롤백될 때(배포 중 옛 인스턴스가 꺼지며 작업이 취소됨,
+        연결 끊김) 행이 pending으로 돌아가 다음 발송이 같은 푸시를 또 보낸다. 확정한 뒤에는 푸시가 실패하거나
+        작업이 멈춰도 다시 보내지 않는다 — 같은 알림을 두 번 보내느니 푸시 한 번을 빠뜨리는 쪽을 택했다(명세 10장).
+        늦은 발송이 푸시 시간 동안 행 잠금을 기다리지도 않는다.
+        """
+        await self.conn.commit()
 
     async def send(self, *, now: datetime, limit: int = SEND_LIMIT) -> Sent:
         """보낼 때가 된 알림을 닫는다. 숨긴 공고와 하루 한도를 넘는 알림은 보내지 않고 둔다.
@@ -342,6 +359,8 @@ class NotificationRepository:
         **푸시는 여기서 보내지 않는다.** 보낸 알림 번호를 함께 돌려주고, 부른 쪽(내부 작업)이
         푸시 발송기에 넘긴다 — DB 트랜잭션을 쥔 채로 바깥을 부르지 않는다.
         """
+        # due()를 sent_today()보다 먼저 읽는다. 순서를 바꾸면 겹친 발송이 남이 막 닫은 정보 필요 알림을
+        # 못 보고 같은 사용자의 다른 알림을 골라 하루 한도를 넘길 수 있다
         due = await self.due(now=now, limit=limit)
         already = await self.sent_today(now=now, kind="profile_needed")
         sending: list[str] = []
@@ -353,15 +372,15 @@ class NotificationRepository:
                     continue
                 already[item.user_id] = already.get(item.user_id, 0) + 1
             sending.append(item.id)
-        count = await self.pushable(sending)
+        closed = await self.mark_sent(sending, now=now)
         return Sent(
             result=SendResult(
                 due=len(due),
-                sent=await self.mark_sent(sending, now=now),
-                pushable=count,
+                sent=len(closed),
+                pushable=await self.pushable(closed),
                 skipped=len(due) - len(sending),
             ),
-            ids=sending,
+            ids=closed,
         )
 
     # ── 알림함 ──────────────────────────────────────────────────────────────

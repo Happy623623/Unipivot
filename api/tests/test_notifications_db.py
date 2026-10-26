@@ -356,12 +356,11 @@ async def test_a_notification_is_never_closed_twice() -> None:
         await built.repo.schedule(now=NOW)
         sent_at = NOW + timedelta(days=1)
         due = await built.repo.due(now=sent_at)
-        assert await built.repo.mark_sent([item.id for item in due], now=sent_at) == len(due)
+        ids = [item.id for item in due]
+        assert await built.repo.mark_sent(ids, now=sent_at) == ids  # 넘긴 순서대로
 
-        again = await built.repo.mark_sent(
-            [item.id for item in due], now=sent_at + timedelta(days=1)
-        )
-        assert again == 0
+        again = await built.repo.mark_sent(ids, now=sent_at + timedelta(days=1))
+        assert again == []  # 이미 닫힌 알림은 푸시 대상에서도 빠진다
         rows = await (
             await built.conn.execute(
                 "select to_char(sent_at at time zone 'Asia/Seoul', 'MM-DD') as day"

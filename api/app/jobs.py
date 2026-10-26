@@ -68,10 +68,12 @@ async def send_notifications(
     숨긴 공고의 알림과 하루 한도를 넘는 알림은 보내지 않고 둔다. 푸시 구독이 없거나 푸시를 끈
     사용자는 푸시만 건너뛰고 알림함에는 남는다(F-35).
 
-    푸시는 **알림함 행을 닫은 뒤에** 보낸다(F-33). 푸시가 실패해도 알림은 보낸 것으로 남는다 —
-    같은 알림을 두 번 보내지 않는 쪽을 택했다(명세 10장). 사라진 구독(404·410)은 지운다.
+    푸시는 **알림함 행을 닫아 확정(커밋)한 뒤에** 보낸다(F-33). 푸시가 실패하거나 작업이 중간에 멈춰도
+    알림은 보낸 것으로 남는다 — 같은 알림을 두 번 보내지 않는 쪽을 택했다(명세 10장). 발송이 둘 겹치면
+    행을 먼저 닫은 쪽만 푸시한다(저장소 mark_sent). 사라진 구독(404·410)은 지운다.
     """
     sent = await repo.send(now=now)
+    await repo.commit_sent()
     pushed = await sender.send(await push_repo.targets(sent.ids))
     dropped = await push_repo.drop_endpoints(pushed.gone)
     return SendResult(
