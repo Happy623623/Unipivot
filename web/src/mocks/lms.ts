@@ -198,9 +198,33 @@ function makeMaterial(course: Course): MaterialDetail {
   };
 }
 
-export const materials: Record<string, MaterialDetail> = Object.fromEntries(
-  courses.map((course) => [`${course.id}-material`, makeMaterial(course)]),
-);
+// 문서함의 공지 첨부(mocks/documents.ts와 같은 번호). 아직 요약하지 않아 문서함에서 "요약하기"를 누르면 요약한다
+function makeAttachment(fileId: string, fileName: string, course: { lms_course_id: string; name: string }): MaterialDetail {
+  return {
+    file_id: fileId,
+    file_name: fileName,
+    course,
+    source_language: null,
+    total_pages: null, // 공지 첨부는 저장할 때 쪽수를 세지 않는다(요약할 때 센다)
+    processed_range: null,
+    status: "pending",
+    overall_summary: null,
+    over_limit: false,
+    run_id: null,
+  };
+}
+
+export const materials: Record<string, MaterialDetail> = Object.fromEntries([
+  ...courses.map((course) => [`${course.id}-material`, makeMaterial(course)] as const),
+  ...courses.map(
+    (course) =>
+      [
+        `${course.id}-n2-file`,
+        makeAttachment(`${course.id}-n2-file`, "중간고사 대비 예제.pdf", { lms_course_id: course.id, name: course.short_name }),
+      ] as const,
+  ),
+  ["past-course-file", makeAttachment("past-course-file", "기말 대비 정리.pdf", { lms_course_id: "past-course", name: "자료구조" })],
+]);
 
 export const lmsUpdates: LmsUpdate[] = [
   {

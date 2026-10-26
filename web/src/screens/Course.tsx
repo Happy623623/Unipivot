@@ -10,6 +10,7 @@ import Skeleton from "@/components/Skeleton";
 import Toast from "@/components/Toast";
 import { routeToHref } from "@/lib/routes";
 import useAsyncData from "@/lib/useAsyncData";
+import useReturnFocus from "@/lib/useReturnFocus";
 import useToast from "@/lib/useToast";
 import type { Route } from "@/types/route";
 
@@ -44,6 +45,7 @@ export default function Course({
 }: CourseProps) {
   const [tab, setTab] = useState<CourseTab>(initialTab);
   const [summaryFileId, setSummaryFileId] = useState<string | null>(null);
+  const summaryFocus = useReturnFocus(); // 요약 칸을 닫으면 연 버튼("요약 보기"·올리기)으로 돌아간다
   // 계획서를 확정하면 과목 상세를 다시 받아 확정 표시와 새 일정을 보여 준다
   const [reloads, setReloads] = useState(0);
   // 다시 받는 동안 지난 상세를 둔다(뼈대로 바꾸면 요약 창과 안내가 내려간다)
@@ -133,7 +135,10 @@ export default function Course({
           {tab === "materials" && (
             <CourseMaterials
               course={course}
-              onOpenSummary={setSummaryFileId}
+              onOpenSummary={(fileId) => {
+                summaryFocus.remember();
+                setSummaryFileId(fileId);
+              }}
               onUploaded={reload}
             />
           )}
@@ -159,7 +164,10 @@ export default function Course({
           <MaterialSummaryPanel
             key={summaryFileId}
             fileId={summaryFileId}
-            onClose={() => setSummaryFileId(null)}
+            onClose={() => {
+              setSummaryFileId(null);
+              summaryFocus.restore();
+            }}
             onChange={reload}
           />
         )}

@@ -1,13 +1,15 @@
-import { useRef } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import Button from "@/components/Button";
 import DownloadButton from "@/components/DownloadButton";
 import Header from "@/components/Header";
 import { EmptyBox } from "@/components/HomeStates";
+import MaterialSummaryPanel from "@/components/MaterialSummaryPanel";
 import Skeleton from "@/components/Skeleton";
 import Toast from "@/components/Toast";
 import { formatFileSize, formatKstDate } from "@/lib/format";
 import useDocuments from "@/lib/useDocuments";
 import useLoadMoreFocus from "@/lib/useLoadMoreFocus";
+import useReturnFocus from "@/lib/useReturnFocus";
 import useToast from "@/lib/useToast";
 import type { MyFile } from "@/types/api";
 import type { Route } from "@/types/route";
@@ -33,12 +35,25 @@ function courseGroups(items: MyFile[]): CourseGroup[] {
   return [...all.filter((group) => group.course), ...all.filter((group) => !group.course)];
 }
 
+// 요약할 수 있는 파일: 내 강의자료 중 PDF(F-15). 직접 올린 강의자료는 서버가 PDF만 받아 늘 PDF이고,
+// 공지 첨부는 형식을 가리지 않고 받아서 이름으로 가린다(PDF가 아니면 서버도 거절한다)
+function summarizable(item: MyFile): boolean {
+  return item.kind === "lecture_material" && (item.origin === "upload" || /\.pdf$/i.test(item.file_name));
+}
+
 function kindLabel(item: MyFile): string {
   if (item.kind === "syllabus") return "강의계획서";
   return item.origin === "lms_attachment" ? "공지 첨부" : "올린 강의자료";
 }
 
-function DocumentRow({ item, onError }: { item: MyFile; onError: (message: string) => void }) {
+interface DocumentRowProps {
+  item: MyFile;
+  onError: (message: string) => void;
+  onSummary?: () => void; // 요약할 수 있는 자료만 준다
+  summaryOpen?: boolean; // 이 줄의 요약 칸이 열려 있다
+}
+
+function DocumentRow({ item, onError, onSummary, summaryOpen = false }: DocumentRowProps) {
   const meta = [kindLabel(item), formatFileSize(item.size_bytes), formatKstDate(item.created_at)]
     .filter(Boolean)
     .join(" · ");
@@ -49,6 +64,17 @@ function DocumentRow({ item, onError }: { item: MyFile; onError: (message: strin
         <p className="break-all text-[14px] font-semibold text-[#181a20]">{item.file_name}</p>
         <p className="mt-0.5 text-[12px] text-[#667085]">{meta}</p>
       </div>
+      {onSummary && (
+        <button
+          type="button"
+          onClick={onSummary}
+          aria-label={`${item.file_name} 요약`}
+          aria-expanded={summaryOpen}
+          className="shrink-0 text-[12px] font-semibold text-[#4f6ef7]"
+        >
+          요약
+        </button>
+      )}
       <DownloadButton fileId={item.file_id} fileName={item.file_name} onError={onError} />
     </li>
   );
@@ -66,6 +92,10 @@ function DocumentsSkeleton() {
 export default function Documents({ navigate }: { navigate: (route: Route) => void }) {
   const { items, loading, error, hasMore, loadingMore, generation, reload, loadMore } = useDocuments();
   const [toast, showToast] = useToast(3200);
+  const [summaryId, setSummaryId] = useState<string | null>(null);
+  const summaryFocus = useReturnFocus(); // 요약 칸을 닫으면 누른 "요약" 버튼으로 돌아간다
+  // 목록을 처음부터 다시 받으면(다시 시도·cursor 오류) 요약 칸을 닫는다 — 줄이 새로 그려져 칸만 저절로 다시 열리지 않게
+  useEffect(() => setSummaryId(null), [generation]);
   const groups = courseGroups(items);
   const listRef = useRef<HTMLDivElement>(null);
   const more = useLoadMoreFocus({
@@ -81,7 +111,7 @@ export default function Documents({ navigate }: { navigate: (route: Route) => vo
 
   return (
     <>
-      <Header title="문서함" subtitle="과목 공지 첨부와 강의계획서를 과목별로 모았어요. 받으면 원래 이름으로 저장돼요." />
+      <Header title="문서함" subtitle="과목 공지 첨부와 강의계획서를 과목별로 모았어요. 받으면 원래 이름으로 저장되고, 강의자료 PDF는 요약도 볼 수 있어요." />
       {loading && items.length === 0 && <DocumentsSkeleton />}
       {!loading && error !== null && items.length === 0 && (
         <EmptyBox title={error} action="다시 시도" onAction={reload} />
@@ -121,7 +151,40 @@ export default function Documents({ navigate }: { navigate: (route: Route) => vo
             </div>
             <ul className="mt-1 divide-y divide-[#e5e7eb]">
               {group.items.map((item) => (
-                <DocumentRow key={item.file_id} item={item} onError={showToast} />
+                <Fragment key={item.file_id}>
+                  <DocumentRow
+                    item={item}
+                    onError={showToast}
+                    summaryOpen={summaryId === item.file_id}
+                    onSummary={
+                      summarizable(item)
+                        ? () => {
+                            summaryFocus.remember();
+                            setSummaryId(item.file_id);
+                          }
+                        : undefined
+                    }
+                  />
+                  {/* 요약 칸은 누른 줄 바로 아래에 연다(첨부가 많은 과목에서도 화면 안에 열리게).
+                      공지 첨부는 "요약하기"를 눌러야 외부 AI로 보낸다 */}
+                  {summaryId === item.file_id && (
+                    <li className="pb-4 pt-1">
+                      <MaterialSummaryPanel
+                        key={item.file_id}
+                        fileId={item.file_id}
+                        autoStart={false}
+                        level={3}
+                        onClose={() => {
+                          setSummaryId(null);
+                          // 연 버튼이 그새 사라졌으면(브라우저가 버튼에 초점을 주지 않았던 경우 등) 그 줄의 "요약"으로
+                          summaryFocus.restore(() =>
+                            listRef.current?.querySelector<HTMLElement>(`li[data-row="${item.file_id}"] button`),
+                          );
+                        }}
+                      />
+                    </li>
+                  )}
+                </Fragment>
               ))}
             </ul>
           </section>
