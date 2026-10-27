@@ -72,10 +72,7 @@ class SupabaseStorage:
         return f"{bucket}/{quote(path, safe='/')}" if path else bucket  # 목록은 버킷까지만
 
     def _key_headers(self) -> dict[str, str]:
-        """저장소 키를 싣는 머리값. 새 키는 `apikey`에만, 예전 JWT 키는 `Authorization`에도."""
-        if self.service_key.startswith(NEW_KEY_PREFIX):
-            return {"apikey": self.service_key}
-        return {"apikey": self.service_key, "Authorization": f"Bearer {self.service_key}"}
+        return service_key_headers(self.service_key)
 
     async def upload(self, path: str, data: bytes, content_type: str) -> None:
         await self._send("POST", path, content=data, content_type=content_type)
@@ -214,6 +211,14 @@ class SupabaseStorage:
             error = StorageMissing if _missing(response) else StorageError
             raise error(f"파일 저장소가 요청을 거절했어요({detail}).")
         return response.content
+
+
+def service_key_headers(key: str) -> dict[str, str]:
+    """저장소 키를 싣는 머리값. 새 키는 `apikey`에만, 예전 JWT 키는 `Authorization`에도.
+    로그인 계정 지우기(app/auth_admin.py)도 같은 키를 같은 자리에 싣는다."""
+    if key.startswith(NEW_KEY_PREFIX):
+        return {"apikey": key}
+    return {"apikey": key, "Authorization": f"Bearer {key}"}
 
 
 def _body(response: httpx.Response) -> dict[str, Any]:

@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 
 from fastapi import Depends
-from psycopg import AsyncConnection, sql
+from psycopg import AsyncConnection, errors, sql
 
 from app.db import get_conn
+from app.errors import ApiError
 from app.schemas.me import (
     COMPLETION_FIELDS,
     PROFILE_FIELDS,
@@ -50,12 +51,20 @@ class ProfileRepository:
         )
 
     async def ensure(self, user_id: str, display_name: str | None) -> None:
-        """로그인 직후 profiles 행을 만든다. 이미 있으면 비어 있는 이름만 채운다."""
-        await self.conn.execute(
-            "insert into profiles (id, display_name) values (%s, %s) on conflict (id)"
-            " do update set display_name = coalesce(profiles.display_name, excluded.display_name)",
-            (user_id, display_name),
-        )
+        """로그인 직후 profiles 행을 만든다. 이미 있으면 비어 있는 이름만 채운다.
+
+        로그인 계정(auth.users)이 없으면 401이다. 탈퇴로 계정을 지웠는데 다른 탭·기기에 아직 만료되지 않은
+        토큰이 남아 부른 경우다 — 웹이 로그인 화면으로 보낸다(app/account.py)."""
+        try:
+            await self.conn.execute(
+                "insert into profiles (id, display_name) values (%s, %s) on conflict (id)"
+                " do update set display_name = coalesce(profiles.display_name, excluded.display_name)",
+                (user_id, display_name),
+            )
+        except errors.ForeignKeyViolation as exc:
+            raise ApiError(
+                401, "UNAUTHORIZED", "로그인 계정이 없어요. 다시 로그인해 주세요."
+            ) from exc
 
     async def lock_for_delete(self, user_id: str) -> None:
         """탈퇴의 마지막 단계(파일 목록을 다시 받고 행을 지우기 직전)에 profiles 행을 잠근다(for update). 이 사용자의
@@ -64,10 +73,15 @@ class ProfileRepository:
         await self.conn.execute("select 1 from profiles where id = %s for update", (user_id,))
 
     async def delete(self, user_id: str) -> bool:
-        """탈퇴(ERD 7장): profiles 행을 지우면 딸린 행은 cascade로 지워지고, 공유 공고의 업로더와
+        """탈퇴(ERD 1장): profiles 행을 지우면 딸린 행은 cascade로 지워지고, 공유 공고의 업로더와
         실행 로그의 사용자는 null이 된다. 지운 행이 있었으면 True다."""
         cursor = await self.conn.execute("delete from profiles where id = %s", (user_id,))
         return cursor.rowcount > 0
+
+    async def commit(self) -> None:
+        """탈퇴를 확정한다(잠금도 풀린다). 로그인 계정을 지우기 **전에** 부른다(app/account.py) — Supabase가
+        auth.users를 지우며 profiles로 cascade할 때 이 요청이 쥔 잠금을 기다리지 않게."""
+        await self.conn.commit()
 
     async def get_me(self, user_id: str) -> Me | None:
         filled = sql.SQL(" + ").join(
