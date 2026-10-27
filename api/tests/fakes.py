@@ -36,6 +36,7 @@ class FakeProfileRepository:
         self.settings: dict[str, Settings] = {}
         self.locks: list[str] = []
         self.deletion_locks: list[str] = []  # 탈퇴할 때 잠근 사용자(for update)
+        self.commits = 0  # 탈퇴를 확정한 횟수(로그인 계정을 지우기 전에 확정한다)
 
     async def lock(self, user_id: str) -> None:
         self.locks.append(user_id)
@@ -137,6 +138,9 @@ class FakeProfileRepository:
         self.tokens.pop(user_id, None)
         self.settings.pop(user_id, None)
         return had
+
+    async def commit(self) -> None:
+        self.commits += 1
 
 
 class FakeMetaRepository:

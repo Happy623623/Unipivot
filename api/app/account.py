@@ -1,4 +1,4 @@
-"""탈퇴 (API 명세 4장 `DELETE /me`, F-06). 한 번에 셋을 한다 — 파일, Google 권한, DB.
+"""탈퇴 (API 명세 4장 `DELETE /me`, F-06). 한 번에 넷을 한다 — 파일, Google 권한, DB, 로그인 계정.
 
 순서가 중요하다.
 1. **저장소의 파일**을 먼저 지운다. 실패하면 502로 끝내고 아무것도 바꾸지 않는다 — 개인 파일을
@@ -12,19 +12,25 @@
    저장소 설정이 없거나 틀리면(로컬) 훑지 않는다 — 기록된 파일이 있었으면 위에서 이미 멈췄다
 2. **Google 캘린더 권한**을 거둔다(되는 만큼. 연결 해제와 같은 함수)
 3. **profiles 행**을 지운다. 딸린 행(토큰·설정·알림·플래너·판정·파일 기록·구독)은 cascade로
-   사라지고, 공유 포스터 공고의 업로더와 실행 로그의 사용자는 null이 된다(ERD 7장)
+   사라지고, 공유 포스터 공고의 업로더와 실행 로그의 사용자는 null이 된다(ERD 1장 설계 원칙)
    지우기 직전에 profiles 행을 잠그고(for update) 파일 목록을 **다시** 받아, 1 뒤에 들어온 파일(업로드·LMS
    첨부)도 지운다. 잠근 뒤로 파일 기록을 넣는 요청은 탈퇴가 끝날 때까지 기다렸다가 프로필이 없어 실패하고, 그쪽이
    방금 올린 파일을 지운다. 잠그지 않으면 목록을 받은 뒤 들어온 기록은 cascade로만 사라지고 파일은 저장소에 남는다.
    잠금은 이 마지막 단계에서만 쥔다 — 저장소·Google을 부르는 동안 쥐고 있으면 그 사용자의 다른 요청(LMS 동기화·
    준비하기)이 오래 기다리고, 딸린 행을 먼저 잠근 쪽과 교착이 생긴다(검토가 재현)
+4. 지운 것을 **확정(커밋)**한 뒤 **Supabase 로그인 계정**(auth.users)을 관리자 API로 지운다(app/auth_admin.py).
+   확정하기 전에 부르면 Supabase가 auth.users → profiles cascade를 하다 3에서 쥔 잠금을 기다리고, 이쪽은 그
+   응답을 기다려 서로 막힌다. 지우지 못해도(로그인 서버에 닿지 못함, 키가 틀림, 설정이 없는 로컬) 탈퇴는
+   끝낸다 — Google 권한 해제와 같다. 개인 데이터는 이미 지워 확정했고 되돌릴 수 없으니 "탈퇴하지 못했어요"라고
+   할 수 없다. 이유는 경고 로그에 남긴다. 남은 계정에는 로그인 정보(이메일·이름·사진)만 있고, 그 계정으로 다시
+   탈퇴를 누르면(프로필이 없어도) 이 단계를 다시 한다
 
-Supabase 로그인 계정은 남는다 — ERD 7장이 탈퇴를 "profiles 삭제"로 정했다. 다시 로그인하면 동의부터
-새로 시작한다. Google 캘린더에 이미 넣은 일정은 지우지 않는다(명세 4장).
+Google 캘린더에 이미 넣은 일정은 지우지 않는다(명세 4장).
 """
 
 import logging
 
+from app.auth_admin import AuthAdminError, SupabaseAuthAdmin
 from app.calendar.service import CalendarService
 from app.config import Settings
 from app.errors import ApiError
@@ -44,6 +50,7 @@ async def delete_account(
     storage: SupabaseStorage,
     calendar: CalendarService,
     profiles: ProfileRepository,
+    auth_admin: SupabaseAuthAdmin,
     settings: Settings,
 ) -> bool:
     """탈퇴. 지울 프로필이 있었으면 True다(없어도 204 — 두 번 눌러도 같다)."""
@@ -57,7 +64,18 @@ async def delete_account(
         storage,
         settings,
     )
-    return await profiles.delete(user_id)
+    deleted = await profiles.delete(user_id)
+    await profiles.commit()  # 잠금을 풀어야 로그인 계정 지우기의 cascade가 기다리지 않는다
+    await _delete_login(user_id, auth_admin)
+    return deleted
+
+
+async def _delete_login(user_id: str, auth_admin: SupabaseAuthAdmin) -> None:
+    """로그인 계정을 지운다(되는 만큼). 못 지우면 경고만 남긴다 — Google 권한 해제와 같다."""
+    try:
+        await auth_admin.delete_user(user_id)
+    except AuthAdminError as exc:
+        logger.warning("탈퇴: 로그인 계정은 지우지 못했어요(데이터는 지웠어요): %s", exc)
 
 
 async def _sweep_folder(

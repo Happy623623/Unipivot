@@ -3,7 +3,8 @@
 보는 것: 파일 → Google 권한 → 프로필 순서, 파일을 못 지우면 502로 멈추고 아무것도 안 바꾼다,
 파일이 있는데 저장소 설정에 고칠 점이 있으면 지우기 전에 502로 멈춘다, 저장소가 아닌 곳의 404는 "이미
 없음"이 아니다, 파일이 없으면 저장소를 부르지 않는다(설정도 보지 않는다), 캘린더 연결이 없으면 Google을
-부르지 않는다, 두 번 눌러도 204.
+부르지 않는다, 두 번 눌러도 204. 로그인 계정은 profiles를 지워 확정한 뒤에 지우고, 못 지워도 204다(다시
+누르면 다시 지운다). 관리자 API를 부르는 모양(주소·키 자리·없는 사용자)은 respx로 본다.
 """
 
 import logging
@@ -16,6 +17,7 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from app.auth_admin import AuthAdminError, SupabaseAuthAdmin, get_auth_admin
 from app.config import Settings, get_settings
 from app.crypto import encrypt
 from app.main import create_app
@@ -106,6 +108,22 @@ class FakeCalendarRepository:
         return had
 
 
+class FakeAuthAdmin(SupabaseAuthAdmin):
+    """지운 로그인 계정과, 부를 때 프로필이 이미 지워져 확정됐는지 적어 둔다. 정하면 실패한다."""
+
+    def __init__(self, profiles: FakeProfileRepository, *, fails: bool = False) -> None:
+        super().__init__(base_url=PROJECT_URL, service_key=SECRET)
+        self.profiles = profiles
+        self.fails = fails
+        self.calls: list[tuple[str, bool]] = []  # (사용자, 그때 프로필이 지워져 확정됐는지)
+
+    async def delete_user(self, user_id: str) -> None:
+        settled = user_id not in self.profiles.profiles and self.profiles.commits > 0
+        self.calls.append((user_id, settled))
+        if self.fails:
+            raise AuthAdminError("로그인 서버가 계정 지우기를 거절했어요(500).")
+
+
 class World:
     def __init__(
         self,
@@ -120,8 +138,10 @@ class World:
         orphans: tuple[str, ...] = (),  # 저장소에만 있고 기록이 없는 파일
         list_fails: bool = False,
         stale: bool = False,
+        admin_fails: bool = False,
     ):
         self.profiles = FakeProfileRepository()
+        self.admin = FakeAuthAdmin(self.profiles, fails=admin_fails)
         self.files = FakeFileRepository(paths, self.profiles)
         self.storage = FakeStorage(
             fail_on=fail_on, stored=[*paths, *orphans], list_fails=list_fails, stale=stale
@@ -142,6 +162,7 @@ class World:
         app.dependency_overrides[get_file_repo] = lambda: self.files
         app.dependency_overrides[get_storage] = lambda: self.storage
         app.dependency_overrides[get_calendar_repo] = lambda: self.calendar
+        app.dependency_overrides[get_auth_admin] = lambda: self.admin
         self.app = app
 
 
@@ -178,6 +199,97 @@ def test_deletion_removes_files_then_google_then_the_profile(
     assert revoke.called and revoke.calls.last.request.content == b"token=refresh-1"
     assert world.calendar.tokens_row is None
     assert USER_ID not in world.profiles.profiles
+    # 로그인 계정은 마지막에, 프로필을 지워 확정한 뒤에 지운다(확정 전이면 Supabase의 cascade가 잠금을 기다린다)
+    assert world.admin.calls == [(USER_ID, True)]
+
+
+@respx.mock
+def test_a_login_account_that_cannot_be_deleted_still_ends_the_deletion(
+    settings: Settings, auth: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Google 권한 해제처럼 되는 만큼 한다. 데이터는 이미 지워 확정했으니 204이고, 이유는 경고 로그에 남긴다.
+    남은 계정으로 다시 누르면(프로필이 없어도) 로그인 계정 지우기를 다시 한다."""
+    world = World(settings, paths=PATHS, connected=True, admin_fails=True)
+    respx.post(REVOKE_URL).mock(return_value=httpx.Response(200, json={}))
+    for client in _signed_in(world):
+        assert client.delete(ME, headers=auth).status_code == 204
+        assert USER_ID not in world.profiles.profiles
+        assert world.storage.removed == PATHS and world.calendar.tokens_row is None
+        warned = [r for r in caplog.records if r.name == "app.account"]
+        assert len(warned) == 1 and warned[0].levelno == logging.WARNING
+        assert "로그인 계정은 지우지 못했어요" in warned[0].getMessage()
+
+        world.admin.fails = False
+        assert client.delete(ME, headers=auth).status_code == 204  # 다시 누르면
+    assert [user for user, _ in world.admin.calls] == [USER_ID, USER_ID]  # 다시 지운다
+
+
+ADMIN_URL = f"{PROJECT_URL}/auth/v1/admin/users/{USER_ID}"
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_the_admin_api_is_called_with_the_secret_key_as_apikey_only() -> None:
+    """새 키(sb_secret_)는 저장소처럼 `apikey`에만 싣는다. 예전 service_role JWT는 Bearer에도 싣는다."""
+    route = respx.delete(ADMIN_URL).mock(return_value=httpx.Response(200, json={}))
+    await SupabaseAuthAdmin(base_url=PROJECT_URL + "/", service_key=SECRET).delete_user(USER_ID)
+    sent = route.calls.last.request
+    assert sent.headers["apikey"] == SECRET and "authorization" not in sent.headers
+
+    legacy = jwt.encode({"iss": "supabase", "role": "service_role"}, "x" * 32, algorithm="HS256")
+    await SupabaseAuthAdmin(base_url=PROJECT_URL, service_key=legacy).delete_user(USER_ID)
+    assert route.calls.last.request.headers["authorization"] == f"Bearer {legacy}"
+
+
+@pytest.mark.anyio
+@respx.mock
+@pytest.mark.parametrize(
+    "body", [{"code": 404, "error_code": "user_not_found"}, {"code": "user_not_found"}]
+)
+async def test_a_login_account_that_is_already_gone_counts_as_deleted(body: dict) -> None:
+    """두 번째 탈퇴에서는 계정이 이미 없다. 그 답(지금 판·예전 판 모양)은 지운 것으로 본다."""
+    respx.delete(ADMIN_URL).mock(return_value=httpx.Response(404, json=body))
+    await SupabaseAuthAdmin(base_url=PROJECT_URL, service_key=SECRET).delete_user(USER_ID)
+
+
+@pytest.mark.anyio
+@respx.mock
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (404, {"message": "no Route matched with those values"}),  # 로그인 서버가 아닌 곳의 404
+        (401, {"message": f"Invalid API key {SECRET}"}),
+        (500, {"code": 500, "error_code": "unexpected_failure", "msg": "Database error"}),
+    ],
+    ids=["404-without-code", "401", "500"],
+)
+async def test_other_answers_are_failures_without_the_key(status: int, body: dict) -> None:
+    respx.delete(ADMIN_URL).mock(return_value=httpx.Response(status, json=body))
+    with pytest.raises(AuthAdminError) as caught:
+        await SupabaseAuthAdmin(base_url=PROJECT_URL, service_key=SECRET).delete_user(USER_ID)
+    assert str(status) in str(caught.value)
+    assert SECRET not in str(caught.value)  # 이유에 키가 섞여 와도 가린다
+
+
+@pytest.mark.anyio
+@respx.mock
+@pytest.mark.parametrize(
+    ("url", "key"), [("", SECRET), (PROJECT_URL, ""), (PROJECT_URL, "sb secret")]
+)
+async def test_without_settings_the_admin_api_is_not_called(url: str, key: str) -> None:
+    """설정이 없는 로컬, 키에 머리값을 깨는 글자가 있으면 부르지 않고 실패로 알린다(탈퇴는 경고만 남긴다)."""
+    route = respx.delete(url__startswith=PROJECT_URL).mock(return_value=httpx.Response(200))
+    with pytest.raises(AuthAdminError):
+        await SupabaseAuthAdmin(base_url=url, service_key=key).delete_user(USER_ID)
+    assert not route.called
+
+
+@pytest.mark.anyio
+@respx.mock
+async def test_an_unreachable_login_server_is_a_failure() -> None:
+    respx.delete(ADMIN_URL).mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(AuthAdminError, match="닿지 못했어요"):
+        await SupabaseAuthAdmin(base_url=PROJECT_URL, service_key=SECRET).delete_user(USER_ID)
 
 
 @respx.mock
