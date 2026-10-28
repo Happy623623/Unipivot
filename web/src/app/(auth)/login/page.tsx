@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserSupabase } from "@/lib/supabase/client";
 import useLateAnnouncement from "@/lib/useLateAnnouncement";
@@ -95,6 +96,12 @@ function LoginCard() {
           <p className="mt-4 rounded-[10px] bg-[#ecfdf3] p-3 text-[13px] text-[#15803d]">{shownNotice}</p>
         )}
       </div>
+      {/* 로그인 전에도 처리방침을 읽을 수 있게 둔다. 같은 탭으로 연다 — 이 화면에는 잃을 입력이 없다 */}
+      <p className="mt-6 text-[12px] text-[#667085]">
+        <Link href="/privacy" className="underline underline-offset-2 hover:text-[#4f6ef7]">
+          개인정보 처리방침
+        </Link>
+      </p>
     </section>
   );
 }
