@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { Route } from "@/types/route";
 
 interface SidebarProps {
@@ -73,6 +74,14 @@ export default function Sidebar({ route, navigate }: SidebarProps) {
       >
         <span className="text-[15px]">⚙</span>설정
       </button>
+      {/* 처리방침은 로그인 없이 여는 페이지라 화면 이동(navigate)이 아니라 링크다. 그래서 첫 화면("/")의 HTML에도 들어가
+          Google 인증 플랫폼에 적는 홈페이지에서 처리방침으로 갈 수 있다. 좁은 화면에서는 설정 화면의 링크를 쓴다 */}
+      <Link
+        href="/privacy"
+        className="mt-1 px-3 text-[12px] text-[#667085] underline-offset-2 hover:text-[#4f6ef7] hover:underline max-[760px]:hidden"
+      >
+        개인정보 처리방침
+      </Link>
     </aside>
   );
 }

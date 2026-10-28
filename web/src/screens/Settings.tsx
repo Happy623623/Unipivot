@@ -215,6 +215,22 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
           setProfileOverride(await getProfile());
         }} />
         <SignOutSetting />
+        {/* 새 탭으로 연다 — 설정 화면(고치던 값·열린 창)을 그대로 둔다 */}
+        <div className="mt-4 flex items-center justify-between gap-4 border-t border-[#f2f4f7] pt-4">
+          <div>
+            <p className="text-[14px] font-semibold">개인정보 처리방침</p>
+            <p className="mt-1 text-[12px] text-[#667085]">무엇을 받아 어디에 쓰고 언제 지우는지 적어 뒀어요.</p>
+          </div>
+          <a
+            href="/privacy"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="개인정보 처리방침 보기(새 탭)"
+            className="shrink-0 text-[13px] font-semibold text-[#4f6ef7]"
+          >
+            보기(새 탭)
+          </a>
+        </div>
         <button
           type="button"
           onClick={() => {

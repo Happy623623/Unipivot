@@ -12,8 +12,10 @@ interface ConsentStepProps {
 
 type ConsentKey = "terms" | "privacy" | "income";
 
-// TODO(법무): 약관 전문이 확정되면 "보기"에서 전문 페이지로 연결한다
-const items: { key: ConsentKey; title: string; required: boolean; summary: string[] }[] = [
+// 개인정보 두 항목은 "보기" 안에서 처리방침 전문(/privacy)을 새 탭으로 연다 — 같은 탭이면 고르던 동의가 사라진다.
+// TODO(법무): 이용약관 전문이 확정되면 그 항목에도 전문 링크를 단다
+const PRIVACY_POLICY = "/privacy";
+const items: { key: ConsentKey; title: string; required: boolean; summary: string[]; fullText?: string }[] = [
   {
     key: "terms",
     title: "이용약관 동의 (필수)",
@@ -33,6 +35,7 @@ const items: { key: ConsentKey; title: string; required: boolean; summary: strin
       "이용 목적: 지원 자격 판정, 준비 일정 생성, 알림",
       "보관 기간: 탈퇴하면 바로 지워요",
     ],
+    fullText: PRIVACY_POLICY,
   },
   {
     key: "income",
@@ -43,6 +46,7 @@ const items: { key: ConsentKey; title: string; required: boolean; summary: strin
       "이용 목적: 소득 기준이 있는 공고의 지원 자격 판정",
       "동의하지 않아도 다른 공고는 그대로 판정해요. 설정에서 언제든 철회할 수 있고, 철회하면 바로 지워요.",
     ],
+    fullText: PRIVACY_POLICY,
   },
 ];
 
@@ -91,11 +95,25 @@ export default function ConsentStep({ saving, onAgree }: ConsentStepProps) {
               </button>
             </div>
             {open === item.key && (
-              <ul className="mt-3 list-disc pl-9 text-[12px] leading-5 text-[#667085]">
-                {item.summary.map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
+              <>
+                <ul className="mt-3 list-disc pl-9 text-[12px] leading-5 text-[#667085]">
+                  {item.summary.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+                {item.fullText && (
+                  <p className="mt-2 pl-9 text-[12px]">
+                    <a
+                      href={item.fullText}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-semibold text-[#4f6ef7] underline-offset-2 hover:underline"
+                    >
+                      개인정보 처리방침 전문 보기(새 탭)
+                    </a>
+                  </p>
+                )}
+              </>
             )}
           </div>
         ))}
