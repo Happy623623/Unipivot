@@ -28,6 +28,7 @@ DETAIL = OpportunityDetail(
     source_type="school_notice",
     status="active",
     original_url="https://www.hanyang.ac.kr/notice/url/1d396",
+    apply_url=None,  # 학교 공지에는 신청 사이트가 없다(청년정책만, 상세 1차)
     poster_kind=None,
     easy_summary="직전학기 성적이 좋은 학생에게 등록금 일부를 감면해 줘요.",
     apply_start_at=None,
@@ -126,7 +127,8 @@ def test_detail_returns_the_judgment_table(
     assert body["process"]["extraction"][0]["chosen_by"] == "agent"
     assert (body["needs_review"], body["review_reasons"]) == (True, ["읽지 못한 첨부가 있음"])
     assert body["my_mark"] is None
-    assert set(body) == {  # API 명세 v0.4 5장(S1-6b·F-45 보강) · web OpportunityDetail
+    assert body["apply_url"] is None
+    assert set(body) == {  # API 명세 v0.4 5장(S1-6b·F-45·상세 1차 보강) · web OpportunityDetail
         "id",
         "title",
         "organizer",
@@ -134,6 +136,7 @@ def test_detail_returns_the_judgment_table(
         "source_type",
         "status",
         "original_url",
+        "apply_url",
         "poster_kind",
         "easy_summary",
         "apply_start_at",

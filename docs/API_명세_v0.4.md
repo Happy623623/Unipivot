@@ -108,6 +108,8 @@
 >
 > v0.4 보강(10/21, F-23·F-24): 피드 아이템의 `recommend_reason`을 채운다(맞는 조건 이름 한 줄). `GET /opportunities/{id}/alternatives`의 "비슷한 난이도"를 필수 서류 수로 정하고 기준 공고·후보·오류를 적었다
 >
+> v0.4 보강(10/30, 상세 1차): 공고 상세에 `apply_url`(청년정책 원문의 '신청 사이트' 칸이 http·https 주소 하나일 때만, 그 밖은 null). 사용자 피드백 — 온통청년을 한 번 더 거치지 않고 신청 사이트로 바로 간다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -509,6 +511,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
   "category": "scholarship",
   "source_type": "school_notice",
   "original_url": "https://...",
+  "apply_url": null,
   "easy_summary": "직전학기 성적이 좋은 학생에게 등록금 일부를 감면해주는 장학금이에요.",
   "apply_start_at": "2026-10-01T09:00:00+09:00",
   "deadline_at": "2026-10-15T23:59:00+09:00",
@@ -587,6 +590,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `attachments`: 학교 공지의 첨부다. `extract_status`는 `succeeded` · `failed` · `skipped`(에이전트가 읽지 않음) 중 하나다. 실패한 첨부가 있으면 `needs_review`가 true다
 - `reported_by_me`는 P1이다(신고와 함께)
 - `my_mark`(F-45): 피드와 같은 내 표시. 관심 없음 공고도 상세는 그대로 열린다
+- `apply_url`(상세 1차): 실제 신청 사이트. 청년정책 원문의 '신청 사이트' 칸(같은 머리가 여럿이면 마지막 칸)의 첫 낱말이 http·https 주소일 때만 있다(끝의 구두점은 뗀다). 주소가 아닌 글·scheme이 없는 주소(`www.…`)·주소가 둘 이상인 칸·청년정책이 아닌 공고는 null이다. 화면은 `apply_url`이 있고 지원 어려움이 아니며 신청이 끝나지 않은(마감일이 지나지 않았고 `status`가 active인) 공고에 보조 버튼 '신청하러 가기'(새 탭)를 단다
 - `missing_fields`는 정보 입력창(F-03)에 띄울 항목이다
 - 서류의 `task_id`·`is_done`은 준비하기 전에는 null이고, 체크는 기존 `PATCH /planner/tasks/{task_id}`로 한다
 - `poster_kind`는 **내가 올린** 포스터 공고의 원본 형식이다(`image`·`pdf`). 남이 올린 포스터·포스터가 아닌 공고·원본 파일이 없거나 형식을 모르는 공고는 null이고, 화면은 그때 원문 보기를 숨긴다. 주소는 응답에 없고 `GET /opportunities/{id}/poster-url`로 누를 때 받는다. `course_name`은 과목 공지에서 온 공고의 과목명이다

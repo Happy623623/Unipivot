@@ -14,7 +14,7 @@ from app.eligibility import (
     check_eligibility,
     requirement_problem,
 )
-from app.youth.convert import DETAIL_URL, PolicyRecord, Skip, convert
+from app.youth.convert import DETAIL_URL, PolicyRecord, Skip, apply_site, convert
 from app.youth.regions import region_table
 from tests.youth_samples import BASE, INCHEON_BEFORE_JULY, policy
 
@@ -300,6 +300,58 @@ def test_free_text() -> None:
 def test_raw_text_keeps_lines() -> None:
     raw = record(plcySprtCn="1. 이론 강의\n\n2.  기업   견학").raw_text
     assert "지원 내용: 1. 이론 강의\n2. 기업 견학" in raw
+
+
+@pytest.mark.parametrize(
+    ("site", "expected"),
+    [
+        ("https://youth.example.go.kr/apply?id=1", "https://youth.example.go.kr/apply?id=1"),
+        ("http://example.kr:8080/form#top", "http://example.kr:8080/form#top"),
+        ("https://example.kr/apply 에서 신청", "https://example.kr/apply"),  # 첫 낱말만
+        ("https://example.kr/apply.", "https://example.kr/apply"),  # 끝 구두점은 뗀다
+        ("HTTPS://EXAMPLE.KR/Apply", "HTTPS://EXAMPLE.KR/Apply"),  # 화면이 webUrl로 다시 맞춘다
+        ("https://example.kr/신청", "https://example.kr/신청"),  # 경로의 한글은 브라우저가 맞춘다
+        (
+            "https://example.kr/x\n(모바일 가능)",
+            "https://example.kr/x",
+        ),  # 칸이 여러 줄이어도 첫 낱말
+        ("홈페이지 참조", None),
+        ("www.example.go.kr", None),  # scheme이 없으면 어느 쪽인지 모른다
+        ("https://a.example.kr,https://b.example.kr", None),  # 주소가 둘이면 어느 것인지 모른다
+        ("https://a.example.kr/x, https://b.example.kr/y", None),
+        ("https://a.example.kr\nhttps://b.example.kr", None),
+        ("https://example.kr/apply(온라인신청)", None),  # 괄호가 붙은 낱말은 주소로 보지 않는다
+        ("https://example.kr:99999/", None),  # 없는 포트
+        ("https://example.kr:0/", None),
+        ("https://./", None),
+        ("httpſ://example.kr/", None),  # ASCII가 아닌 글자는 scheme·호스트로 보지 않는다
+        ("https://ſhop.example.kr/", None),
+        ("http://example.kr:８０/", None),
+        ("javascript:alert(1)", None),
+        ("", None),  # 빈 칸은 원문에 칸 자체가 없다
+    ],
+)
+def test_apply_site(site: str, expected: str | None) -> None:
+    """상세 1차: 원문의 '신청 사이트' 칸 → apply_url. 참고 사이트는 쓰지 않는다."""
+    raw = record(aplyUrlAddr=site, refUrlAddr1="https://ref.example.kr").raw_text
+    assert apply_site(raw) == expected
+
+
+def test_apply_site_reads_only_its_own_section() -> None:
+    """다른 칸 글 안의 "신청 사이트: …"는 칸이 아니다. 원문이 없거나 칸이 없으면 None이다."""
+    assert (
+        apply_site("기타: 신청 사이트: https://x.example.kr\n참고 사이트: https://r.example.kr")
+        is None
+    )
+    # 앞 칸(신청 방법)의 자유 글에 같은 머리로 시작하는 줄이 있어도 진짜 칸(마지막 머리)을 읽는다
+    raw = record(
+        plcyAplyMthdCn="온라인 신청\n신청 사이트: 각 구청 홈페이지",
+        aplyUrlAddr="https://real.example.go.kr/apply",
+    ).raw_text
+    assert apply_site(raw) == "https://real.example.go.kr/apply"
+    assert apply_site(None) is None
+    assert apply_site("정책 설명: 월세 지원") is None
+    assert apply_site("신청 사이트: https://x.example.kr/" + "a" * 2000) is None  # 지나치게 긴 주소
 
 
 def test_every_condition_is_judgeable() -> None:

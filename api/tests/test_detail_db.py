@@ -644,6 +644,52 @@ async def test_detail_shows_review_reasons() -> None:
         await conn.close()
 
 
+async def test_detail_apply_url_only_for_youth_policy_sites() -> None:
+    """상세 1차: 청년정책 원문의 '신청 사이트' 칸이 http·https 주소면 apply_url이다.
+
+    주소가 아닌 신청 사이트 칸, 신청 사이트 칸이 없는 청년정책은 null이다. 학교 공지는 원문에 같은 이름의 줄이
+    있어도 읽지 않는다 — 그 칸 이름은 온통청년 원문(app/youth/convert.py)의 약속이다.
+    """
+    conn = await connect()
+    try:
+        me = await make_user(conn)
+        raw = {
+            "월세 지원": "정책 설명: 월세를 지원\n신청 방법: 온라인 접수\n"
+            "신청 사이트: https://youth.example.go.kr/apply?id=1\n참고 사이트: https://ref.example.kr",
+            "정장 대여": "정책 설명: 면접 정장\n신청 사이트: 홈페이지 참조",
+            "교통비": "정책 설명: 교통비 지원\n참고 사이트: https://ref.example.kr",
+            "장학": "원문 URL: https://notice.example.ac.kr/1\n신청 사이트: https://school.example.ac.kr",
+        }
+        source = {
+            "월세 지원": "youth_policy",
+            "정장 대여": "youth_policy",
+            "교통비": "youth_policy",
+        }
+        found: dict[str, str | None] = {}
+        for title, text in raw.items():
+            row = await one(
+                conn,
+                "insert into opportunities (source_type, title, raw_text) values (%s, %s, %s)"
+                " returning id, now() as now",
+                source.get(title, "school_notice"),
+                title,
+                text,
+            )
+            assert row is not None
+            detail = await OpportunityRepository(conn).detail(me, str(row["id"]), now=row["now"])
+            assert detail is not None
+            found[title] = detail.apply_url
+        assert found == {
+            "월세 지원": "https://youth.example.go.kr/apply?id=1",
+            "정장 대여": None,
+            "교통비": None,
+            "장학": None,
+        }
+    finally:
+        await conn.rollback()
+        await conn.close()
+
+
 async def test_detail_process_from_an_extraction_run() -> None:
     """요건 추출 에이전트가 실제로 남긴 실행 로그로 처리 과정을 만든다(LLM만 가짜).
 

@@ -85,6 +85,7 @@ from app.schemas.posters import EXTRACT_LABEL
 from app.schemas.posters import EXTRACT_TOOL as POSTER_TOOL
 from app.youth import BUILD_TOOL as BUILD_YOUTH
 from app.youth import FETCH_TOOL as FETCH_YOUTH
+from app.youth.convert import apply_site
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,8 @@ _OPENABLE = " (p.id is not null or (o.status in ('active', 'expired') and" + VIS
 _DETAIL = (
     "select o.id, o.title, o.organizer, o.category::text as category,"
     " o.source_type::text as source_type, o.status::text as status, o.original_url,"
+    # 청년정책만 원문을 읽는다('신청 사이트' 칸 → apply_url). 학교 공지 원문은 길어서 꺼내지 않는다
+    " case when o.source_type = 'youth_policy' then o.raw_text end as youth_raw_text,"
     " o.easy_summary, o.apply_start_at, o.deadline_at, o.needs_review, o.review_reasons,"
     " o.extraction_confidence, o.eligibility_basis_date, o.requirements_version,"
     " o.extraction_run_id, coalesce(o.uploaded_by = %(uid)s, false) as uploaded_by_me,"
@@ -575,6 +578,7 @@ class OpportunityRepository:
             source_type=row["source_type"],
             status=row["status"],
             original_url=row["original_url"],
+            apply_url=apply_site(row["youth_raw_text"]),
             poster_kind=row["poster_kind"],
             easy_summary=row["easy_summary"],
             apply_start_at=apply_start.astimezone(KST) if apply_start else None,

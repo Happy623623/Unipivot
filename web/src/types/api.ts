@@ -223,6 +223,7 @@ export interface OpportunityDetail {
   source_type: SourceType;
   status: OpportunityStatus;             // 준비한 공고가 마감·숨김이 되어도 보인다. 화면 위에 안내를 띄운다
   original_url: string | null;
+  apply_url: string | null;              // 청년정책의 실제 신청 사이트(http·https일 때만). 그 밖의 공고는 null
   poster_kind: PosterKind | null;        // 내가 올린 포스터의 원본 형식(W6). 주소는 getPosterUrl로 누를 때 받는다
   easy_summary: string | null;
   apply_start_at: string | null;

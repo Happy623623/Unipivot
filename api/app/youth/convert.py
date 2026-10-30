@@ -17,6 +17,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, time
 from typing import Any, NamedTuple
+from urllib.parse import urlsplit
 
 from app.eligibility import KST, Requirement, requirement_problem
 from app.extraction.models import RequirementDraft
@@ -519,6 +520,55 @@ def raw_section(raw_text: str | None, name: str) -> str | None:
         elif collected is not None:
             collected.append(line)
     text = "\n".join(collected or []).strip()
+    return text or None
+
+
+APPLY_SITE = "신청 사이트"  # 온통청년 aplyUrlAddr 칸의 원문 이름(_RAW_SECTIONS)
+# 호스트는 점으로 나뉜 ASCII 이름, 포트는 숫자. 경로에는 빈칸·쉼표·괄호·꺾쇠·따옴표·제어 문자를 받지 않는다(한글은 받는다)
+_WEB_ADDRESS = re.compile(
+    r"https?://[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]{1,5})?(?:[/?#][^\s,()<>\"'\x00-\x1f\x7f]*)?",
+    re.IGNORECASE | re.ASCII,
+)
+_SCHEME = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
+_TRAILING = ".,;:!?"  # 문장 끝 구두점은 주소가 아니다
+_ADDRESS_MAX = 2000
+
+
+def apply_site(raw_text: str | None) -> str | None:
+    """청년정책 원문의 '신청 사이트' 칸 주소(공고 상세의 "신청하러 가기", 상세 1차).
+
+    칸의 첫 낱말이 http·https 주소일 때만 돌려준다(끝의 구두점은 뗀다). 주소가 아닌 글("홈페이지 참조"), scheme이
+    없는 주소("www.…"), 주소가 둘 이상인 칸은 None이다 — 화면이 그때 "신청 방법은 원문에서 확인해 주세요"를 보인다.
+    같은 머리("신청 사이트: ")가 앞 칸의 자유 글 안에도 있을 수 있어서 마지막 머리를 읽는다 — 진짜 칸은 자유 글 칸들
+    뒤에 온다(_RAW_SECTIONS 순서).
+    """
+    text = _last_section(raw_text, APPLY_SITE)
+    if not text or len(_SCHEME.findall(text)) != 1:
+        return None
+    first = text.split()[0].rstrip(_TRAILING)
+    if len(first) > _ADDRESS_MAX or not _WEB_ADDRESS.fullmatch(first):
+        return None
+    try:
+        if urlsplit(first).port == 0:  # 0번 포트는 쓸 수 없다. 65535를 넘으면 ValueError다
+            return None
+    except ValueError:
+        return None
+    return first
+
+
+def _last_section(raw_text: str | None, name: str) -> str | None:
+    """raw_section과 같되, 같은 이름의 머리가 여럿이면 마지막 칸을 읽는다."""
+    heads = tuple(f"{label}: " for _, label in _RAW_SECTIONS)
+    lines = (raw_text or "").splitlines()
+    starts = [index for index, line in enumerate(lines) if line.startswith(f"{name}: ")]
+    if not starts:
+        return None
+    collected = [lines[starts[-1]][len(name) + 2 :]]
+    for line in lines[starts[-1] + 1 :]:
+        if line.startswith(heads):
+            break
+        collected.append(line)
+    text = "\n".join(collected).strip()
     return text or None
 
 
