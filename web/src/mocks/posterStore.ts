@@ -68,6 +68,7 @@ export function registerStoredPoster(
     source_type: "poster",
     status: "active",
     original_url: null,
+    apply_url: null,
     poster_kind: "image",
     easy_summary: draft.easy_summary,
     apply_start_at: draft.apply_start_at,

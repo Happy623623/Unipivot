@@ -110,6 +110,8 @@ function makeDetail(item: OpportunityItem): OpportunityDetail {
     source_type: item.source_type,
     status: "active",
     original_url: item.source_type === "poster" ? null : "https://example.edu/notices/" + item.id,
+    // 청년정책만 신청 사이트가 있다(온통청년 원문의 '신청 사이트' 칸)
+    apply_url: item.source_type === "youth_policy" ? "https://example.go.kr/apply/" + item.id : null,
     poster_kind: item.source_type === "poster" && item.uploaded_by_me ? "image" : null,
     easy_summary: item.easy_summary,
     apply_start_at: "2026-09-20T09:00:00+09:00",

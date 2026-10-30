@@ -16,6 +16,7 @@ import PreparationProgress from "@/components/PreparationProgress";
 import StatusBadge from "@/components/StatusBadge";
 import { formatKstDate, getDdayValue, isDeadlineSoon } from "@/lib/format";
 import useCalendarEvent from "@/lib/useCalendarEvent";
+import { webUrl } from "@/lib/webUrl";
 import type { OpportunityDetail, PrepareResult, ProcessStep } from "@/types/api";
 import type { Route } from "@/types/route";
 
@@ -215,6 +216,19 @@ export default function OpportunityPreparation({
     );
   })();
 
+  // 신청하러 가기(상세 1차): 청년정책의 신청 사이트를 새 탭으로 연다. 주 행동은 그대로 두고 옆에 보조 버튼으로 단다.
+  // 지원 어려움 공고(10/29 기본안)와 신청이 끝난 공고(마감일이 지났거나, 준비한 뒤 마감·숨김·병합된 공고)에는 두지
+  // 않는다. 주소가 없으면 "원문에서 확인" 한 줄을 둔다 — 단 주 행동이 원문 보기 버튼이면(원문 확인 필요, 준비 전)
+  // 같은 말이라 두지 않고, 원문이 아예 없으면 가리킬 곳이 없어 두지 않는다
+  const noApply =
+    detail.eligibility.display_status === "ineligible" ||
+    detail.status !== "active" ||
+    (getDdayValue(detail.deadline_at, today) ?? 0) < 0;
+  const applyHref = noApply ? null : webUrl(detail.apply_url);
+  const originalIsAction = !result && !detail.prep.prepared && detail.eligibility.display_status === "needs_review";
+  const showApplyHint =
+    !noApply && !applyHref && !originalIsAction && (originalHref !== null || onOpenPoster !== null);
+
   return (
     <>
       <section className="flex items-center justify-between gap-5 rounded-2xl border border-[#e5e7eb] bg-white p-[22px] max-[760px]:flex-col max-[760px]:items-start">
@@ -231,7 +245,18 @@ export default function OpportunityPreparation({
           </p>
           <p className="mt-1 text-[12px] text-[#667085]">신청 기간 {applicationPeriod}</p>
         </div>
-        {action}
+        {/* 버튼이 둘이면 좁은 데스크톱 폭(사이드바가 있는 760–830px)에서 줄을 바꿔야 하니 줄어들 수 있게 둔다(min-w-0) */}
+        <div className="flex min-w-0 flex-col items-end gap-2 max-[760px]:items-start">
+          <div className="flex flex-wrap items-center justify-end gap-2 max-[760px]:justify-start">
+            {action}
+            {applyHref && (
+              <ButtonLink href={applyHref} secondary>
+                신청하러 가기
+              </ButtonLink>
+            )}
+          </div>
+          {showApplyHint && <p className="text-[12px] text-[#667085]">신청 방법은 원문에서 확인해 주세요.</p>}
+        </div>
       </section>
       {message && (
         <p role="status" className="rounded-[10px] bg-[#f2f4f7] px-4 py-3 text-[13px] text-[#475467]">{message}</p>

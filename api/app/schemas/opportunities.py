@@ -177,6 +177,10 @@ class OpportunityDetail(BaseModel):
     source_type: SourceType
     status: OpportunityStatus  # 준비한 공고가 마감·숨김이 되면 화면 위에 안내를 띄운다
     original_url: str | None
+    # 실제 신청 사이트(상세 1차, "신청하러 가기"). 청년정책 원문의 '신청 사이트' 칸이 http·https 주소 하나일 때만
+    # 있고, 그 밖의 공고는 null이다(original_url은 온통청년 상세라 한 번 더 거쳐야 한다). 기본값을 두지 않는다 —
+    # 상세를 만드는 곳이 빠뜨리지 않게
+    apply_url: str | None
     # 내가 올린 포스터 공고의 원본 형식(W6). 주소는 GET /opportunities/{id}/poster-url로 따로 받는다.
     # 그 밖(남의 포스터·포스터가 아닌 공고·원본 파일이 없는 공고)은 null이다
     poster_kind: PosterKind | None

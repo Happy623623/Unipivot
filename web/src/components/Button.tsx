@@ -13,12 +13,26 @@ interface ButtonProps {
 
 const BASE = "h-[42px] rounded-[10px] border px-[18px] text-[14px] font-semibold transition active:scale-[0.98]";
 const PRIMARY = "border-[#4f6ef7] bg-[#4f6ef7] text-white hover:bg-[#425fe0]";
+const SECONDARY = "border-[#e5e7eb] bg-white text-[#181a20] hover:bg-[#f7f8fa]";
 
-// 바깥 주소(공고 원문 등)를 새 탭으로 여는 버튼 모양 링크
-export function ButtonLink({ href, children }: { href: string; children: ReactNode }) {
+interface ButtonLinkProps {
+  href: string;
+  children: ReactNode;
+  secondary?: boolean;
+  announceNewTab?: boolean; // 화면 읽기 프로그램에 "(새 탭)"을 붙인다. 보이는 글에 이미 "새 탭"이 있으면 끈다
+}
+
+// 바깥 주소(공고 원문·신청 사이트)를 새 탭으로 여는 버튼 모양 링크
+export function ButtonLink({ href, children, secondary = false, announceNewTab = true }: ButtonLinkProps) {
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className={`inline-flex items-center ${BASE} ${PRIMARY}`}>
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`inline-flex items-center ${BASE} ${secondary ? SECONDARY : PRIMARY}`}
+    >
       {children}
+      {announceNewTab && <span className="sr-only">(새 탭)</span>}
     </a>
   );
 }
@@ -53,7 +67,7 @@ export default function Button({
       aria-busy={busy || undefined}
       title={title}
       className={`${BASE} disabled:cursor-not-allowed disabled:opacity-45 aria-disabled:opacity-45 aria-busy:cursor-wait aria-disabled:not-aria-busy:cursor-not-allowed aria-disabled:active:scale-100 ${
-        secondary ? "border-[#e5e7eb] bg-white text-[#181a20] hover:bg-[#f7f8fa]" : PRIMARY
+        secondary ? SECONDARY : PRIMARY
       }`}
     >
       {children}

@@ -150,6 +150,10 @@ export default function OpportunityDetail({
           </div>
         }
       />
+      {/* 쉬운 요약(상세 1차): 홈 카드에서 읽은 설명이 상세에서도 보이게 제목 바로 아래에 둔다 */}
+      {detail.easy_summary && (
+        <p className="-mt-4 max-w-[860px] text-[15px] leading-7 text-[#344054]">{detail.easy_summary}</p>
+      )}
       {detail.status !== "active" && (
         <p role="status" className="rounded-[14px] border border-[#e5e7eb] bg-[#f2f4f7] px-[18px] py-3 text-[13px] font-semibold text-[#475467]">
           {STATUS_NOTICE[detail.status]}

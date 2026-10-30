@@ -88,7 +88,9 @@ export default function PosterOriginal({ opportunityId, kind, title, onClose }: 
       {state.status === "ready" && kind === "pdf" && (
         <div className="flex flex-col items-center gap-4 py-6 text-center">
           <p className="text-[14px] text-[#344054]">PDF 포스터는 새 탭에서 열어요. 링크는 몇 분 동안만 열려요.</p>
-          <ButtonLink href={state.url}>새 탭에서 PDF 열기</ButtonLink>
+          <ButtonLink href={state.url} announceNewTab={false}>
+            새 탭에서 PDF 열기
+          </ButtonLink>
         </div>
       )}
       </div>
