@@ -10,7 +10,7 @@ const navItems: { route: Route; label: string; icon: string }[] = [
   { route: { name: "home" }, label: "홈", icon: "⌂" },
   { route: { name: "planner" }, label: "플래너", icon: "□" },
   { route: { name: "academics" }, label: "학업", icon: "▣" },
-  { route: { name: "documents" }, label: "문서함", icon: "▤" },
+  { route: { name: "documents" }, label: "내 파일", icon: "▤" }, // 옛 이름 문서함(피드백 2④ — 학업과 구분이 안 됐다)
 ];
 
 export default function Sidebar({ route, navigate }: SidebarProps) {

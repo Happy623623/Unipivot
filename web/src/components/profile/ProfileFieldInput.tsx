@@ -1,10 +1,46 @@
-import type { ProfileFieldConfig } from "@/lib/profileFields";
+import type { FieldDetails, ProfileFieldConfig } from "@/lib/profileFields";
 
 interface ProfileFieldInputProps {
   field: ProfileFieldConfig;
   value: string;
   error?: string;
   onChange: (value: string) => void;
+}
+
+// 칸 아래 펼치는 설명(기준 중위소득 등). 브라우저의 펼치기(details)라 키보드·화면 읽기 프로그램이 그대로 쓴다
+function FieldDetailsView({ details }: { details: FieldDetails }) {
+  return (
+    <details className="mt-1 text-[12px] leading-5 text-[#475467]">
+      <summary className="cursor-pointer font-semibold text-[#4f6ef7]">{details.summary}</summary>
+      <div className="mt-2 flex flex-col gap-2 rounded-[10px] bg-[#f7f8fa] p-3">
+        {details.before.map((text) => (
+          <p key={text}>{text}</p>
+        ))}
+        {details.table && (
+          <table className="w-full max-w-[280px] text-left">
+            <caption className="pb-1 text-left font-semibold text-[#344054]">{details.table.caption}</caption>
+            <thead>
+              <tr>
+                <th scope="col" className="py-0.5 font-medium text-[#667085]">{details.table.head[0]}</th>
+                <th scope="col" className="py-0.5 text-right font-medium text-[#667085]">{details.table.head[1]}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {details.table.rows.map(([name, value]) => (
+                <tr key={name}>
+                  <th scope="row" className="py-0.5 font-normal">{name}</th>
+                  <td className="py-0.5 text-right tabular-nums">{value}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {details.after.map((text) => (
+          <p key={text}>{text}</p>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 export default function ProfileFieldInput({ field, value, error, onChange }: ProfileFieldInputProps) {
@@ -65,6 +101,7 @@ export default function ProfileFieldInput({ field, value, error, onChange }: Pro
           {message}
         </p>
       )}
+      {field.details && <FieldDetailsView details={field.details} />}
     </div>
   );
 }

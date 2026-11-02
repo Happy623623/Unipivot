@@ -136,6 +136,9 @@ function UpdateGroups({ groups, navigate }: { groups: LmsUpdateGroups; navigate:
   );
 }
 
+// 내 파일과 나눠 말한다(피드백 2④ — 두 곳의 구분이 안 보였다)
+const SUBTITLE = "LearningX의 과제·주차 자료·공지를 과목별로 보여 줘요. 강의자료 PDF를 올리면 요약하고, 받은 파일은 내 파일에 모여요.";
+
 export default function Academics({ navigate }: AcademicsProps) {
   const [syncedAt, setSyncedAt] = useState(0); // 동기화가 끝나면 올려서 목록을 다시 받는다
   // 다시 받는 동안 지난 목록을 둔다. 뼈대로 바꾸면 연결 창이 내려가 창 안 완료 글·닫은 뒤의 안내가 사라진다
@@ -191,7 +194,7 @@ export default function Academics({ navigate }: AcademicsProps) {
   if (connection.status === "disconnected") {
     return (
       <>
-        <Header title="학업" subtitle="LMS 과제와 새 자료를 확인하고 강의자료를 요약할 수 있어요." />
+        <Header title="학업" subtitle={SUBTITLE} />
         {reloadFailed}
         <section className="flex min-h-[480px] flex-col items-center justify-center rounded-[18px] border border-[#e5e7eb] bg-white p-8 text-center">
           <Badge tone="yellow">LearningX 미연결</Badge>
@@ -215,7 +218,7 @@ export default function Academics({ navigate }: AcademicsProps) {
 
   return (
     <>
-      <Header title="학업" subtitle="LMS 과제와 새 자료를 확인하고 강의자료를 요약할 수 있어요." />
+      <Header title="학업" subtitle={SUBTITLE} />
       {reloadFailed}
       {connection.status === "error" ? (
         <section className="flex items-center justify-between gap-4 rounded-[14px] bg-[#fef2f2] p-[18px]">

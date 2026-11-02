@@ -111,7 +111,10 @@ export default function Documents({ navigate }: { navigate: (route: Route) => vo
 
   return (
     <>
-      <Header title="문서함" subtitle="과목 공지 첨부와 강의계획서를 과목별로 모았어요. 받으면 원래 이름으로 저장되고, 강의자료 PDF는 요약도 볼 수 있어요." />
+      <Header
+        title="내 파일"
+        subtitle="과목 공지 첨부·강의계획서·내가 올린 강의자료를 과목별로 모아 뒀어요. 받으면 원래 이름으로 저장되고, 강의자료 PDF는 요약도 볼 수 있어요. 과제와 주차 자료는 학업에서 봐요."
+      />
       {loading && items.length === 0 && <DocumentsSkeleton />}
       {!loading && error !== null && items.length === 0 && (
         <EmptyBox title={error} action="다시 시도" onAction={reload} />
