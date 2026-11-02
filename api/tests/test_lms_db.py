@@ -19,7 +19,13 @@ from app.lms.assignments import CanvasAssignment, assignments
 from app.lms.modules import CanvasModuleItem, module_items
 from app.repositories.announcements import AnnouncementRepository
 from app.repositories.files import FileRepository
-from app.repositories.lms import AssignmentChanges, LmsRepository, SavedAssignment
+from app.repositories.lms import (
+    AssignmentChanges,
+    LmsRepository,
+    SavedAssignment,
+    decode_update_cursor,
+    encode_update_cursor,
+)
 from app.repositories.notifications import (
     AssignmentNotice,
     MaterialNotice,
@@ -1374,12 +1380,21 @@ async def test_a_dropped_course_gets_no_material_notice(world: dict[str, Any]) -
     assert await notes.add_material_notices(DATABASE["id"], [notice], now=now) == 0
 
 
-# ── 새 자료·과제 피드 (F-52, GET /lms/updates) ──────────────────────────────
+# ── 새로 들어온 학업 정보 (F-51·F-52·F-53, GET /lms/updates) ────────────────
+
+
+async def _first_load(world: dict[str, Any], *courses: dict[str, Any]) -> None:
+    """과목을 처음 받은 때(연결 첫 동기화)를 사흘 전으로 둔다. 그 뒤에 들어온 것(공지는 올린 것)만 새 것이다."""
+    for course in courses or (DATABASE,):
+        await world["repo"].save_module_items(
+            world["me"], course["id"], [], now=world["now"] - timedelta(days=3)
+        )
 
 
 async def test_the_feed_shows_new_items_and_new_assignments(world: dict[str, Any]) -> None:
     repo, me, now = world["repo"], world["me"], world["now"]
     await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
     course = await _course_id(world)
     await repo.save_module_items(
         me,
@@ -1393,9 +1408,9 @@ async def test_the_feed_shows_new_items_and_new_assignments(world: dict[str, Any
         me, since=now - timedelta(days=1), now=now, kinds=["module_item", "assignment"]
     )
     assert cursor is None
-    assert {one.type for one in items} == {"assignment", "module_item"}
-    assert len(items) == 2
-    item = next(one for one in items if one.type == "module_item")
+    assert [one.type for one in items] == ["assignment", "module_item"]  # 과제 묶음이 먼저다
+    item = items[1]
+    assert item.type == "module_item"
     assert (item.module_name, item.title) == ("3주차", "3주차 강의")
     assert item.item_type == "ExternalTool"
     assert item.course.short_name == "데이터베이스"
@@ -1403,9 +1418,323 @@ async def test_the_feed_shows_new_items_and_new_assignments(world: dict[str, Any
     assert item.first_seen_at == now.astimezone(KST)
 
 
+async def test_the_feed_leaves_out_what_was_there_before_i_connected(
+    world: dict[str, Any],
+) -> None:
+    """연결하고 처음 받으면 한 학기 분량이 한꺼번에 들어온다. 그건 새 것이 아니다(피드백 2②).
+
+    공지는 한 동기화 안에서 1마이크로초씩 밀어 저장하지만(올린 순) 그것도 첫 수집에 든다.
+    """
+    repo, notices, me, now = world["repo"], world["announcements"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    first = now - timedelta(days=2)  # 연결 첫 동기화(과제 → 주차 항목 → 공지 순으로 저장한다)
+    await repo.save_assignments(me, course, [_one(11, due=now + timedelta(days=9))], now=first)
+    await repo.save_module_items(me, DATABASE["id"], module_items(DB_MODULES), now=first)
+    await notices.save(
+        DATABASE["id"],
+        [
+            _announcement(1, posted_at=first - timedelta(days=3)),
+            _announcement(2, posted_at=first - timedelta(days=1)),
+        ],
+        now=first,
+    )
+    since = now - timedelta(days=14)
+    kinds = ["assignment", "module_item", "announcement"]
+    assert (await repo.updates(me, since=since, now=now, kinds=kinds))[0] == []
+
+    later = now - timedelta(days=1)  # 다음 동기화에 하나씩 새로 들어왔다
+    await repo.save_assignments(
+        me,
+        course,
+        [
+            _one(11, due=now + timedelta(days=9)),
+            _one(12, title="새 과제", due=now + timedelta(days=9)),
+        ],
+        now=later,
+    )
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [
+            *module_items(DB_MODULES),
+            CanvasModuleItem(8569999, "4주차", "04 - 새 강의", "Page", None),
+        ],
+        now=later,
+    )
+    await notices.save(
+        DATABASE["id"], [_announcement(3, title="새 공지", posted_at=later)], now=later
+    )
+
+    items, _ = await repo.updates(me, since=since, now=now, kinds=kinds)
+    assert [one.title for one in items] == ["새 과제", "04 - 새 강의", "새 공지"]
+
+
+async def test_items_another_student_saw_before_i_connected_are_not_new(
+    world: dict[str, Any],
+) -> None:
+    """주차 항목은 과목 공통 표다. 내가 연결하기 전에 다른 수강생이 받은 항목은 나에게 새 것이 아니고,
+    연결한 뒤에 다른 수강생의 동기화가 먼저 받은 항목은 새 것이다."""
+    repo, me, other, now = world["repo"], world["me"], world["other"], world["now"]
+    old = CanvasModuleItem(1, "3주차", "옛 강의", "Page", None)
+    await repo.save_courses(other, [DATABASE], now=now)
+    await repo.save_module_items(other, DATABASE["id"], [old], now=now - timedelta(days=5))
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_module_items(me, DATABASE["id"], [old], now=now - timedelta(days=3))
+    fresh = CanvasModuleItem(2, "4주차", "새 강의", "Page", None)
+    await repo.save_module_items(other, DATABASE["id"], [old, fresh], now=now - timedelta(days=1))
+
+    items, _ = await repo.updates(
+        me, since=now - timedelta(days=14), now=now, kinds=["module_item"]
+    )
+    assert [one.title for one in items] == ["새 강의"]
+
+
+async def test_the_feed_leaves_out_submitted_and_overdue_assignments(
+    world: dict[str, Any],
+) -> None:
+    """낸 과제와 마감이 지난 과제는 새 정보로 넣지 않는다(피드백 2②). 마감이 없는 새 과제는 넣는다."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
+    course = await _course_id(world)
+    await repo.save_assignments(
+        me,
+        course,
+        [
+            _one(11, title="낸 과제", due=now + timedelta(days=5), state="submitted"),
+            _one(12, title="지난 과제", due=now - timedelta(hours=1)),
+            _one(13, title="마감 없는 과제"),
+            _one(14, title="다음 주 과제", due=now + timedelta(days=7)),
+        ],
+        now=now - timedelta(minutes=30),
+    )
+
+    items, _ = await repo.updates(me, since=now - timedelta(days=14), now=now, kinds=["assignment"])
+    assert [one.title for one in items] == ["다음 주 과제", "마감 없는 과제"]
+
+
+async def test_the_feed_orders_each_kind(world: dict[str, Any]) -> None:
+    """과제 → 새 자료 → 공지로 묶고, 묶음마다 순서가 있다(피드백 2② — 뒤섞여 보였다).
+
+    과제는 마감이 가까운 순(마감이 없으면 뒤), 새 자료는 최신 먼저(같은 때면 주차 번호가 큰 순, 같은
+    주차는 만든 순, 번호가 없으면 뒤), 공지는 올린 순(최신 먼저)이다. 부른 종류의 순서와는 상관없다.
+    """
+    repo, notices, me, now = world["repo"], world["announcements"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
+    course = await _course_id(world)
+    earlier, later = now - timedelta(minutes=40), now - timedelta(minutes=10)
+    week8 = CanvasModuleItem(21, "8주차", "08 - 앞 강의", "Page", None)
+    await repo.save_module_items(me, DATABASE["id"], [week8], now=earlier)
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [
+            week8,
+            CanvasModuleItem(31, "9주차", "09 - 강의", "Page", None),
+            CanvasModuleItem(32, "9주차", "09 - 실습", "Page", None),
+            CanvasModuleItem(41, "10주차 (휴강 보강)", "10 - 강의", "Page", None),
+            CanvasModuleItem(51, "기말 대비", "정리 자료", "Page", None),
+        ],
+        now=later,
+    )
+    await repo.save_assignments(
+        me,
+        course,
+        [
+            _one(61, title="먼 과제", due=now + timedelta(days=9)),
+            _one(62, title="가까운 과제", due=now + timedelta(days=2)),
+            _one(63, title="마감 없는 과제"),
+        ],
+        now=later,
+    )
+    await notices.save(
+        DATABASE["id"],
+        [
+            _announcement(71, title="새 공지", posted_at=now - timedelta(minutes=20)),
+            _announcement(72, title="그 전 공지", posted_at=now - timedelta(minutes=50)),
+        ],
+        now=later,
+    )
+    # 공지는 처음 본 때가 아니라 올린 때로 줄 세운다 — 늦게 받은 옛 공지는 뒤로 간다
+    await notices.save(
+        DATABASE["id"],
+        [_announcement(73, title="늦게 받은 공지", posted_at=now - timedelta(minutes=55))],
+        now=now - timedelta(minutes=5),
+    )
+
+    items, _ = await repo.updates(
+        me,
+        since=now - timedelta(days=14),
+        now=now,
+        kinds=["announcement", "module_item", "assignment"],
+    )
+    assert [one.title for one in items] == [
+        "가까운 과제",
+        "먼 과제",
+        "마감 없는 과제",
+        "10 - 강의",
+        "09 - 강의",
+        "09 - 실습",
+        "정리 자료",
+        "08 - 앞 강의",
+        "새 공지",
+        "그 전 공지",
+        "늦게 받은 공지",
+    ]
+
+
+async def test_overlapping_first_syncs_keep_the_semester_out(world: dict[str, Any]) -> None:
+    """두 학생이 거의 함께 처음 연결하면, 나중에 시작한 동기화가 먼저 공통 표에 쓸 수 있다(동기화 시각은
+    시작한 때다). 그래도 그때 이미 있던 항목·공지는 나에게 새 것이 아니고, 과목 카드의 새 자료 수에도
+    들지 않는다. 그 뒤에 들어온 것은 새 것이다."""
+    repo, notices, me, other, now = (
+        world["repo"],
+        world["announcements"],
+        world["me"],
+        world["other"],
+        world["now"],
+    )
+    mine = now - timedelta(minutes=10)  # 내 동기화가 먼저 시작했다
+    theirs = mine + timedelta(seconds=20)  # 그 학생 것이 나중에 시작했지만 먼저 저장했다
+    old = [_announcement(1, posted_at=mine - timedelta(days=3))]
+    await repo.save_courses(other, [DATABASE], now=now)
+    await repo.save_module_items(other, DATABASE["id"], module_items(DB_MODULES), now=theirs)
+    await notices.save(DATABASE["id"], old, now=theirs)
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_module_items(me, DATABASE["id"], module_items(DB_MODULES), now=mine)
+    await notices.save(DATABASE["id"], old, now=mine)
+    since, kinds = now - timedelta(days=14), ["module_item", "announcement"]
+
+    assert (await repo.updates(me, since=since, now=now, kinds=kinds))[0] == []
+    assert (await repo.courses(me, now=now))[0].new_materials == 0
+
+    fresh = CanvasModuleItem(8569999, "4주차", "04 - 새 강의", "Page", None)
+    await repo.save_module_items(other, DATABASE["id"], [fresh], now=now - timedelta(minutes=1))
+    items, _ = await repo.updates(me, since=since, now=now, kinds=kinds)
+    assert [one.title for one in items] == ["04 - 새 강의"]
+
+
+async def test_old_announcements_that_arrive_late_are_left_out(world: dict[str, Any]) -> None:
+    """첫 동기화에서 그 과목 공지를 못 받았으면 다음 동기화가 지난 공지를 한꺼번에 받는다(처음 본 시각이
+    늦다). 공지는 올린 때로 가르므로, 연결 전에 올린 공지는 늦게 받아도 새 것이 아니다."""
+    repo, notices, me, now = world["repo"], world["announcements"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    first = now - timedelta(days=2)  # 연결 첫 동기화 — 공지는 못 받았다
+    await repo.save_module_items(me, DATABASE["id"], [], now=first)
+    await notices.save(
+        DATABASE["id"],
+        [
+            _announcement(1, title="한 달 전 공지", posted_at=now - timedelta(days=30)),
+            _announcement(2, title="사흘 전 공지", posted_at=now - timedelta(days=3)),
+            _announcement(3, title="어제 공지", posted_at=now - timedelta(days=1)),
+        ],
+        now=now - timedelta(hours=1),
+    )
+
+    items, _ = await repo.updates(
+        me, since=now - timedelta(days=14), now=now, kinds=["announcement"]
+    )
+    assert [one.title for one in items] == ["어제 공지"]
+
+
+async def test_a_course_whose_items_were_never_collected_has_only_due_soon_assignments(
+    world: dict[str, Any],
+) -> None:
+    """그 과목의 주차 항목을 한 번도 받지 못했으면(`modules_synced_at` null) 처음 받은 때를 모른다. 그
+    과목에서는 마감 D-3 이내 과제만 나온다 — 다른 학생이 받아 둔 항목·공지, 새 과제는 나오지 않는다."""
+    repo, notices, me, other, now = (
+        world["repo"],
+        world["announcements"],
+        world["me"],
+        world["other"],
+        world["now"],
+    )
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    later = now - timedelta(minutes=30)
+    await repo.save_assignments(
+        me,
+        course,
+        [
+            _one(11, title="곧 마감", due=now + timedelta(days=2)),
+            _one(12, title="다음 주 과제", due=now + timedelta(days=9)),
+        ],
+        now=later,
+    )
+    await repo.save_courses(other, [DATABASE], now=now)
+    await repo.save_module_items(
+        other, DATABASE["id"], [CanvasModuleItem(1, "3주차", "강의", "Page", None)], now=later
+    )
+    await notices.save(DATABASE["id"], [_announcement(1, posted_at=later)], now=later)
+
+    items, _ = await repo.updates(
+        me,
+        since=now - timedelta(days=14),
+        now=now,
+        kinds=["assignment", "module_item", "announcement"],
+    )
+    assert [one.title for one in items] == ["곧 마감"]
+
+
+async def test_assignment_and_quiz_links_stay_in_the_assignment_group(
+    world: dict[str, Any],
+) -> None:
+    """주차 항목 중 과제·퀴즈 링크는 과제 목록과 겹친다(퀴즈도 과제로 온다). 새 자료에는 넣지 않는다 —
+    그러지 않으면 낸 과제가 2주 동안 새 자료로 남는다(피드백 2②)."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [
+            CanvasModuleItem(1, "3주차", "3주차 강의", "ExternalTool", None),
+            CanvasModuleItem(2, "3주차", "3주차 과제 안내", "Assignment", None),
+            CanvasModuleItem(3, "3주차", "3주차 퀴즈", "Quiz", None),
+            CanvasModuleItem(4, "3주차", "3주차 정리", None, None),
+        ],
+        now=now,
+    )
+
+    items, _ = await repo.updates(me, since=now - timedelta(days=1), now=now, kinds=["module_item"])
+    assert [one.title for one in items] == ["3주차 강의", "3주차 정리"]
+
+
+async def test_items_of_the_same_week_are_grouped_by_course(world: dict[str, Any]) -> None:
+    """같은 때 들어온 같은 주차 항목은 과목 이름 순으로 묶고, 같은 과목 안에서 만든 순이다."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE, MACHINE_LEARNING], now=now)
+    await _first_load(world, DATABASE, MACHINE_LEARNING)
+    await repo.save_module_items(
+        me,
+        DATABASE["id"],
+        [
+            CanvasModuleItem(1, "9주차", "DB 강의", "Page", None),
+            CanvasModuleItem(4, "9주차", "DB 실습", "Page", None),
+        ],
+        now=now,
+    )
+    await repo.save_module_items(
+        me,
+        MACHINE_LEARNING["id"],
+        [
+            CanvasModuleItem(2, "Week 9 : Ensembles", "ML 강의", "Page", None),
+            CanvasModuleItem(3, "Week 9 : Ensembles", "ML 실습", "Page", None),
+        ],
+        now=now,
+    )
+
+    items, _ = await repo.updates(me, since=now - timedelta(days=1), now=now, kinds=["module_item"])
+    # "기계학습" < "데이터베이스"(글자 코드 순). Canvas 번호로만 줄 세우면 과목이 섞인다
+    assert [one.title for one in items] == ["ML 강의", "ML 실습", "DB 강의", "DB 실습"]
+
+
 async def test_the_feed_filters_by_kind_and_course(world: dict[str, Any]) -> None:
     repo, me, now = world["repo"], world["me"], world["now"]
     await repo.save_courses(me, [DATABASE, MACHINE_LEARNING], now=now)
+    await _first_load(world, DATABASE, MACHINE_LEARNING)
     db = await _course_id(world)
     await repo.save_module_items(
         me, DATABASE["id"], [CanvasModuleItem(1, "3주차", "DB 강의", "Page", None)], now=now
@@ -1421,37 +1750,44 @@ async def test_the_feed_filters_by_kind_and_course(world: dict[str, Any]) -> Non
     only_db, _ = await repo.updates(
         me, since=since, now=now, kinds=["module_item", "assignment"], course_id=db
     )
-    assert {one.title for one in only_db} == {"DB 강의", "실습 2주차 결과 제출"}
+    assert [one.title for one in only_db] == ["실습 2주차 결과 제출", "DB 강의"]
     nothing, _ = await repo.updates(me, since=since, now=now, kinds=["announcement"])
     assert nothing == []  # 그 과목에 공지가 없으면 빈다
 
 
 async def test_the_feed_leaves_out_old_things(world: dict[str, Any]) -> None:
-    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    """새 것이라도 since보다 오래되면 빠진다(공지는 올린 때로). 기간을 넓히면 나온다."""
+    repo, notices, me, now = world["repo"], world["announcements"], world["me"], world["now"]
     await repo.save_courses(me, [DATABASE], now=now)
+    old = now - timedelta(days=30)
+    await repo.save_module_items(me, DATABASE["id"], [], now=old - timedelta(days=1))  # 첫 수집
     course = await _course_id(world)
     await repo.save_module_items(
-        me, DATABASE["id"], [CanvasModuleItem(1, "1주차", "지난 강의", "Page", None)], now=now
+        me, DATABASE["id"], [CanvasModuleItem(1, "1주차", "지난 강의", "Page", None)], now=old
     )
-    await repo.save_assignments(me, course, [_one(11, due=now + timedelta(days=30))], now=now)
-    await conn.execute(
-        "update lms_module_items set first_seen_at = %s", (now - timedelta(days=30),)
+    await repo.save_assignments(me, course, [_one(11, due=now + timedelta(days=30))], now=old)
+    # 연결한 뒤 올렸지만 since보다 오래된 공지(처음 본 때가 어제여도 빠진다)
+    await notices.save(
+        DATABASE["id"],
+        [_announcement(1, title="20일 전 공지", posted_at=now - timedelta(days=20))],
+        now=now - timedelta(days=1),
     )
-    await conn.execute("update lms_assignments set first_seen_at = %s", (now - timedelta(days=30),))
+    kinds = ["module_item", "assignment", "announcement"]
 
-    items, _ = await repo.updates(
-        me, since=now - timedelta(days=7), now=now, kinds=["module_item", "assignment"]
-    )
+    items, _ = await repo.updates(me, since=now - timedelta(days=7), now=now, kinds=kinds)
     assert items == []
+    wide, _ = await repo.updates(me, since=now - timedelta(days=60), now=now, kinds=kinds)
+    assert [one.title for one in wide] == ["실습 2주차 결과 제출", "지난 강의", "20일 전 공지"]
 
 
 async def test_an_assignment_due_soon_comes_back_even_if_it_is_old(
     world: dict[str, Any],
 ) -> None:
-    """마감 D-3 이내 미제출 과제는 since보다 오래된 것도 넣는다(명세 9장)."""
+    """마감 D-3 이내 미제출 과제는 since보다 오래된 것도, 첫 수집에 들어온 것도 넣는다(명세 9장)."""
     repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
     await repo.save_courses(me, [DATABASE], now=now)
     course = await _course_id(world)
+    first = now - timedelta(days=30)  # 연결 첫 동기화에 들어왔다
     await repo.save_assignments(
         me,
         course,
@@ -1460,17 +1796,19 @@ async def test_an_assignment_due_soon_comes_back_even_if_it_is_old(
             _one(12, title="먼 마감", due=now + timedelta(days=9)),
             _one(13, title="낸 과제", due=now + timedelta(days=1), state="submitted"),
         ],
-        now=now,
+        now=first,
     )
-    await conn.execute("update lms_assignments set first_seen_at = %s", (now - timedelta(days=30),))
+    await repo.save_module_items(me, DATABASE["id"], [], now=first)
 
     items, _ = await repo.updates(me, since=now - timedelta(days=7), now=now, kinds=["assignment"])
     assert [one.title for one in items] == ["곧 마감"]
+    await conn.execute("select 1")  # 트랜잭션이 살아 있는지 확인(되돌리기 전)
 
 
 async def test_the_feed_reads_on_with_a_cursor(world: dict[str, Any]) -> None:
     repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
     await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
     await repo.save_module_items(
         me,
         DATABASE["id"],
@@ -1498,9 +1836,10 @@ async def test_the_feed_reads_on_with_a_cursor(world: dict[str, Any]) -> None:
 async def test_the_feed_pages_through_rows_seen_at_the_same_moment(
     world: dict[str, Any],
 ) -> None:
-    """한 동기화에서 들어온 행은 `first_seen_at`이 모두 같다. 그때도 빠지거나 겹치지 않아야 한다."""
+    """한 동기화에서 들어온 행은 `first_seen_at`이 모두 같다. 그때도 빠지거나 겹치지 않고 순서도 같다."""
     repo, me, now = world["repo"], world["me"], world["now"]
     await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
     course = await _course_id(world)
     await repo.save_module_items(
         me,
@@ -1528,17 +1867,19 @@ async def test_the_feed_pages_through_rows_seen_at_the_same_moment(
         page, cursor = await repo.updates(
             me, since=since, now=now, kinds=["module_item", "assignment"], limit=2, cursor=cursor
         )
-        seen += [one.id for one in page]
+        seen += [one.title for one in page]
         if cursor is None:
             break
-    assert len(seen) == 8
-    assert len(set(seen)) == 8  # 겹치지 않는다
+        cursor = decode_update_cursor(encode_update_cursor(cursor))  # 화면이 받아 돌려주는 그대로
+    # 과제는 마감이 같으면 제목 순, 주차 항목은 같은 주차면 만든 순(Canvas 번호)이다
+    assert seen == ["과제 0", "과제 1", "과제 2", *(f"강의 {number}" for number in range(1, 6))]
 
 
 async def test_the_feed_shows_the_file_i_uploaded_for_an_item(world: dict[str, Any]) -> None:
     """항목 알림에서 올린 PDF가 있으면 화면이 "요약 보기"를 띄운다(명세 9장)."""
     repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
     await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
     saved = await repo.save_module_items(
         me, DATABASE["id"], [CanvasModuleItem(1, "3주차", "강의", "Page", None)], now=now
     )
@@ -1565,6 +1906,7 @@ async def test_the_feed_is_not_someone_elses(world: dict[str, Any]) -> None:
         world["conn"],
     )
     await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
     await repo.save_module_items(
         me, DATABASE["id"], [CanvasModuleItem(1, "3주차", "강의", "Page", None)], now=now
     )
@@ -1589,11 +1931,14 @@ async def test_the_feed_is_not_someone_elses(world: dict[str, Any]) -> None:
 async def test_a_dropped_course_leaves_the_feed(world: dict[str, Any]) -> None:
     repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
     await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
     await repo.save_module_items(
         me, DATABASE["id"], [CanvasModuleItem(1, "3주차", "강의", "Page", None)], now=now
     )
+    since = now - timedelta(days=1)
+    assert len((await repo.updates(me, since=since, now=now, kinds=["module_item"]))[0]) == 1
     await conn.execute("update lms_courses set is_active = false where user_id = %s", (me,))
-    items, _ = await repo.updates(me, since=now - timedelta(days=1), now=now, kinds=["module_item"])
+    items, _ = await repo.updates(me, since=since, now=now, kinds=["module_item"])
     assert items == []
 
 
@@ -2155,6 +2500,7 @@ async def test_the_feed_shows_announcements_and_hides_section_specific_ones(
     repo, notices, me, now = world["repo"], world["announcements"], world["me"], world["now"]
     conn = world["conn"]
     await repo.save_courses(me, [DATABASE], now=now)
+    await _first_load(world)
     saved = await notices.save(
         DATABASE["id"],
         [

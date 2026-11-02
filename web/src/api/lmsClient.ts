@@ -6,6 +6,8 @@ import type {
   LmsConnectResult,
   LmsConnection,
   LmsUpdate,
+  LmsUpdateGroups,
+  LmsUpdateList,
   SyncResponse,
 } from "@/types/api";
 
@@ -83,11 +85,22 @@ export function getCourse(id: string): Promise<CourseDetail> {
   return apiFetch<CourseDetail>(`/lms/courses/${encodeURIComponent(id)}`);
 }
 
-// GET /lms/updates. 최근 14일 새 소식을 처음 본 순으로. 한 쪽(50개)만 쓴다
-export async function getLmsUpdates(): Promise<LmsUpdate[]> {
+// GET /lms/updates 한 종류의 첫 쪽(50개). 순서는 서버가 정한다
+async function updatesOf<K extends LmsUpdate["type"]>(
+  type: K,
+): Promise<Extract<LmsUpdate, { type: K }>[]> {
+  const { items } = await apiFetch<LmsUpdateList>(`/lms/updates?type=${type}`);
+  return items.filter((one): one is Extract<LmsUpdate, { type: K }> => one.type === type);
+}
+
+// 새로 들어온 학업 정보(최근 14일): 과제 · 새 자료 · 공지를 종류마다 따로 받는다.
+// 한꺼번에 받으면 한 쪽(50개)을 한 종류가 다 채울 수 있다
+export async function getLmsUpdates(): Promise<LmsUpdateGroups> {
   if (USE_MOCKS) return mock.getLmsUpdates();
-  const { items } = await apiFetch<{ items: LmsUpdate[]; next_cursor: string | null }>(
-    "/lms/updates",
-  );
-  return items;
+  const [assignments, materials, announcements] = await Promise.all([
+    updatesOf("assignment"),
+    updatesOf("module_item"),
+    updatesOf("announcement"),
+  ]);
+  return { assignments, materials, announcements };
 }

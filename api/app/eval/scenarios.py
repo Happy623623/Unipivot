@@ -1179,20 +1179,23 @@ async def s23(world: EvalWorld) -> None:
     first = await _connect_lms(world, client)
     await world.check("처음에는 공지 없음", expected=0, actual=first["new_announcements"])
 
-    # 교수가 공지 두 건을 올렸다(휴강 안내 + 연구 참여 모집)
+    # 연결한 뒤에 교수가 공지 두 건을 올렸다(휴강 안내 + 연구 참여 모집). 새 글 피드는 과목을 처음 받은
+    # 뒤에 올린 공지만 보여 준다(명세 9장). 가짜 LearningX의 게시 시각은 시나리오를 시작한 때(=연결한 때)
+    # 기준이라, 연결 뒤에 올린 것은 "며칠 전"이 음수다. 5분 안에 또 부르면 서버가 건너뛰어 시계를 옮긴다
+    world.travel(minutes=6)
     world.lms.add_announcement(
         DB_COURSE_ID,
         CANCELLED_TOPIC_ID,
         "휴강 안내",
         message="<p>다음 주 월요일 수업은 휴강합니다.</p>",
-        posted_days_ago=1,
+        posted_days_ago=-0.001,  # 연결하고 1분 반쯤 뒤
     )
     world.lms.add_announcement(
         DB_COURSE_ID,
         RESEARCH_TOPIC_ID,
         RESEARCH_TITLE,
         message=RESEARCH_BODY,
-        posted_days_ago=0.5,
+        posted_days_ago=-0.003,  # 연결하고 4분쯤 뒤
         files=(RESEARCH_POSTER, RESEARCH_VIDEO),
     )
     # 집는 순서는 게시일 최신순이다(연구 참여 모집이 먼저다)
@@ -1201,7 +1204,6 @@ async def s23(world: EvalWorld) -> None:
         _research_requirements(),
         _classify_reply("schedule_change", CANCELLED_SUMMARY),
     )
-    world.travel(minutes=6)  # 5분 안에 또 부르면 서버가 건너뛴다(명세 9장)
     result = await _sync(world, client)
 
     await world.check("공지 둘을 처음 봄", expected=2, actual=result["new_announcements"])
@@ -1378,12 +1380,15 @@ async def s22(world: EvalWorld) -> None:
     await world.check("처음에는 공지 없음", expected=0, actual=first["new_announcements"])
 
     changed_on = (world.now + timedelta(days=CANCELLED_DAYS)).astimezone(KST).date()
+    # 연결한 뒤에 올린 공지다(새 글 피드는 과목을 처음 받은 뒤 올린 공지만 보여 준다, 명세 9장). 가짜
+    # LearningX의 게시 시각은 시나리오를 시작한 때(=연결한 때) 기준이라 "며칠 전"이 음수다
+    world.travel(minutes=6)
     world.lms.add_announcement(
         DB_COURSE_ID,
         CANCELLED_TOPIC_ID,
         "휴강 안내",
         message=f"<p>{changed_on.month}월 {changed_on.day}일 수업은 휴강합니다.</p>",
-        posted_days_ago=0.5,
+        posted_days_ago=-0.002,  # 연결하고 3분쯤 뒤
     )
     world.records(
         _classify_reply(
@@ -1393,7 +1398,6 @@ async def s22(world: EvalWorld) -> None:
             change_kind="cancelled",
         )
     )
-    world.travel(minutes=6)
     result = await _sync(world, client)
 
     await world.check("공지 하나를 처음 봄", expected=1, actual=result["new_announcements"])

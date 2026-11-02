@@ -13,9 +13,13 @@
 - 저장하면서 바뀐 것(새 과제·마감 변경·이번에 제출)을 모아 돌려준다. 플래너·알림·캘린더가 그걸 쓴다
 - `last_synced_at`은 동기화를 **시작할 때** 찍는다(`claim_sync`). 같은 사용자를 두 번 동시에
   동기화하지 않고, 실패한 사람이 배치 앞자리를 계속 차지하지도 않는다
-- 목록 순서는 `ordered()`·`by_due()`가 정한다. DB의 정렬 규칙은 환경마다 달라서 쓰지 않는다
+- 목록 순서는 `ordered()`·`by_due()`·`update_key()`가 정한다. DB의 정렬 규칙은 환경마다 달라서 쓰지 않는다
 """
 
+import base64
+import binascii
+import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
@@ -31,7 +35,6 @@ from app.lms.assignments import SUBMITTED, CanvasAssignment
 from app.lms.modules import CanvasModuleItem
 from app.lms.parse import course_name, is_canvas_id
 from app.repositories.materials import RUN_ALIVE
-from app.repositories.opportunities import Cursor
 from app.schemas.lms import (
     AnnouncementAttachment,
     AnnouncementUpdate,
@@ -154,6 +157,18 @@ _EPOCH = datetime.fromtimestamp(
 )  # 과목을 한 번도 안 열었을 때의 기준(`to_timestamp(0)`과 같다)
 UPDATE_LIMIT = 50  # `GET /lms/updates` 한 쪽
 
+# `GET /lms/updates`의 정렬 값(update_key): (묶음, 수, 수, 과목 이름, 글, 수, id). 다음 쪽 커서에 그대로 적는다
+UpdateKey = tuple[int, int, int, str, str, int, str]
+_KEY_TYPES = (int, int, int, str, str, int, str)
+
+
+@dataclass(frozen=True)
+class UpdateCursor:
+    """`GET /lms/updates`의 다음 쪽. 조건 지문(update_scope)과 마지막 행의 정렬 값이다."""
+
+    scope: str
+    key: UpdateKey
+
 
 def _attachment_list(value: Any) -> list[dict[str, Any]]:
     """공지 표의 첨부 목록(jsonb). 모양이 어긋난 원소는 버린다(번호와 이름이 있어야 보여 줄 수 있다)."""
@@ -212,8 +227,16 @@ _STATE_FILTERS = {
     "all": "",
 }
 
-# 새 주차 항목과 과제를 한 피드로(명세 9장 `GET /lms/updates`). 둘을 같은 모양으로 맞춰 union한다.
-# 주차 항목은 과목 공통 표라 과목 번호로 내 수강 과목에 잇는다(그래서 남의 과목 항목은 안 나온다)
+# 과목을 처음 받은 뒤에 들어온 것만 "새 것"이다(명세 9장). 연결하고 처음 받으면 연결 전부터 있던 한
+# 학기 분량이 한꺼번에 들어온다. 처음 받은 때(`modules_synced_at`)는 그 동기화 시각과 그때 주차 항목 표에
+# 이미 있던 그 과목 행의 처음 본 시각 중 늦은 쪽이다(save_module_items) — 그 동기화에 들어온 주차 항목·과제는
+# 그보다 늦지 않다. 공지는 **올린 때**로 가른다: 공지 표도 과목 공통이라, 같이 처음 연결한 학생의 동기화나
+# 첫 동기화에서 못 받은 공지가 처음 본 시각을 늦춘다. 과목의 주차 항목을 아직 한 번도 받지 못했으면(null)
+# 그 과목에는 새 것이 없다(마감 임박 과제만 나온다)
+
+# 새로 들어온 학업 정보(명세 9장 `GET /lms/updates`). 주차 항목·과제·공지를 같은 모양으로 맞춰 union한다.
+# 주차 항목·공지는 과목 공통 표라 과목 번호로 내 수강 과목에 잇는다(그래서 남의 과목 것은 안 나온다).
+# 순서는 update_key가 정한다
 _UPDATES = (
     "select * from ("
     "  select 'module_item' as kind, i.id, i.first_seen_at as at, c.id as course_id,"
@@ -224,34 +247,42 @@ _UPDATES = (
     # 공지 칸(F-53). 첫 갈래에서 형을 못 박아야 union이 글자·숫자를 섞지 않는다
     "    null::text as summary, null::text as category, null::timestamptz as posted_at,"
     "    null::smallint as attachment_count, null::uuid as opportunity_id,"
-    "    null::uuid as planner_task_id"
+    "    null::uuid as planner_task_id,"
+    # Canvas 번호는 만든 순으로 커진다. 같은 때 들어온 것끼리의 순서에 쓴다(update_key)
+    "    i.canvas_item_id as canvas_id"
     "  from lms_module_items i"
     "  join lms_courses c on c.canvas_course_id = i.canvas_course_id and c.user_id = %(uid)s"
     "    and coalesce(c.is_active, true)"
-    "  where i.first_seen_at >= %(since)s"
+    "  where i.first_seen_at >= %(since)s and i.first_seen_at > c.modules_synced_at"
+    # 과제·퀴즈 링크는 과제 묶음과 겹친다(퀴즈도 과제 목록에 온다). 내도 2주 동안 남아 있어 뺀다
+    "    and coalesce(i.item_type, '') not in ('Assignment', 'Quiz')"
     "  union all"
     "  select 'assignment', a.id, a.first_seen_at, c.id, c.name, null, a.title, null, a.html_url,"
     "    a.due_at, a.submission_state::text, null,"
-    "    null, null, null, null, null, null"
+    "    null, null, null, null, null, null, a.canvas_assignment_id"
     "  from lms_assignments a"
     "  join lms_courses c on c.id = a.lms_course_id and c.user_id = a.user_id"
     "  where a.user_id = %(uid)s and a.removed_at is null and coalesce(c.is_active, true)"
-    # 새 과제이거나, 마감이 가까운 미제출 과제다(명세 9장)
-    "    and (a.first_seen_at >= %(since)s or (a.submission_state = 'unsubmitted'"
-    "      and a.due_at >= %(now)s and a.due_at < %(soon)s))"
+    # 낸 과제는 넣지 않는다. 새 과제(마감이 지나지 않은 것)이거나 마감 D-3 이내 과제다(명세 9장)
+    "    and a.submission_state = 'unsubmitted'"
+    "    and ((a.first_seen_at >= %(since)s and a.first_seen_at > c.modules_synced_at"
+    "          and (a.due_at is null or a.due_at >= %(now)s))"
+    "      or (a.due_at >= %(now)s and a.due_at < %(soon)s))"
     "  union all"
-    # 과목 공지(F-53). 과목 공통 표라 과목 번호로 잇고, 분반 한정 공지는 내려주지 않는다(명세 9장)
+    # 과목 공지(F-53). 분반 한정 공지는 내려주지 않는다(명세 9장)
     "  select 'announcement', n.id, n.first_seen_at, c.id, c.name, null, n.title, null, null,"
     "    null, null, null,"
     "    n.summary, n.category::text, n.posted_at, n.attachment_count, n.opportunity_id,"
     "    (select p.id from planner_tasks p where p.lms_announcement_id = n.id"
-    "      and p.user_id = c.user_id order by p.created_at, p.id limit 1)"
+    "      and p.user_id = c.user_id order by p.created_at, p.id limit 1),"
+    "    n.canvas_topic_id"
     "  from lms_announcements n"
     "  join lms_courses c on c.canvas_course_id = n.canvas_course_id and c.user_id = %(uid)s"
     "    and coalesce(c.is_active, true)"
-    # 예약 공지(posted_at이 없는 글)는 아직 소식이 아니라 넣지 않는다
-    "  where n.first_seen_at >= %(since)s and not n.is_section_specific"
-    "    and n.posted_at is not null"
+    # 과목을 처음 받은 뒤에 올렸고 since 뒤에 올린 공지다. 예약 공지(posted_at이 없는 글)는 아직 소식이
+    # 아니라 넣지 않는다
+    "  where n.posted_at > c.modules_synced_at and n.posted_at >= %(since)s"
+    "    and not n.is_section_specific"
     ") as feed where kind = any(%(kinds)s::text[])"
 )
 
@@ -539,12 +570,14 @@ class LmsRepository:
         now: datetime,
         kinds: list[str],
         course_id: str | None = None,
-        cursor: Cursor | None = None,
+        cursor: UpdateCursor | None = None,
         limit: int = UPDATE_LIMIT,
-    ) -> tuple[list[Any], Cursor | None]:
-        """새 주차 항목·과제 피드(F-52·F-51). 처음 본 순(최신 먼저)이고 한 쪽은 `limit`개다.
+    ) -> tuple[list[Any], UpdateCursor | None]:
+        """새로 들어온 학업 정보(F-51·F-52·F-53). 순서는 `update_key`이고 한 쪽은 `limit`개다.
 
-        `cursor`는 같은 조건(지문)에서만 쓸 수 있다. 마지막 행의 (처음 본 시각, id) 뒤를 이어 읽는다.
+        `cursor`는 같은 조건(지문)에서만 쓸 수 있다. 마지막 행의 정렬 값 뒤를 이어 읽는다. 순서는 DB에
+        맡기지 않고 여기서 정한다(`ordered()`와 같은 이유) — 조건에 맞는 행은 많지 않다(과목을 처음
+        받은 뒤 들어온 것만, 기본 14일).
         """
         query = _UPDATES
         params: dict[str, Any] = {
@@ -557,21 +590,17 @@ class LmsRepository:
         if course_id is not None:
             query += " and course_id = %(course)s"
             params["course"] = course_id
-        if cursor is not None:
-            query += " and (at, id) < (%(at)s, %(last)s)"
-            params["at"], params["last"] = cursor.value, cursor.id
-        query += " order by at desc, id desc limit %(limit)s"
-        params["limit"] = limit + 1  # 한 개 더 받아 다음 쪽이 있는지 본다
-        rows = await self._rows(query, params)
-        more = len(rows) > limit
-        rows = rows[:limit]
-        items = [_update(row) for row in rows]
-        if not more or not rows:
-            return items, None
-        last = rows[-1]
-        return items, Cursor(
-            scope=update_scope(kinds, course_id, since), value=last["at"], id=str(last["id"])
+        keyed = sorted(
+            ((update_key(row), row) for row in await self._rows(query, params)),
+            key=lambda pair: pair[0],
         )
+        if cursor is not None:
+            keyed = [pair for pair in keyed if pair[0] > cursor.key]
+        page = keyed[:limit]
+        items = [_update(row) for _, row in page]
+        if len(keyed) <= limit:
+            return items, None
+        return items, UpdateCursor(scope=update_scope(kinds, course_id, since), key=page[-1][0])
 
     async def course_detail(
         self, user_id: str, course_id: str, *, now: datetime, lms_base: str
@@ -784,8 +813,14 @@ class LmsRepository:
 
         **첫 수집인지는 내 과목 행의 `modules_synced_at`으로 가린다.** 표에 행이 있는지로 가리면
         안 된다 — 항목이 0건인 과목이 흔해서(녹화 6과목 중 2과목) 그 과목에 나중에 올라온 첫 자료가
-        영원히 "첫 수집"으로 묶인다. 첫 수집에는 `last_viewed_at`도 지금으로 올려서, 연결 전부터
+        영원히 "첫 수집"으로 묶인다. 첫 수집에는 `last_viewed_at`도 같은 때로 올려서, 연결 전부터
         있던 항목이 "새 자료" 수에 들어가지 않게 한다(ERD 알림함·조회 기록).
+
+        첫 수집 표시는 `now`와 **그 과목의 주차 항목 표에 지금 있는 행의 가장 늦은 처음 본 시각** 중
+        늦은 쪽이다. 동기화 시각은 시작한 때라, 같이 처음 연결한 학생의 동기화가 나중에 시작해 먼저
+        저장하면 공통 표의 처음 본 시각이 내 `now`보다 늦다 — 그대로 두면 연결 전부터 있던 한 학기가
+        나에게 새 것이 된다(새로 들어온 학업 정보 `_UPDATES`, 과목 카드의 새 자료 수). 내가 같은 항목을
+        쓰는 저장은 그 학생의 저장이 끝나기를 기다리므로, 이 문장이 돌 때는 그 행이 보인다.
 
         사라진 항목은 지우지 않는다(표에 `removed_at`이 없다). 교수가 항목을 지워도 기록은 남는다.
         """
@@ -827,10 +862,13 @@ class LmsRepository:
                 )
         # 첫 수집 표시와 "여기까지 봤다"를 함께 올린다(둘 다 그 사용자 과목 행이다)
         await self.conn.execute(
-            "update lms_courses set modules_synced_at = %(now)s,"
-            " last_viewed_at = greatest(coalesce(last_viewed_at, %(now)s), %(now)s)"
-            " where user_id = %(uid)s and canvas_course_id = %(canvas)s"
-            " and modules_synced_at is null",
+            "update lms_courses c set modules_synced_at = f.at,"
+            " last_viewed_at = greatest(coalesce(c.last_viewed_at, f.at), f.at)"
+            " from (select greatest(%(now)s::timestamptz,"
+            "   (select max(i.first_seen_at) from lms_module_items i"
+            "     where i.canvas_course_id = %(canvas)s)) as at) f"
+            " where c.user_id = %(uid)s and c.canvas_course_id = %(canvas)s"
+            " and c.modules_synced_at is null",
             {"uid": user_id, "canvas": canvas_course_id, "now": now},
         )
         return ModuleChanges(created=created, first_load=first_load)
@@ -943,6 +981,78 @@ def update_since(scope: str) -> datetime | None:
         return datetime.fromisoformat(scope.rsplit("|", 1)[1])
     except (IndexError, ValueError):
         return None
+
+
+def encode_update_cursor(cursor: UpdateCursor) -> str:
+    raw = json.dumps({"q": cursor.scope, "k": list(cursor.key)}, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_update_cursor(text: str) -> UpdateCursor:
+    """next_cursor로 준 값을 되돌린다. 모양이 틀리면 ValueError.
+
+    정렬 값은 칸마다 형까지 본다 — 형이 다른 값이 들어오면 비교하다 TypeError(500)가 난다.
+    """
+    try:
+        data = json.loads(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
+        scope, key = data["q"], data["k"]
+    except (
+        binascii.Error,
+        ValueError,
+        KeyError,
+        TypeError,
+        UnicodeDecodeError,
+        RecursionError,  # "[[[[…" 처럼 깊게 겹친 JSON
+    ) as exc:
+        raise ValueError("cursor") from exc
+    if (
+        not isinstance(scope, str)
+        or not isinstance(key, list)
+        or len(key) != len(_KEY_TYPES)
+        or any(type(value) is not kind for value, kind in zip(key, _KEY_TYPES, strict=True))
+    ):
+        raise ValueError("cursor")
+    return UpdateCursor(scope=scope, key=tuple(key))  # type: ignore[arg-type]  # 위에서 칸마다 봤다
+
+
+# "8주차"·"제8주"·"Week 8"만 읽는다. "3 주제", "제1주제", "100주년", "123주차", "Midweek 2"는 아니다
+_WEEK = re.compile(
+    r"(?<!\d)(\d{1,2})\s*주차|제\s*(\d{1,2})\s*주(?!제)|\bweek\s*(\d{1,2})", re.IGNORECASE
+)
+
+
+def week_number(module_name: str | None) -> int | None:
+    """주차 이름의 번호("8주차" → 8, "Week 3 : Trees" → 3). 번호를 따로 저장하지 않아 이름에서 읽는다."""
+    found = _WEEK.search(module_name or "")
+    return int(next(group for group in found.groups() if group)) if found else None
+
+
+def _micros(value: datetime) -> int:
+    """정렬용 시각(정수 마이크로초). 소수로 바꾸면 커서에 적었다 되읽을 때 값이 흔들린다."""
+    return (value - _EPOCH) // timedelta(microseconds=1)
+
+
+def update_key(row: dict[str, Any]) -> UpdateKey:
+    """새로 들어온 학업 정보의 순서(명세 9장). 과제 → 새 자료 → 공지로 묶는다.
+
+    - 과제: 마감이 가까운 순. 마감이 없으면 뒤
+    - 새 자료: 처음 본 순(최신 먼저). 같은 때 들어온 것은 주차 번호가 큰 순(번호가 없으면 뒤)
+    - 공지: 올린 순(최신 먼저)
+
+    그다음은 과목 이름 → (과제) 제목 → Canvas 번호(새 자료는 만든 순, 공지는 최신 먼저) → id 순이다.
+    글자는 파이썬 글자 코드 순으로 비교한다(`ordered()`와 같은 이유).
+    """
+    short_name = course_name(row["course_name"]).short_name
+    ident = str(row["id"])
+    if row["kind"] == "assignment":
+        due = row["due_at"]
+        at = _micros(due) if due else 0
+        return (0, int(due is None), at, short_name, row["title"], row["canvas_id"], ident)
+    if row["kind"] == "module_item":
+        week = week_number(row["module_name"])
+        order = -week if week is not None else 1
+        return (1, -_micros(row["at"]), order, short_name, "", row["canvas_id"], ident)
+    return (2, -_micros(row["posted_at"]), 0, short_name, "", -row["canvas_id"], ident)
 
 
 def _update(row: dict[str, Any]) -> ModuleItemUpdate | AssignmentUpdate | AnnouncementUpdate:
