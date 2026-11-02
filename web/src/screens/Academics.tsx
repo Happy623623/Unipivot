@@ -12,9 +12,14 @@ import Button from "@/components/Button";
 import Header from "@/components/Header";
 import LmsConnectModal from "@/components/LmsConnectModal";
 import Skeleton from "@/components/Skeleton";
-import { formatDday, formatRelativeTime, isDeadlineSoon } from "@/lib/format";
+import {
+  formatDday,
+  formatKstShortDate,
+  formatRelativeTime,
+  isDeadlineSoon,
+} from "@/lib/format";
 import useAsyncData from "@/lib/useAsyncData";
-import type { LmsConnection, LmsUpdate } from "@/types/api";
+import type { LmsConnection, LmsUpdate, LmsUpdateGroups } from "@/types/api";
 import type { Route } from "@/types/route";
 
 interface AcademicsProps {
@@ -45,46 +50,89 @@ function updateRoute(update: LmsUpdate): Route {
   return { name: "course", id: update.course.id, tab: "assignments" };
 }
 
-function UpdateItem({
-  update,
+// 줄마다 무엇(과목·주차), 제목, 날짜를 보인다. 과제는 마감일과 D-day, 새 자료는 들어온 때, 공지는 올린 때다
+function updateLine(update: LmsUpdate): { label: string; note: string | null; when: string; urgent: boolean } {
+  const course = update.course.short_name;
+  if (update.type === "assignment") {
+    const due = update.due_at;
+    return {
+      label: course,
+      note: null,
+      when: due ? `${formatKstShortDate(due)} 마감 · ${formatDday(due, todayKst())}` : "마감 없음",
+      urgent: isDeadlineSoon(due, todayKst()),
+    };
+  }
+  if (update.type === "module_item") {
+    return {
+      label: update.module_name ? `${course} · ${update.module_name}` : course,
+      note: null,
+      when: formatRelativeTime(update.first_seen_at, nowIso()),
+      urgent: false,
+    };
+  }
+  return { label: course, note: update.summary, when: formatRelativeTime(update.posted_at, nowIso()), urgent: false };
+}
+
+function UpdateGroup({
+  title,
+  updates,
   navigate,
 }: {
-  update: LmsUpdate;
+  title: string;
+  updates: LmsUpdate[];
   navigate: (route: Route) => void;
 }) {
-  const heading =
-    update.type === "module_item"
-      ? `${update.course.short_name} ${update.module_name} 자료`
-      : update.type === "announcement"
-        ? `${update.course.short_name} 공지`
-        : `${update.course.short_name} ${
-            isDeadlineSoon(update.due_at, todayKst()) ? "과제 마감 임박" : "새 과제"
-          }`;
-  const note =
-    update.type === "module_item"
-      ? update.title
-      : update.type === "announcement"
-        ? update.summary
-        : `${update.title} · ${formatDday(update.due_at, todayKst())}`;
-  const color =
-    update.type === "assignment"
-      ? "text-[#c53030]"
-      : update.type === "announcement"
-        ? "text-[#b7791f]"
-        : "text-[#4f6ef7]";
-
+  if (updates.length === 0) return null;
   return (
-    <button
-      type="button"
-      onClick={() => navigate(updateRoute(update))}
-      className="flex w-full gap-3 rounded-[10px] p-1 text-left hover:bg-[#f7f8fa]"
-    >
-      <span className={`mt-1 text-[12px] ${color}`}>●</span>
-      <span className="min-w-0">
-        <b className="block text-[14px] font-semibold">{heading}</b>
-        <span className="mt-0.5 block truncate text-[12px] text-[#667085]">{note}</span>
-      </span>
-    </button>
+    <div>
+      <h3 className="text-[13px] font-semibold text-[#344054]">
+        {title} <span className="text-[#667085]">{updates.length}</span>
+      </h3>
+      <ul className="mt-1.5 flex flex-col">
+        {updates.map((update) => {
+          const line = updateLine(update);
+          return (
+            <li key={`${update.type}-${update.id}`}>
+              <button
+                type="button"
+                onClick={() => navigate(updateRoute(update))}
+                className="flex w-full items-start justify-between gap-3 rounded-[10px] px-2 py-1.5 text-left hover:bg-[#f7f8fa]"
+              >
+                <span className="min-w-0">
+                  <span className="block text-[12px] text-[#667085]">{line.label}</span>
+                  <b className="block truncate text-[14px] font-semibold">{update.title}</b>
+                  {line.note && <span className="block truncate text-[12px] text-[#667085]">{line.note}</span>}
+                </span>
+                <span className={`mt-0.5 shrink-0 text-[12px] font-semibold ${line.urgent ? "text-[#c53030]" : "text-[#667085]"}`}>
+                  {line.when}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+// 새로 들어온 학업 정보(피드백 2②): 과제 · 새 자료 · 공지로 나눈다. 빈 묶음은 숨긴다
+function UpdateGroups({ groups, navigate }: { groups: LmsUpdateGroups; navigate: (route: Route) => void }) {
+  const total = groups.assignments.length + groups.materials.length + groups.announcements.length;
+  return (
+    <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
+      <h2 className="text-[18px] font-semibold">새로 들어온 학업 정보</h2>
+      {total === 0 ? (
+        <p className="mt-3 text-[13px] text-[#667085]">
+          LearningX를 연결한 뒤 최근 2주 동안 새로 올라온 과제·자료·공지가 없어요. 지난 자료는 과목을 눌러 보세요.
+        </p>
+      ) : (
+        <div className="mt-3 flex flex-col gap-4">
+          <UpdateGroup title="과제" updates={groups.assignments} navigate={navigate} />
+          <UpdateGroup title="새 자료" updates={groups.materials} navigate={navigate} />
+          <UpdateGroup title="공지" updates={groups.announcements} navigate={navigate} />
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -221,23 +269,7 @@ export default function Academics({ navigate }: AcademicsProps) {
           </div>
         </section>
       )}
-      <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
-        <h2 className="text-[18px] font-semibold">새로 들어온 학업 정보</h2>
-        {updates.length === 0 && (
-          <p className="mt-3 text-[13px] text-[#667085]">
-            최근 2주 동안 새로 올라온 자료나 과제가 없어요. 과목을 누르면 지난 자료도 볼 수 있어요.
-          </p>
-        )}
-        <div className="mt-3 flex flex-col gap-3">
-          {updates.map((update) => (
-            <UpdateItem
-              key={`${update.type}-${update.id}`}
-              update={update}
-              navigate={navigate}
-            />
-          ))}
-        </div>
-      </section>
+      <UpdateGroups groups={updates} navigate={navigate} />
       <LmsConnectModal
         key="lms-connect"
         open={connectOpen}

@@ -110,6 +110,8 @@
 >
 > v0.4 보강(10/30, 상세 1차): 공고 상세에 `apply_url`(청년정책 원문의 '신청 사이트' 칸이 http·https 주소 하나일 때만, 그 밖은 null). 사용자 피드백 — 온통청년을 한 번 더 거치지 않고 신청 사이트로 바로 간다
 >
+> v0.4 보강(10/30, 학업 새 정보): `GET /lms/updates`는 과목을 처음 받은 뒤 들어온 것만 주고(연결 전부터 있던 것은 뺀다, 공지는 그 뒤에 올린 것) 과제는 내지 않은 것만 준다. 순서는 과제(마감이 가까운 순) → 주차 항목(최신 먼저) → 공지(올린 순)다. 사용자 피드백 — 새 학업 정보가 뒤섞이고 지난 자료·낸 과제까지 나왔다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -220,7 +222,7 @@ sequenceDiagram
 | LMS | `GET /lms/courses` | 수강 과목 + 계획서 바로가기 | F-14, F-51 | P0 |
 | LMS | `GET /lms/courses/{id}` | 과목 상세: 과제·주차 자료·공지·계획서·내 자료, 열람 기록 | F-14, F-15, F-51–F-53 | P0 |
 | LMS | `GET /lms/assignments` | 과제·제출 상태 | F-51 | P0 |
-| LMS | `GET /lms/updates` | 새 주차학습 항목·과목 공지 피드 | F-52, F-53 | P0 |
+| LMS | `GET /lms/updates` | 새로 들어온 학업 정보(새 과제·주차학습 항목·과목 공지) | F-51, F-52, F-53 | P0 |
 | 알림 | `POST /push/subscriptions` · `DELETE /push/subscriptions` | 웹 푸시 구독·해제 | F-33 | P0 |
 | 알림 | `GET /notifications` | 알림함 목록과 안 읽은 수 | F-35 | P0 |
 | 알림 | `POST /notifications/read` | 읽음 처리(선택 또는 전체) | F-35 | P0 |
@@ -1244,7 +1246,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 
 ### `GET /lms/updates`
 
-새 주차학습 항목과 과목 공지를 한 피드로 보여준다(F-52, F-53).
+새로 들어온 학업 정보: 새 과제·주차학습 항목·과목 공지를 보여준다(F-51, F-52, F-53). 학업 화면은 종류마다 따로 부른다(`type` 하나씩 — 한꺼번에 부르면 한 쪽 50개를 한 종류가 다 채울 수 있다).
 
 `?since=2026-09-24T00:00:00+09:00&type=module_item,announcement,assignment&lms_course_id=uuid`
 
@@ -1280,15 +1282,17 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 
 - `since`를 주지 않으면 최근 14일이다. 한 쪽은 50개이고, 더 있으면 `next_cursor`를 준다
 - `cursor`는 **종류·과목이 같은 목록**에서만 쓸 수 있다(다르면 422 `VALIDATION_FAILED`, `details.fields.cursor`). 다음 쪽은 커서에 적힌 `since`를 쓴다 — 기본값(지금 − 14일)은 요청마다 달라서 그대로 두면 다음 쪽을 부를 수 없다
-- 항목은 **처음 본 순**(최신 먼저)이다. `module_item`에는 `item_type`(`ExternalTool`·`Page`·`Quiz`·`Assignment`, 녹화에 `File`은 없었다)이 함께 간다. `module_name`·`html_url`·`item_type`은 null일 수 있다
-- `assignment` 항목은 `{type, id, course, title, due_at, submission_state, html_url, first_seen_at}`이다. 새로 본 과제이거나 **마감 D-3 이내 미제출** 과제가 들어온다(마감 임박은 `since`보다 오래된 것도 넣는다)
+- **과목을 처음 받은 뒤 들어온 것만** 넣는다. 처음 받은 때(`lms_courses.modules_synced_at`)는 그 과목의 주차 항목을 처음 받은 동기화의 시각과, 그때 주차 항목 표에 이미 있던 그 과목 행의 가장 늦은 처음 본 시각 중 늦은 쪽이다. 그 동기화에 함께 들어온 것은 연결 전부터 있던 것이라 뺀다(사용자 피드백 — 연결하고 2주 동안 지난 자료와 낸 과제가 새 정보로 나왔다). 그 과목의 주차 항목을 아직 한 번도 받지 못했으면 그 과목에서는 마감 임박 과제만 나온다
+- 공지는 **올린 때**(`posted_at`)로 가른다 — 처음 받은 때 뒤, `since` 뒤에 올린 공지만 넣는다. 공지 표도 과목 공통이라, 같이 처음 연결한 학생의 동기화나 첫 동기화에서 못 받은 공지가 처음 본 시각을 늦추기 때문이다. 주차 항목 중 과제·퀴즈 링크(`item_type`이 `Assignment`·`Quiz`)는 과제와 겹쳐서 넣지 않는다(퀴즈도 과제 목록에 온다)
+- 순서: 과제 → 주차 항목 → 공지로 묶는다(부른 `type`의 순서와 상관없다). 과제는 마감이 가까운 순(마감 없는 과제는 뒤), 주차 항목은 처음 본 순(최신 먼저, 같으면 주차 이름의 번호가 큰 순 — 번호가 없으면 뒤), 공지는 올린 순(`posted_at`, 최신 먼저)이다. 그다음은 과목 이름 순이고, 같은 과목의 주차 항목은 만든 순이다. `module_item`에는 `item_type`(`ExternalTool`·`Page`·`Quiz`·`Assignment`, 녹화에 `File`은 없었다)이 함께 간다. `module_name`·`html_url`·`item_type`은 null일 수 있다
+- `assignment` 항목은 `{type, id, course, title, due_at, submission_state, html_url, first_seen_at}`이다. **내지 않은 과제만** 들어온다. 새로 본 과제(마감이 지나지 않은 것)이거나 **마감 D-3 이내** 과제다(마감 임박은 `since`보다 오래된 것, 연결 전부터 있던 것도 넣는다)
 - `uploaded_file_id`: 사용자가 이 항목 알림에서 넘어가 PDF를 올렸으면 해당 파일. 프론트는 "업로드하기" 버튼 대신 "요약 보기"를 띄운다
 - 공지 `category`: `schedule_change` \| `material` \| `opportunity` \| `general` \| `null`(분류 전)
 - `opportunity`로 분류된 공지는 `opportunity_id`로 공고 상세에 연결된다(그 공고는 그 과목 수강생만 본다)
 - 아직 올라오지 않은 예약 공지는 내려주지 않는다. 그래서 공지 항목의 `posted_at`은 늘 있다(과목 상세는 null일 수 있다)
-- 같은 동기화에 들어온 공지는 **올린 순**으로 저장한다. 피드가 처음 본 순이라, 그러지 않으면 같은 시각끼리 순서가 들쭉날쭉해진다
+- 같은 동기화에 들어온 공지는 **올린 순**으로 1마이크로초씩 밀어 저장한다. 새 글 피드는 공지를 올린 때(`posted_at`)로 줄 세우고 가른다
 - `planner_task_id`는 일정 변경 공지로 만든 플래너 할 일이다(F-53 2부). 바뀌는 날을 읽지 못했거나 이미 지난 날이면 null이다
-- `type`에 `assignment`(새 과제, 마감 D-3 이내 미제출 과제)를 더한다
+- `type`에 `assignment`(내지 않은 새 과제, 마감 D-3 이내 과제)를 더한다
 - 분반 한정 공지(`is_section_specific`)는 내려주지 않는다
 
 > 모듈 항목 알림에서 올린 파일은 `files.lms_module_item_id`로 연결된다(ERD v0.6). `POST /files`에 `lms_module_item_id`를 함께 보내면 된다.

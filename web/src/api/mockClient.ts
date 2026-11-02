@@ -37,7 +37,7 @@ import type {
   IncomeConsentResult,
   LmsConnectResult,
   LmsConnection,
-  LmsUpdate,
+  LmsUpdateGroups,
   Me,
   NotificationList,
   OpportunityDetail,
@@ -268,7 +268,7 @@ export function syncLmsNow(): Promise<boolean> {
   return syncLms().then((started) => "run_id" in started);
 }
 
-export function getLmsUpdates(): Promise<LmsUpdate[]> {
+export function getLmsUpdates(): Promise<LmsUpdateGroups> {
   return respond(lmsUpdates);
 }
 

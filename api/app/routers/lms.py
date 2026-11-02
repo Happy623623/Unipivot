@@ -15,8 +15,13 @@ from app.config import Settings, get_settings
 from app.errors import ApiError
 from app.lms.service import NOT_CONNECTED, LmsServiceDep
 from app.lms.sync import LmsSyncServiceDep
-from app.repositories.lms import LmsRepoDep, update_filter, update_since
-from app.repositories.opportunities import decode_cursor, encode_cursor
+from app.repositories.lms import (
+    LmsRepoDep,
+    decode_update_cursor,
+    encode_update_cursor,
+    update_filter,
+    update_since,
+)
 from app.schemas.lms import (
     AssignmentList,
     AssignmentState,
@@ -141,11 +146,14 @@ async def updates(
     lms_course_id: Annotated[UUID | None, Query(description="과목 하나만 볼 때")] = None,
     cursor: Annotated[str | None, Query(description="다음 쪽")] = None,
 ) -> LmsUpdateList:
-    """새 주차 항목·과제 피드(F-52·F-51). 처음 본 순이고, 마감 D-3 이내 미제출 과제도 넣는다.
+    """새로 들어온 학업 정보: 새 과제·새 주차 항목·새 공지(F-51·F-52·F-53).
 
+    과목을 처음 받은 뒤 들어온 것만 넣는다(연결 전부터 있던 것은 뺀다). 과제는 내지 않은 것만, 마감이
+    지난 새 과제는 빼고 마감 D-3 이내 과제는 오래된 것도 넣는다. 공지는 올린 때로 가른다(처음 받은 뒤,
+    `since` 뒤에 올린 것). 주차 항목 중 과제·퀴즈 링크는 과제와 겹쳐서 뺀다. 순서는 과제(마감이 가까운 순) → 새 자료(처음 본
+    순, 같으면 주차 번호가 큰 순) → 공지(올린 순)다(`update_key`).
     `since`를 주지 않으면 최근 14일이다. `cursor`를 주면 그 커서에 적힌 `since`를 쓴다(기본값은 요청마다
-    달라서 그대로 두면 다음 쪽을 부를 수 없다). 종류·과목이 다른 목록의 커서는 422다.
-    한 쪽은 50개이고, 공지(`announcement`)는 F-53이 채운다.
+    달라서 그대로 두면 다음 쪽을 부를 수 없다). 종류·과목이 다른 목록의 커서는 422다. 한 쪽은 50개다.
     """
     kinds = [one.strip() for one in type.split(",") if one.strip()]
     unknown = [one for one in kinds if one not in UPDATE_KINDS]
@@ -161,7 +169,7 @@ async def updates(
     last = None
     if cursor is not None:
         try:
-            last = decode_cursor(cursor)
+            last = decode_update_cursor(cursor)
         except ValueError:
             last = None
         # `since`는 커서에 적힌 값을 쓴다. 기본값(지금 - 14일)은 요청마다 달라서, 지문에 넣고 그대로
@@ -183,5 +191,5 @@ async def updates(
         user.id, since=start, now=now, kinds=kinds, course_id=course, cursor=last
     )
     return LmsUpdateList(
-        items=items, next_cursor=encode_cursor(next_cursor) if next_cursor else None
+        items=items, next_cursor=encode_update_cursor(next_cursor) if next_cursor else None
     )

@@ -197,7 +197,8 @@ export interface MaterialSummaryResult {
 }
 
 // GET /lms/updates?since=&type=module_item,assignment&lms_course_id=&cursor=
-// since를 주지 않으면 최근 14일. announcement는 F-53이 채운다(그때까지 비어 있다)
+// since를 주지 않으면 최근 14일. 과목을 처음 받은 뒤 들어온 것만 온다(연결 전부터 있던 것은 빠진다).
+// 순서는 과제(마감이 가까운 순) → 새 자료(최신 먼저) → 공지(올린 순, 최신 먼저)
 export type LmsUpdateType = "module_item" | "assignment" | "announcement";
 export type LmsUpdate =
   | {
@@ -236,6 +237,12 @@ export type LmsUpdate =
 export interface LmsUpdateList {
   items: LmsUpdate[];
   next_cursor: string | null;
+}
+// 학업 화면 "새로 들어온 학업 정보". 종류마다 GET /lms/updates를 한 번씩 부른 결과다(종류마다 한 쪽)
+export interface LmsUpdateGroups {
+  assignments: Extract<LmsUpdate, { type: "assignment" }>[];
+  materials: Extract<LmsUpdate, { type: "module_item" }>[];
+  announcements: Extract<LmsUpdate, { type: "announcement" }>[];
 }
 
 // 문서함 (F-44, API 명세 6장). 내 강의자료(공지 첨부 포함)·강의계획서. 포스터는 공고 쪽에 있어 넣지 않는다

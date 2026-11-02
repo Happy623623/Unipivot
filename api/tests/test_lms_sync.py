@@ -4,6 +4,7 @@ LearningX 호출은 respx로 가로채고 저장소는 가짜로 바꿔 끼운�
 SQL은 test_lms_db.py가 실제 스키마로 본다.
 """
 
+import base64
 import json
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
@@ -47,11 +48,14 @@ from app.repositories.lms import (
     ModuleChanges,
     SavedAssignment,
     SavedItem,
+    UpdateCursor,
+    decode_update_cursor,
+    encode_update_cursor,
     get_lms_repo,
     update_scope,
+    week_number,
 )
 from app.repositories.notifications import AssignmentNotice, MaterialNotice, ScheduleNotice
-from app.repositories.opportunities import Cursor
 from app.repositories.runs import get_run_repo
 from app.schemas.calendar import CalendarEventView
 from app.schemas.lms import (
@@ -100,7 +104,7 @@ CLASSIFY_MODEL = "gemini-3.5-flash-lite"
 EXTRACTION_MODEL = "gemini-3.8-flash"
 COURSE_UUID = "33333333-3333-4333-8333-333333333333"
 EVENT_ROW = "88888888-8888-4888-8888-888888888888"  # 캘린더 일정 행 id(Google 번호의 바탕)
-FEED_ITEM = "22222222-2222-4222-8222-222222222222"  # 커서는 uuid만 받는다(decode_cursor)
+FEED_ITEM = "22222222-2222-4222-8222-222222222222"
 JOB = "/api/v1/internal/jobs/lms-sync"
 DB_COURSE = CourseRow(id="course-db", canvas_course_id=214023, short_name="데이터베이스")
 ML_COURSE = CourseRow(id="course-ml", canvas_course_id=216515, short_name="기계학습")
@@ -289,7 +293,9 @@ class FakeLms:
         )
         if cursor is not None:  # 둘째 쪽은 한 줄만 주고 끝낸다
             return [item], None
-        return [item], Cursor(scope=update_scope(kinds, course_id, since), value=NOW, id=FEED_ITEM)
+        # 정렬 값은 저장소가 만드는 모양 그대로다(update_key: 새 자료 묶음)
+        key = (1, -1, -3, "데이터베이스", "", 8569302, FEED_ITEM)
+        return [item], UpdateCursor(scope=update_scope(kinds, course_id, since), key=key)
 
     async def assignments(
         self, user_id: str, *, state: str = "open", course_id: str | None = None
@@ -1170,6 +1176,83 @@ def test_the_feed_refuses_a_cursor_from_another_list(client: TestClient) -> None
 
 def test_the_feed_refuses_a_broken_cursor(client: TestClient) -> None:
     assert client.get(UPDATES, params={"cursor": "커서가 아니다"}).status_code == 422
+
+
+def _cursor_text(data: Any) -> str:
+    return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+
+
+def test_an_update_cursor_comes_back_as_it_went_out() -> None:
+    cursor = UpdateCursor(
+        scope="assignment,module_item||2026-10-02T03:00:00+00:00",
+        key=(0, 0, 1_791_000_000_000_000, "데이터베이스", "실습 2주차 결과 제출", 11, FEED_ITEM),
+    )
+    assert decode_update_cursor(encode_update_cursor(cursor)) == cursor
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"q": "s", "k": [0, 0, 1]},  # 칸 수가 다르다
+        {"q": "s", "k": [True, 0, 0, "a", "", 1, "x"]},  # 참·거짓은 수가 아니다
+        {"q": "s", "k": [0, 0, 0.5, "a", "", 1, "x"]},  # 소수
+        {"q": "s", "k": [0, 0, 0, 1, "", 1, "x"]},  # 글자 칸에 수
+        {"q": "s", "k": "0,0,0"},
+        {"q": 1, "k": [0, 0, 0, "a", "", 1, "x"]},
+        {"k": [0, 0, 0, "a", "", 1, "x"]},
+        [1, 2],
+    ],
+)
+def test_an_update_cursor_of_the_wrong_shape_is_refused(data: Any) -> None:
+    """형이 다른 정렬 값을 받으면 비교하다 500이 난다. 읽을 때 막는다(라우터가 422로 바꾼다)."""
+    with pytest.raises(ValueError):
+        decode_update_cursor(_cursor_text(data))
+
+
+def test_a_deeply_nested_cursor_is_refused_not_a_crash() -> None:
+    """깊게 겹친 JSON("[[[[…")은 읽다가 RecursionError가 난다. 500이 아니라 모양이 틀린 커서로 본다."""
+    with pytest.raises(ValueError):
+        decode_update_cursor(_cursor_text_raw("[" * 10000 + "]" * 10000))
+
+
+def _cursor_text_raw(raw: str) -> str:
+    return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+
+def test_the_feed_refuses_a_cursor_of_the_wrong_shape(client: TestClient) -> None:
+    first = client.get(UPDATES).json()
+    scope = decode_update_cursor(first["next_cursor"]).scope  # 조건은 맞고 정렬 값만 틀렸다
+    wrong = _cursor_text({"q": scope, "k": [1, "x", 0, "a", "", 1, "x"]})
+    assert client.get(UPDATES, params={"cursor": wrong}).status_code == 422
+    nested = _cursor_text_raw("[" * 10000 + "]" * 10000)
+    assert client.get(UPDATES, params={"cursor": nested}).status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("name", "week"),
+    [
+        ("8주차", 8),
+        ("4주차 (개천절 대체휴일)", 4),
+        ("Week 3 : Trees", 3),
+        ("제10주", 10),
+        ("제 3 주", 3),
+        ("WEEK12", 12),
+        ("2026-2 1주차", 1),
+        ("기말 대비", None),
+        ("3 주제: 정규화", None),  # 주차가 아닌 "주"
+        ("1주제 토론", None),
+        ("제1주제: 데이터 모델링", None),
+        ("100주년 특강", None),
+        ("123주차", None),  # 두 자리를 넘는 번호는 주차가 아니다(23으로 읽지 않는다)
+        ("Midweek 2", None),
+        ("Chapter 5 주요 개념", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_the_week_number_is_read_from_the_module_name(name: str | None, week: int | None) -> None:
+    """새 자료가 같은 때 들어왔으면 주차 번호가 큰 것이 먼저다(update_key). 번호는 이름에서 읽는다."""
+    assert week_number(name) == week
 
 
 def test_the_feed_refuses_an_unknown_kind(client: TestClient) -> None:
