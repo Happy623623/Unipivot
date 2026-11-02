@@ -39,7 +39,7 @@ export default function useDocuments(): DocumentsState {
       })
       .catch((cause: unknown) => {
         if (token !== latest.current) return;
-        setError(errorMessage(cause, "문서함을 불러오지 못했어요. 잠시 후 다시 시도해 주세요."));
+        setError(errorMessage(cause, "내 파일을 불러오지 못했어요. 잠시 후 다시 시도해 주세요."));
         setLoading(false);
       });
   }, [round]);
@@ -69,7 +69,7 @@ export default function useDocuments(): DocumentsState {
           reload();
           return;
         }
-        setError(errorMessage(cause, "문서함을 더 불러오지 못했어요. 다시 눌러 주세요."));
+        setError(errorMessage(cause, "내 파일을 더 불러오지 못했어요. 다시 눌러 주세요."));
       });
   }, [cursor, loading, loadingMore, reload]);
 

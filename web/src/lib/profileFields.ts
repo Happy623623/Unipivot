@@ -19,7 +19,28 @@ export interface ProfileFieldConfig {
   unit?: string;
   placeholder?: string;
   hint?: string;
+  details?: FieldDetails; // 펼쳐 보는 설명(뜻을 모르기 쉬운 칸)
 }
+
+// 칸 아래 "…이 뭐예요?"를 누르면 펼치는 설명. 표는 두 열(이름 · 값)이라 휴대폰 폭에서도 옆으로 밀리지 않는다
+export interface FieldDetails {
+  summary: string;
+  before: string[]; // 표 앞 문단
+  table?: { caption: string; head: [string, string]; rows: [string, string][] };
+  after: string[]; // 표 뒤 문단
+}
+
+// 기준 중위소득(월). 보건복지부가 해마다 고시한다(복지로 "2026년도 기준 중위소득"). 다음 해 기준은 그해 1월부터
+// 쓰므로 1월에 바꾼다
+export const MEDIAN_INCOME_YEAR = 2026;
+const MEDIAN_INCOME_MONTHLY: [string, string][] = [
+  ["1인", "2,564,238원"],
+  ["2인", "4,199,292원"],
+  ["3인", "5,359,036원"],
+  ["4인", "6,494,738원"],
+  ["5인", "7,556,719원"],
+  ["6인", "8,555,952원"],
+];
 
 export interface ProfileStepConfig {
   id: "academic" | "grades" | "age_region" | "income";
@@ -240,7 +261,23 @@ export function buildProfileSteps(departments: Department[]): ProfileStepConfig[
           max: 500,
           step: 1,
           unit: "%",
-          hint: "가구 기준이에요. 학자금 지원구간과 서로 바꿔 계산하지 않아요.",
+          // 뜻도, 내 %를 어떻게 아는지도 없었다(피드백 1①). 가입·설정·상세 정보 입력 창이 이 정의를 함께 쓴다
+          hint: "우리 집 한 달 소득이 정부가 정한 '중간 소득'의 몇 %인지예요. 모르면 비워 두세요. 소득 조건이 있는 공고만 '정보 필요'로 남아요.",
+          details: {
+            summary: "기준 중위소득이 뭐예요?",
+            before: [
+              "보건복지부가 해마다 가구원 수별로 정해 고시하는 가구 소득의 중간값이에요. 공고에 \"중위소득 100% 이하\"라고 쓰여 있으면 우리 집 한 달 소득이 아래 금액 이하라는 뜻이에요.",
+            ],
+            table: {
+              caption: `${MEDIAN_INCOME_YEAR}년 기준(월)`,
+              head: ["가구원 수", "기준 중위소득"],
+              rows: MEDIAN_INCOME_MONTHLY,
+            },
+            after: [
+              "기관마다 소득을 계산하는 방법이 달라서(건강보험료, 소득인정액 등) 신청할 때 기관이 다시 확인해요. 대략 알면 충분해요.",
+              "학자금 지원구간은 재산까지 넣어 계산한 값이라 이 %와 달라요. 서로 바꿔 계산하지 않아요.",
+            ],
+          },
         },
         {
           key: "annual_income",

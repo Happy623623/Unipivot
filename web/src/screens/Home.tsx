@@ -155,6 +155,25 @@ export default function Home({ navigate }: HomeProps) {
         : { title, action: "전체 카테고리 보기", onAction: () => setCategory("all") };
     }
     if (visibleItems.length + ineligibleItems.length === 0) {
+      // 카테고리에 공고가 하나도 없으면 고장이 아니라 들어오는 길이 없어서다(피드백 2③). 왜 비었는지와 할 일을
+      // 알린다. 요약 카드로 걸러서 빈 때는 그대로 둔다
+      if (tab === "recommended" && summaryFilter === null && items.length === 0) {
+        if (category === "scholarship" || category === "school_program") {
+          const name = category === "scholarship" ? "장학금" : "교내 프로그램";
+          return {
+            title: `학교 공지는 학교에 수집 허락을 받는 중이라 아직 ${name} 공고가 없어요`,
+            action: "전체 카테고리 보기",
+            onAction: () => setCategory("all"),
+          };
+        }
+        if (category === "contest" || category === "activity") {
+          return {
+            title: "공모전·대외활동 포스터를 올리면 여기에 모여요",
+            action: "포스터 등록",
+            onAction: () => navigate({ name: "upload" }),
+          };
+        }
+      }
       return { title: "조건에 맞는 공고가 없어요", action: "필터 초기화", onAction: resetFilters };
     }
     return null;
