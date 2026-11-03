@@ -19,6 +19,7 @@ from tests import hanyang_pages, samples
 from tests.hanyang_pages import FILES, POSTER, save_notice
 from tests.llm_fakes import ScriptedLlm, call
 from tests.samples import hp
+from tests.school_fakes import SITE, FakeSchool, download, permalink
 
 pytestmark = pytest.mark.anyio
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -320,3 +321,60 @@ async def test_import_reports_failed_extraction_and_duplicates(
         assert "판정 안 됨 1" in out
     finally:
         await _cleanup(scenario, ("119720", "119721"))
+
+
+# ---------- link(B안 확인) ----------
+
+
+async def test_link_reads_one_notice_like_a_student_link(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image = "/documents/20122/0/poster.jpg/0f1e?t=1"
+    school = FakeSchool()
+    school.notice(
+        119702,
+        hanyang_pages.detail(
+            files=("1. 선발요강.hwpx", "2. 신청서.pdf"),
+            body=f'<p>본문</p><p><img src="{image}"></p>',
+        ),
+    )
+    school.file(download("1. 선발요강.hwpx", "uuid-1"), GUIDE)
+    school.answer(download("2. 신청서.pdf", "uuid-2"), 410)  # 지워진 첨부(다시 해도 같다)
+    school.file(f"{SITE}{image}", POSTER, "image/jpeg")
+    real = cli.LinkFetcher
+
+    def fake_school(gate: Any, **_: Any) -> Any:
+        return real(cli.LinkGate(0), transport=school.transport)
+
+    monkeypatch.setattr(cli, "LinkFetcher", fake_school)
+    assert await main(["link", permalink(119702)]) == 0
+    out = capsys.readouterr().out
+    assert f"글 119702 · {permalink(119702)}" in out
+    assert "    2026학년도 2학기 ○○장학생 선발 안내" in out
+    assert "    2026-09-30 · 장학/등록(scholarship) · 캠퍼스 ERICA → 가져올 대상" in out
+    assert "    첨부 1. 1. 선발요강.hwpx — HWPX, 글자 " in out
+    assert "    첨부 2. 2. 신청서.pdf — 받지 못했어요(HTTP 410)" in out
+    assert "    본문 이미지 3. poster.jpg — 이미지(JPG)" in out
+    assert "    받지 못한 파일이 있어요. 가져오면 원문 확인 필요가 돼요" in out
+    assert len(school.requests) == 4  # 페이지, 첨부 둘, 본문 이미지 — 목록·다른 글은 묻지 않는다
+
+    school.requests.clear()
+    school.notice(119704, hanyang_pages.detail(entry_id=119704, campus="서울"))
+    assert await main(["link", permalink(119704)]) == 0
+    assert "→ 가져오지 않음(서울)" in capsys.readouterr().out
+    assert len(school.requests) == 1  # 서울 공지는 첨부를 받지 않는다
+
+    assert await main(["link", permalink(1)]) == 1  # 학교에 없는 글
+    out = capsys.readouterr().out
+    assert (
+        "    고칠 것: 그 주소에서 공지를 찾지 못했어요. 지워졌거나 주소가 잘렸을 수 있어요." in out
+    )
+    assert "    원인: _Gone: HTTP 404" in out  # 고칠 때 보는 밑의 원인
+
+    school.answer(download("2. 신청서.pdf", "uuid-2"), 503)  # 학교 서버가 잠시 답하지 않는다
+    assert await main(["link", permalink(119702)]) == 1
+    out = capsys.readouterr().out
+    assert "    고칠 것: 학교 사이트에서 첨부를 받지 못했어요. 잠시 후 다시 붙여 주세요." in out
+    assert "    원인: _Busy: HTTP 503" in out
+    assert await main(["link", "https://example.com/notice/1"]) == 1
+    assert "한양대 공지사항(www.hanyang.ac.kr)의 글 주소만" in capsys.readouterr().out

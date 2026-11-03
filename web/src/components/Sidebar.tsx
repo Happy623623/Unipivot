@@ -48,7 +48,7 @@ export default function Sidebar({ route, navigate }: SidebarProps) {
               : "font-medium text-[#667085] hover:bg-[#f7f8fa]"
           }`}
         >
-          <span className="text-[15px]">＋</span>포스터 등록
+          <span className="text-[15px]">＋</span>공고 등록
         </button>
         {/* 760px 이하에서는 아래 설정 버튼이 숨으므로 가로 메뉴에 설정을 넣는다 */}
         <button

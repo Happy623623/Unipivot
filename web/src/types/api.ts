@@ -249,13 +249,26 @@ export interface OpportunityDetail {
   my_mark: OpportunityMark | null;
 }
 
-// GET /runs/{id}: 포스터 추출·준비하기 진행 표시
+// GET /runs/{id}: 포스터 추출·준비하기·학교 공지 링크 진행 표시
 export interface Run<R = unknown> {
   id: string;
   status: RunStatus;
   steps: ProcessStep[];
   result: R | null;
   error: { code: string; message: string } | null;
+}
+// POST /notices/link (API 명세 6장, B안). existing이면 이미 가져온 공지라 그 공고를 준다(학교 사이트에 묻지 않는다)
+export interface NoticeLinkStarted {
+  status: "running" | "existing";
+  run_id: string | null;
+  opportunity_id: string | null;
+}
+// GET /runs/{id}의 result (학교 공지 링크). existing·unchanged·updated는 이미 있던 공지다
+export interface NoticeLinkResult {
+  kind: "notice_link";
+  opportunity_id: string;
+  title: string;
+  status: "new" | "updated" | "unchanged" | "existing";
 }
 // POST /files (API 명세 6장). 같은 파일을 다시 올리면 reused가 true이고 file_id는 처음 것이다
 export interface FileUploadResult {

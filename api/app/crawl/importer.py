@@ -7,17 +7,25 @@
    맞추고 끝낸다. 지난 추출이 실패해 판정에서 빠진 공고면 알려 준다(force로 다시 추출)
 3. 파일: 가져오지 못한 첨부·본문 이미지가 있으면 allow_missing일 때만 가져오고, 그 첨부는 extract_error를
    남겨 원문 확인 필요로 둔다
-4. 요건 추출: 에이전트를 돌린다(agent_runs.trigger_type = batch_crawl)
+4. 요건 추출: 에이전트를 돌린다(agent_runs.trigger_type = batch_crawl). model_timeout초를 넘으면 TimeoutError다
 5. 저장: 한 트랜잭션으로 공고 행을 넣거나 고치고, 첨부 행을 다시 만들고, 추출 결과를 저장한다
-LLM 호출 오류로 실행이 실패하면 공고에는 아무것도 쓰지 않는다. 다음에 가져올 때 다시 돈다.
+LLM 호출 오류로 실행이 실패하면 공고에는 아무것도 쓰지 않는다. 다음에 가져올 때 다시 돈다. 요건을 정리하지
+못한 공고(판정 불가)는 넣고 알려 준다. keep_unjudged가 꺼져 있으면(B안) 넣지 않고 "error"다.
 요건 버전이 바뀐 공고를 모든 사용자로 다시 판정하는 일은 피드 판정(S1-5)이 한다.
+
+공지는 A안(저장한 폴더, app/crawl/saved.py)이든 B안(학생이 붙인 링크, app/crawl/link.py)이든 같은 모양
+(NoticeContent)으로 들어온다. 연결은 1~2(확인)와 5(저장)에만 빌린다 — 모델을 기다리는 동안 쥐지 않는다.
+명령(cli)은 연결 하나를 그대로 쓰고(import_notice), API의 B안 실행은 요청 풀에서 짧게 빌린다(import_content).
 
 상태: 학교 공지의 숨김(hidden)은 가져오기만 쓴다(신고 숨김은 공유 포스터에만 있다, PRD F-17).
 서울로 바뀌어 숨긴 공지가 ERICA·공통으로 돌아오면 다시 보이게 하고, 만료(expired)된 공지는 내용이 바뀌었고
 마감이 지나지 않았을 때만(마감 없음 포함) 다시 활성으로 돌린다(S10 마감 연장). 병합(merged)은 건드리지 않는다.
 """
 
+import asyncio
 import hashlib
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any, Literal
@@ -26,7 +34,7 @@ from psycopg import AsyncConnection
 
 from app.agent_log import LogConnect, agent_run
 from app.crawl.hanyang import BOARD_URL, SOURCE_NAME
-from app.crawl.saved import SavedNotice
+from app.crawl.saved import NoticeContent
 from app.extraction.agent import ExtractionAgent
 from app.extraction.models import ExtractionResult
 from app.extraction.store import content_hash, save_extraction
@@ -36,6 +44,8 @@ RETRY_HINT = "지난 추출이 실패해 판정에서 빠져 있어요. --force�
 RESTORED = "숨김·만료였던 공고를 다시 보이게 함(status = active)"
 
 Status = Literal["new", "updated", "unchanged", "skipped", "error"]
+# 블록이 끝나면 커밋하는 연결 공급자(요청 풀의 pool.connection, 명령은 연결 하나를 그대로 준다)
+Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 
 
 @dataclass(frozen=True)
@@ -44,6 +54,12 @@ class ImportOptions:
     allow_missing: bool = False  # 가져오지 못한 첨부·본문 이미지가 있어도 가져온다
     force: bool = False  # 내용이 같아도 다시 추출한다
     scenario: str | None = None  # agent_runs.scenario_code. 시나리오 실행(S10 등)을 구분한다
+    keep_unjudged: bool = (
+        True  # 요건을 정리하지 못한 공고도 넣는다(판정 불가). 끄면 넣지 않고 "error"
+    )
+    model_timeout: float | None = (
+        None  # 요건 추출을 기다리는 초. 넘으면 TimeoutError(공고에 쓰지 않는다)
+    )
 
 
 @dataclass(frozen=True)
@@ -84,56 +100,85 @@ async def import_notice(
     conn: AsyncConnection,
     log_connect: LogConnect,
     source_id: str,
-    saved: SavedNotice,
+    saved: NoticeContent,
     agent: ExtractionAgent,
     options: ImportOptions | None = None,
 ) -> ImportResult:
-    """conn은 데이터, log_connect는 실행 로그 연결 공급자(autocommit)다. LLM 호출 오류는 그대로 올라간다."""
+    """conn은 데이터, log_connect는 실행 로그 연결 공급자(autocommit)다. LLM 호출 오류는 그대로 올라간다.
+
+    연결 하나로 차례대로 한다(명령·시험). 명령의 연결은 autocommit이라 저장 트랜잭션만 묶인다.
+    """
+    return await import_content(_reuse(conn), log_connect, source_id, saved, agent, options)
+
+
+async def import_content(
+    connect: Connect,
+    log_connect: LogConnect,
+    source_id: str,
+    content: NoticeContent,
+    agent: ExtractionAgent,
+    options: ImportOptions | None = None,
+) -> ImportResult:
+    """import_notice와 같은 일을 짧은 연결 둘(확인, 저장)로 한다. 모델은 그 사이 연결 없이 부른다."""
     options = options or ImportOptions()
-    page = saved.page
-    existing = await _existing(conn, source_id, page.entry_id)
-    if page.scope == "seoul":
-        if existing and await _hide(conn, str(existing["id"])):
+    page = content.page
+    notice = content.notice_input()
+    digest = content_hash(notice.body, notice.attachments)
+    async with connect() as conn:
+        existing = await _existing(conn, source_id, page.entry_id)
+        if page.scope == "seoul":
+            if existing and await _hide(conn, str(existing["id"])):
+                return ImportResult(
+                    "skipped",
+                    "서울캠퍼스 공지로 바뀌어 피드에서 숨김(status = hidden)",
+                    opportunity_id=str(existing["id"]),
+                )
+            return ImportResult("skipped", "서울캠퍼스 공지라 건너뜀")
+        if page.scope == "unmarked" and existing is None and not options.include_unmarked:
             return ImportResult(
                 "skipped",
-                "서울캠퍼스 공지로 바뀌어 피드에서 숨김(status = hidden)",
-                opportunity_id=str(existing["id"]),
+                f"캠퍼스 표시가 없어 건너뜀(캠퍼스 게시: {page.campus or '없음'})."
+                " ERICA 학생 공지가 맞으면 --include-unmarked로 가져온다",
             )
-        return ImportResult("skipped", "서울캠퍼스 공지라 건너뜀")
-    if page.scope == "unmarked" and existing is None and not options.include_unmarked:
-        return ImportResult(
-            "skipped",
-            f"캠퍼스 표시가 없어 건너뜀(캠퍼스 게시: {page.campus or '없음'})."
-            " ERICA 학생 공지가 맞으면 --include-unmarked로 가져온다",
-        )
-
-    notice = saved.notice_input()
-    digest = content_hash(notice.body, notice.attachments)
-    if existing and existing["content_hash"] == digest and not options.force:
-        opportunity_id = str(existing["id"])
-        async with conn.transaction():
-            await _refresh_listing(conn, opportunity_id, saved)
-            await _refresh_attachments(conn, opportunity_id, saved)
-            restored = await _restore_status(conn, opportunity_id, changed=False)
-        unjudged = existing["extraction_run_id"] is None
-        message = "내용이 같아 다시 추출하지 않음"
-        message += f". {RESTORED}" if restored else ""
-        message += f". {RETRY_HINT}" if unjudged else ""
-        return ImportResult("unchanged", message, opportunity_id=opportunity_id, unjudged=unjudged)
-    if saved.missing and not options.allow_missing:
-        names = ", ".join(f"{file.seq}. {file.name}({file.problem})" for file in saved.missing)
+        if existing and existing["content_hash"] == digest and not options.force:
+            opportunity_id = str(existing["id"])
+            async with conn.transaction():
+                await _refresh_listing(conn, opportunity_id, content)
+                await _refresh_attachments(conn, opportunity_id, content)
+                restored = await _restore_status(conn, opportunity_id, changed=False)
+            unjudged = existing["extraction_run_id"] is None
+            message = "내용이 같아 다시 추출하지 않음"
+            message += f". {RESTORED}" if restored else ""
+            message += f". {RETRY_HINT}" if unjudged else ""
+            return ImportResult(
+                "unchanged", message, opportunity_id=opportunity_id, unjudged=unjudged
+            )
+    if content.missing and not options.allow_missing:
+        names = ", ".join(f"{file.seq}. {file.name}({file.problem})" for file in content.missing)
         return ImportResult(
             "error",
             f"가져오지 못한 파일: {names}. 고치고 다시 실행하거나, 없이 가져오려면 --allow-missing",
         )
 
-    async with agent_run(log_connect, trigger="batch_crawl", scenario_code=options.scenario) as run:
+    async with (
+        agent_run(log_connect, trigger="batch_crawl", scenario_code=options.scenario) as run,
+        asyncio.timeout(options.model_timeout),
+    ):
         extraction = await agent.run(notice, run)
-    if saved.missing:
-        extraction = _note_missing(extraction, saved)
-    async with conn.transaction():
-        opportunity_id = await _upsert(conn, source_id, saved, notice.body)
-        ids = await _replace_attachments(conn, opportunity_id, saved, extraction)
+    if not extraction.succeeded and not options.keep_unjudged:
+        return ImportResult(
+            "error",
+            "요건을 정리하지 못해 넣지 않음",
+            run_id=run.id,
+            extraction=extraction,
+            cost_usd=run.cost_usd,
+            unjudged=True,
+        )
+    if content.missing:
+        extraction = _note_missing(extraction, content)
+    async with connect() as conn, conn.transaction():
+        opportunity_id = await _upsert(conn, source_id, content, notice.body)
+        ids = await _replace_attachments(conn, opportunity_id, content, extraction)
         extraction = replace(
             extraction,
             attachments=tuple(
@@ -156,6 +201,16 @@ async def import_notice(
         cost_usd=run.cost_usd,
         unjudged=not extraction.succeeded,
     )
+
+
+def _reuse(conn: AsyncConnection) -> Connect:
+    """이미 연 연결 하나를 그대로 주는 공급자. 닫거나 커밋하지 않는다(그 연결을 연 쪽이 한다)."""
+
+    @asynccontextmanager
+    async def connect() -> AsyncIterator[AsyncConnection]:
+        yield conn
+
+    return connect
 
 
 async def _existing(conn: AsyncConnection, source_id: str, entry_id: str) -> dict[str, Any] | None:
@@ -191,7 +246,7 @@ async def _restore_status(conn: AsyncConnection, opportunity_id: str, *, changed
     return cursor.rowcount == 1
 
 
-def _listing(saved: SavedNotice) -> dict[str, Any]:
+def _listing(saved: NoticeContent) -> dict[str, Any]:
     page = saved.page
     return {
         "category": page.opportunity_category,
@@ -201,7 +256,9 @@ def _listing(saved: SavedNotice) -> dict[str, Any]:
     }
 
 
-async def _refresh_listing(conn: AsyncConnection, opportunity_id: str, saved: SavedNotice) -> None:
+async def _refresh_listing(
+    conn: AsyncConnection, opportunity_id: str, saved: NoticeContent
+) -> None:
     """내용이 같아도 제목·부서·분류·주소는 게시판 값으로 맞춘다. 같으면 쓰지 않는다(updated_at 유지)."""
     await conn.execute(
         "update opportunities set category = %(category)s::opportunity_category,"
@@ -213,7 +270,7 @@ async def _refresh_listing(conn: AsyncConnection, opportunity_id: str, saved: Sa
 
 
 async def _refresh_attachments(
-    conn: AsyncConnection, opportunity_id: str, saved: SavedNotice
+    conn: AsyncConnection, opportunity_id: str, saved: NoticeContent
 ) -> None:
     """내용(파일)이 같아도 학교가 같은 파일을 새 이름·주소로 다시 올렸을 수 있다. 이름·주소만 맞춘다.
     두 행이 주소를 맞바꾸면 (opportunity_id, source_url) 유일 제약에 걸리므로 바뀌는 행의 주소를 먼저 비운다."""
@@ -245,7 +302,7 @@ async def _refresh_attachments(
         )
 
 
-async def _upsert(conn: AsyncConnection, source_id: str, saved: SavedNotice, body: str) -> str:
+async def _upsert(conn: AsyncConnection, source_id: str, saved: NoticeContent, body: str) -> str:
     """공고 행. 상태는 여기서 바꾸지 않는다(_restore_status)."""
     row = await (
         await conn.execute(
@@ -269,7 +326,7 @@ async def _upsert(conn: AsyncConnection, source_id: str, saved: SavedNotice, bod
 
 
 async def _replace_attachments(
-    conn: AsyncConnection, opportunity_id: str, saved: SavedNotice, extraction: ExtractionResult
+    conn: AsyncConnection, opportunity_id: str, saved: NoticeContent, extraction: ExtractionResult
 ) -> dict[int, str]:
     """첨부 행을 페이지 순서대로 다시 만든다. 첨부 번호 → 행 id."""
     await conn.execute(
@@ -301,7 +358,7 @@ async def _replace_attachments(
     return ids
 
 
-def _note_missing(extraction: ExtractionResult, saved: SavedNotice) -> ExtractionResult:
+def _note_missing(extraction: ExtractionResult, saved: NoticeContent) -> ExtractionResult:
     # 학생에게 보이는 문구다(공고 상세 review_reasons). 본문 이미지는 상세의 첨부 목록에 없어서
     # 번호 대신 파일 이름으로 쓴다
     names = ", ".join(file.name for file in saved.missing)

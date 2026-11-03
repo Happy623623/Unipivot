@@ -21,6 +21,8 @@ from app.schemas.lms import ATTACHMENT_TOOL, SAVE_TOOL, LmsSyncResult, SyncCount
 from app.schemas.materials import READ_TOOL as MATERIAL_READ
 from app.schemas.materials import SUMMARIZE_TOOL as MATERIAL_TOOL
 from app.schemas.materials import MaterialSummaryResult
+from app.schemas.notices import STEP_LABELS as NOTICE_LABELS
+from app.schemas.notices import NoticeLinkResult
 from app.schemas.opportunities import DocumentItem, ProcessStep
 from app.schemas.posters import (
     EXTRACT_LABEL,
@@ -63,6 +65,7 @@ MATERIAL_LABELS = {
     MATERIAL_READ: "강의자료 글자 읽기",
     MATERIAL_TOOL: "전체 요약",
 }
+# 학교 공지 링크 가져오기(B안, F-10)의 단계 이름은 app/schemas/notices.py에 둔다(NOTICE_LABELS)
 FAILED_MESSAGE = "준비 일정을 만들지 못했어요. 잠시 후 다시 눌러 주세요."
 # 코드를 남기지 못한 실패에 보여 줄 문구. 작업마다 할 말이 다르다(무엇을 하면 되는지)
 FAILED_MESSAGES = {
@@ -70,6 +73,7 @@ FAILED_MESSAGES = {
     "syllabus_upload": "계획서를 읽다 멈췄어요. 다시 올려 주세요.",
     "poster_upload": "포스터를 읽다 멈췄어요. 다시 올려 주세요.",
     "material_upload": "강의자료를 요약하다 멈췄어요. 다시 눌러 주세요.",
+    "notice_link": "공지를 가져오다 멈췄어요. 다시 붙여 주세요.",
 }
 _CODED = re.compile(r"^([A-Z][A-Z_]+): (.+)$", re.S)  # agent_log.error_text의 "코드: 문구"
 logger = logging.getLogger(__name__)
@@ -104,6 +108,7 @@ def _label(tool_name: str) -> str:
         or LMS_LABELS.get(tool_name)
         or SYLLABUS_LABELS.get(tool_name)
         or MATERIAL_LABELS.get(tool_name)
+        or NOTICE_LABELS.get(tool_name)
         or tool_name
     )
 
@@ -259,6 +264,25 @@ class RunRepository:
         if row is None or not row["overall_summary"]:
             return None
         return MaterialSummaryResult(file_id=row["file_id"], overall_summary=row["overall_summary"])
+
+    async def notice_link_result(self, user_id: str, run_id: str) -> NoticeLinkResult | None:
+        """그 실행이 가져온 공고(B안). 결과는 마지막으로 성공한 단계의 출력에 있다 — 새로 넣었으면 정리 단계,
+        그새 다른 학생이 가져왔으면 페이지 단계다(app/crawl/service.py). 내 실행만 본다."""
+        row = await (
+            await self.conn.execute(
+                "select t.output from tool_calls t join agent_runs r on r.id = t.run_id"
+                " where t.run_id = %s and r.user_id = %s and t.status = 'succeeded'"
+                " and t.output ? 'opportunity_id' order by t.seq desc, t.id desc limit 1",
+                (run_id, user_id),
+            )
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return NoticeLinkResult.model_validate(row["output"])
+        except ValidationError:
+            logger.warning("공지 링크 결과 모양이 달라 읽지 못했어요: run %s", run_id)
+            return None
 
     async def poster_result(self, user_id: str, run_id: str) -> PosterExtractResult | None:
         """그 실행이 만든 초안. 기록이 지워졌거나 모양이 달라졌으면 None이다."""

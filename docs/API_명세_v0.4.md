@@ -114,6 +114,8 @@
 >
 > v0.4 보강(11/03, 동의 문구): `GET /me`에 `consent_version`(동의한 약관 버전, 동의 전 null). 웹은 이 값이 지금 동의 문구의 버전보다 옛 버전이면 다시 묻고 `POST /me/consents`를 다시 부른다. 이때 소득 동의 시각도 이번 시각으로 적는다
 >
+> v0.4 보강(11/04, 학교 공지 링크): `POST /notices/link`(F-10 B안)가 생겼다. 학생이 붙인 한양대 공지 주소 한 건을 서버가 그 자리에서 읽어 학교 공지 공고로 넣는다(202 + run_id, 결과 kind `notice_link`). 이미 가져온 공지는 학교 사이트에 묻지 않고 200 `existing`, 학생마다 하루 10건(`DAILY_LINK_LIMIT`), 서울캠퍼스 공지는 `SEOUL_NOTICE`. 처리방침 v0.2가 시행되는 2026-11-12 0시(KST)부터 받는다. 실행 종류 `notice_link`가 생겼다(마이그레이션)
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -163,7 +165,7 @@
 
 ## 2. 비동기 작업(에이전트 실행) 패턴
 
-LLM을 부르는 작업(포스터 추출, 준비하기, 계획서 추출, 강의자료 요약, LMS 동기화)은 수 초–수십 초가 걸린다. 그래서 요청은 바로 `202`와 `run_id`를 돌려주고, 프론트는 실행 상태를 조회한다. 이 실행 기록이 곧 "처리 과정 표시"(F-42)와 성공률·응답시간·비용 측정의 원천이다.
+LLM을 부르는 작업(포스터 추출, 준비하기, 계획서 추출, 강의자료 요약, LMS 동기화, 학교 공지 링크)은 수 초–수십 초가 걸린다. 그래서 요청은 바로 `202`와 `run_id`를 돌려주고, 프론트는 실행 상태를 조회한다. 이 실행 기록이 곧 "처리 과정 표시"(F-42)와 성공률·응답시간·비용 측정의 원천이다.
 
 ```mermaid
 sequenceDiagram
@@ -211,6 +213,7 @@ sequenceDiagram
 | 문서함 | `GET /files` · `GET /files/{file_id}/url` | 내 강의자료·계획서 목록, 5분짜리 받기 주소 | F-44 | P1 |
 | 포스터 | `POST /posters/extract` | 포스터 추출(비동기) | F-13 | P0 |
 | 포스터 | `POST /posters/confirm` | 확인·수정 후 공고 등록(중복이면 병합) | F-13, F-16 | P0 |
+| 학교 공지 | `POST /notices/link` | 학생이 붙인 학교 공지 링크 한 건 가져오기(비동기, B안) | F-10 | P0 |
 | 준비 | `POST /opportunities/{id}/prepare` | 준비하기(서류·역산 일정·캘린더, 비동기) | F-30–F-32 | P0 |
 | 플래너 | `GET /planner/tasks` · `POST /planner/tasks` | 플래너 조회·직접 추가 | F-43 | P0 |
 | 플래너 | `PATCH /planner/tasks/{id}` · `DELETE /planner/tasks/{id}` | 완료 체크·수정·삭제 | F-31, F-43 | P0 |
@@ -805,6 +808,40 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 - 옮겨 적은 포스터 글자가 공고 원문(`raw_text`)이 되고, 올린 파일은 `poster_file_id`로 붙는다. 모호한 조건이 남았거나 신뢰도가 0.6 미만이면 상세에 "원문 확인 필요"가 붙는다(공지 추출과 같은 기준)
 - 공고·요건·서류·판정은 한 요청에서 함께 저장된다. 중간에 실패하면 아무것도 남지 않는다
 
+### `POST /notices/link`
+
+학생이 붙인 한양대 공지 글 주소 한 건을 서버가 그 자리에서 읽어 학교 공지 공고로 넣는다(F-10 B안). 학교 사이트의 robots.txt가 모든 수집기를 막아서(10/8) 목록을 훑지 않고, 학생이 고른 그 공지와 거기 걸린 첨부·본문 이미지만 읽는다.
+
+```json
+// Request
+{ "url": "https://www.hanyang.ac.kr/notice/url/4a4/1d396" }
+
+// Response 202 (새로 읽는다, Location: /runs/{run_id})
+{ "status": "running", "run_id": "uuid", "opportunity_id": null }
+
+// Response 200 (이미 가져온 공지 — 학교 사이트에 묻지 않는다)
+{ "status": "existing", "run_id": null, "opportunity_id": "uuid" }
+```
+
+- 받는 주소: `www.hanyang.ac.kr`(또는 `hanyang.ac.kr`)의 공지 고유 주소(`/notice/url/<게시판>/<글 번호 16진수>`)나 글 번호(`…entryId=<숫자>`)가 든 주소. `https://`가 없어도 된다. 그 밖은 `422 VALIDATION_FAILED`이고 `details.fields.url`에 무엇을 붙이면 되는지 적는다(2000자까지). 학교 서버에는 붙인 주소를 그대로 보내지 않고 새로 만든 주소로 묻는다 — 고유 주소는 게시판·글 번호만, 글 번호가 든 주소는 글 번호만 남긴다(검색어·액션 같은 다른 값은 넘기지 않는다)
+- 같은 글 번호를 이미 가져왔으면 200 `existing`과 그 공고(병합된 공고면 병합 대상)를 준다. 서울캠퍼스 공지로 숨긴 공고면 `422 SEOUL_NOTICE`다. 같은 학생이 같은 공지를 이미 읽고 있으면 200 `running`과 그 실행을 준다. 같은 새 공지를 여러 학생이 붙이면 실행은 학생마다 생기지만 읽기는 한 실행씩이고, 뒤의 실행은 앞 실행이 넣은 공고를 결과(`existing`)로 받는다(학교 사이트에 다시 묻지 않는다)
+- 하루 한도: 학생마다 KST 하루 10건(새로 읽기 시작한 것만 센다, 실패 포함). 넘으면 `429 DAILY_LINK_LIMIT`과 `details.reset_at`(KST 내일 0시). 같은 공지를 읽는 중인지와 한도는 요청을 하나씩 보고 실행을 만든다 — 동시에 여러 번 보내도 실행이 둘 생기거나 한도를 넘지 않는다. 동의 전(프로필 없음)이면 `403 CONSENT_REQUIRED`, 모델 설정이 없는 서버는 실행을 만들지 않고 `502 LLM_ERROR`다(한도를 쓰지 않는다)
+- 실행(`GET /runs/{run_id}`, trigger `notice_link`)의 단계는 공지 페이지 읽기 → 첨부 파일 받기 → AI로 지원 자격 정리다. 요건 추출은 저장한 공지 가져오기(A안)와 같은 함수가 **사용자 없는 실행(batch_crawl)** 으로 따로 돌린다. 공고 상세의 처리 과정은 그 실행이다 — 누가 붙였는지는 공고에 남지 않고 학생의 실행에만 남는다
+- 학교 서버에는 한 번에 하나씩, 앞 요청(따라간 리다이렉트까지)이 끝나고 1초 뒤에 묻는다. 리다이렉트도 학교 주소 안에서만 따라간다. 요청 하나는 60초까지 기다린다. 페이지 5MB, 파일 하나 20MB, 한 공지에서 합쳐 60MB, 첨부 10개, 본문 이미지는 남길 것 10개(아이콘 크기는 세지 않는다)·묻는 것 20번까지 받고, 같은 이미지 주소는 한 번만 묻는다. 넘거나 다시 해도 받지 못하는 파일(지워진 파일, 200이 아닌 답, 파일 대신 웹페이지가 온 것)은 못 읽은 첨부로 남고 공고는 원문 확인 필요가 된다
+- 서울캠퍼스 공지는 첨부를 받기 전에 실행이 `SEOUL_NOTICE`로 끝난다. 캠퍼스 표시가 없는 공지는 가져온다(학생이 ERICA 공지로 보고 붙였다)
+- 실패는 실행의 `error`로 온다: 학교에 그 글이 없으면 `NOTICE_NOT_FOUND`, 공지 글 페이지가 아니거나 다른 글이 열리면 `NOT_NOTICE_PAGE`, 학교 사이트가 페이지나 첨부를 잠시 주지 못하면(5xx·429·시간 초과·연결 실패) `NOTICE_FETCH_FAILED`(페이지면 "학교 사이트에서 공지를 읽지 못했어요. 잠시 후 다시 붙여 주세요.", 첨부면 "학교 사이트에서 첨부를 받지 못했어요. 잠시 후 다시 붙여 주세요."), 모델이 2분 안에 끝내지 못하거나 모델 서버가 답하지 않으면 `LLM_TIMEOUT`, 요건을 정리하지 못하면 `LLM_ERROR`("지원 자격을 정리하지 못했어요. 잠시 후 다시 붙여 주세요."), 그 밖은 `INTERNAL_ERROR`("공지를 가져오다 멈췄어요. 다시 붙여 주세요."). 실패하면 공고를 만들지 않고, 다시 붙이면 다시 읽는다. 같은 공지는 한 번만 읽으므로 다시 하면 될 실패로는 공고를 남기지 않는다
+- 가져온 공고는 학교 공지라 로그인한 모든 학생에게 보인다(5장 공개 범위). 판정은 각자 피드·상세를 열 때 한다
+- 끄는 스위치: 서버 설정 `NOTICE_LINK_ENABLED`가 false면 새로 읽지 않고 `409 NOTICE_LINK_DISABLED`("지금은 학교 공지 링크를 받지 않아요. 포스터로 올려 주세요.")다. 이미 가져온 공지는 그대로 200 `existing`이다(학교 사이트에 묻지 않는다). 학교가 멈춰 달라고 할 때 쓴다
+- 여는 시각: 이 기능을 적은 처리방침 v0.2가 시행되는 2026-11-12 0시(KST, 설정 `NOTICE_LINK_OPENS_AT`의 기본값)부터 새로 읽는다. 그 전에는 같은 `409 NOTICE_LINK_DISABLED`이고 문구는 "학교 공지 링크는 11월 12일부터 받아요. 그 전에는 포스터로 올려 주세요."다(이미 가져온 공지는 200 `existing`)
+
+완료 시 `GET /runs/{run_id}`의 `result`:
+
+```json
+{ "kind": "notice_link", "opportunity_id": "uuid", "title": "2026학년도 2학기 ○○장학생 선발 안내", "status": "new" }
+```
+
+- `status`: `new`(새로 가져옴), `existing`(차례를 기다리는 사이 다른 학생이 가져옴 — 학교 사이트에 묻지 않았다), `unchanged`·`updated`(그사이 팀이 저장한 공지로 같은 글을 넣었다. 내용이 같음·바뀜)
+- 화면은 1.5초 간격으로 2분 30초까지 확인한다. 넘으면 "아직 정리 중"으로 안내하고, 끝난 뒤 같은 주소를 다시 붙이면 200 `existing`으로 바로 열린다
 ## 7. 준비하기 · 플래너 · 캘린더
 
 ### `POST /opportunities/{id}/prepare`
@@ -1437,7 +1474,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 }
 ```
 
-`result`는 `kind`로 가린다: 준비하기는 `prepare`(7장), 포스터 추출은 `poster_extract`(6장), LMS 동기화는 `lms_sync`(9장)다. 아직 돌고 있거나 실패한 실행은 null이다. 코드를 남기지 못한 실패는 `error.code`가 `INTERNAL_ERROR`이고 문구는 작업마다 다르다(동기화는 "LMS 자료를 가져오지 못했어요").
+`result`는 `kind`로 가린다: 준비하기는 `prepare`(7장), 포스터 추출은 `poster_extract`(6장), 학교 공지 링크는 `notice_link`(6장), LMS 동기화는 `lms_sync`(9장)다. 아직 돌고 있거나 실패한 실행은 null이다. 코드를 남기지 못한 실패는 `error.code`가 `INTERNAL_ERROR`이고 문구는 작업마다 다르다(동기화는 "LMS 자료를 가져오지 못했어요").
 
 단계마다 모델이 고른 도구를 구분해 보여준다. 공고 상세의 `process.extraction`도 같은 형식이다.
 
@@ -1452,7 +1489,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 - 토큰 수·비용은 사용자 응답에 넣지 않고 내부 지표로만 쓴다
 - 실패 시 `status: "failed"`, `error: { "code": "LLM_TIMEOUT", "message": "..." }`
 - `error`는 서버가 정한 에러(13장 코드)만 그대로 보여 준다. 그 밖의 예외는 `INTERNAL_ERROR`와 정해진 문구로 바꿔 내부 내용이 나가지 않게 한다
-- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다. 준비하기는 get_document_guide → 필요 서류 확인, build_prep_plan → 마감일에서 거꾸로 일정 짜기다(둘 다 pipeline). 마감일 캘린더 등록은 준비하기 단계가 아니라 따로 부르는 API다(7장). 포스터 추출은 submit_poster → 포스터에서 글자·날짜 읽기 한 줄이다(pipeline).
+- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다. 준비하기는 get_document_guide → 필요 서류 확인, build_prep_plan → 마감일에서 거꾸로 일정 짜기다(둘 다 pipeline). 마감일 캘린더 등록은 준비하기 단계가 아니라 따로 부르는 API다(7장). 포스터 추출은 submit_poster → 포스터에서 글자·날짜 읽기 한 줄이다(pipeline). 학교 공지 링크는 fetch_notice_page → 공지 페이지 읽기, fetch_notice_files → 첨부 파일 받기, import_notice → AI로 지원 자격 정리다(모두 pipeline. 요건 추출 단계는 공고 상세의 처리 과정에 있다).
 - 앞에서 읽은 곳의 뒷부분을 읽은 호출(시작 위치가 0보다 큼, Vision은 PDF 2쪽부터)은 "이어 읽기"다(예: 첨부 '파일명' 이어 읽기).
 - 도구가 오류를 돌려줬거나 제출이 거절된 호출은 status failed다. tool_calls.status에는 succeeded로 남는다.
 - note는 주소를 지우고 공백을 한 칸으로 줄인 한 줄이고 최대 200자다.
@@ -1508,6 +1545,11 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 | `POSTER_READ_FAILED` | 422 | 포스터에서 글자·공고 이름을 읽지 못함(실행 결과의 error로 전달) | 다시 찍어 올리기 안내 |
 | `SYLLABUS_READ_FAILED` | 422 | 계획서에서 글자·일정을 읽지 못함(실행 결과의 error로 전달) | 다시 올리기 안내 |
 | `DAILY_UPLOAD_LIMIT` | 429 | 하루 업로드 한도 초과, `details.reset_at` | 안내 문구 |
+| `DAILY_LINK_LIMIT` | 429 | 학교 공지 링크 하루 한도(10건) 초과, `details.reset_at` | 입력 칸 아래 안내 |
+| `SEOUL_NOTICE` | 422 | 서울캠퍼스 공지라 가져오지 않음(이미 숨긴 공지면 바로, 처음 읽은 공지면 실행 결과의 error로) | 입력 칸 아래 안내 |
+| `NOTICE_NOT_FOUND` · `NOT_NOTICE_PAGE` | 404 · 422 | 학교 사이트에 그 글이 없음 · 공지 글 페이지가 아님(실행 결과의 error로 전달) | 입력 칸 아래 안내 |
+| `NOTICE_FETCH_FAILED` | 502 | 학교 사이트가 공지나 첨부를 잠시 주지 못함(실행 결과의 error로 전달) | 잠시 후 다시 붙이기 |
+| `NOTICE_LINK_DISABLED` | 409 | 서버가 학교 공지 링크 읽기를 꺼 둠(`NOTICE_LINK_ENABLED=false`) 또는 여는 시각(처리방침 v0.2 시행, 11/12 0시 KST) 전 | 입력 칸 아래 안내 |
 | `REPORT_NOT_ALLOWED` · `ALREADY_REPORTED` | 400 · 409 | 신고 불가·중복 신고 (P1, 신고와 함께) | 토스트 |
 | `NOT_ELIGIBLE` | 409 | 부적격 공고 준비하기 | "그래도 준비하기" 확인 |
 | `DEADLINE_PASSED` | 409 | 마감이 지난 공고 준비하기 | 안내 문구 |

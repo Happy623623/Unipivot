@@ -3,8 +3,10 @@
     uv run python -m app.crawl.cli check ~/공지/1009            # DB·LLM 없이: 캠퍼스, 첨부 짝, 첨부 형식 집계
     uv run python -m app.crawl.cli import ~/공지/1009           # DB에 넣고 새 글·수정된 글만 요건 추출
     uv run python -m app.crawl.cli list ~/공지/목록.html --db    # 저장한 목록에서 ERICA·공통 글, 아직 안 가져온 글
+    uv run python -m app.crawl.cli link <공지 주소>              # B안 확인: 공지 한 건을 학교 사이트에서 읽어 본다
 
-폴더 구조는 app/crawl/saved.py 설명을 본다. 학교 서버에는 접속하지 않는다.
+폴더 구조는 app/crawl/saved.py 설명을 본다. check·import·list는 학교 서버에 접속하지 않는다.
+link는 학생이 공지 링크를 붙였을 때(B안)와 같은 길로 그 공지 한 건과 첨부만 읽는다(DB·LLM 없이, app/crawl/link.py).
 import와 list --db는 DATABASE_URL, import는 GOOGLE_CLOUD_PROJECT도 필요하다(api/.env).
 """
 
@@ -16,6 +18,7 @@ from collections.abc import Callable, Sequence
 from decimal import Decimal
 from pathlib import Path
 
+import httpx
 import psycopg
 from psycopg import AsyncConnection
 from psycopg.conninfo import conninfo_to_dict
@@ -34,8 +37,18 @@ from app.crawl.importer import (
     import_notice,
     mark_collected,
 )
+from app.crawl.link import (
+    LinkError,
+    LinkFetcher,
+    LinkGate,
+    parse_link,
+    read_files,
+    read_page,
+    root_cause,
+)
 from app.crawl.saved import (
     IMAGE_KINDS,
+    NoticeContent,
     SavedNotice,
     SavedPageError,
     entry_ids,
@@ -53,6 +66,12 @@ from app.runtime import event_loop_factory, utf8_output
 AgentFactory = Callable[..., ExtractionAgent]
 CONNECT_TIMEOUT = 10  # DB 연결을 기다리는 초. DATABASE_URL에 connect_timeout이 있으면 그 값을 쓴다
 _SCOPE = {"erica": "가져올 대상", "seoul": "건너뜀(서울)", "unmarked": "건너뜀(캠퍼스 표시 없음)"}
+# B안은 학생이 ERICA 공지로 보고 붙인 것이라 캠퍼스 표시가 없어도 가져온다(app/crawl/service.py)
+_LINK_SCOPE = {
+    "erica": "가져올 대상",
+    "seoul": "가져오지 않음(서울)",
+    "unmarked": "가져올 대상(캠퍼스 표시 없음)",
+}
 _FIX = "고칠 것"
 
 
@@ -86,6 +105,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     listing = commands.add_parser("list", help="저장한 목록 페이지에서 ERICA·공통 글을 보여 준다")
     listing.add_argument("pages", nargs="+", type=Path, help="목록 페이지 .html")
     listing.add_argument("--db", action="store_true", help="이미 가져온 글인지 DB에서 본다")
+
+    linking = commands.add_parser(
+        "link", help="공지 링크 한 건을 학교 사이트에서 읽어 본다(B안 확인, DB·LLM 없이)"
+    )
+    linking.add_argument("url", help="공지 글 주소(고유 주소나 글을 연 화면의 주소)")
     return parser.parse_args(argv)
 
 
@@ -95,6 +119,8 @@ async def main(argv: Sequence[str], *, make_agent: AgentFactory = build_agent) -
         return check(args.paths)
     if args.command == "list":
         return await list_rows(args.pages, use_db=args.db)
+    if args.command == "link":
+        return await check_link(args.url)
     options = ImportOptions(
         include_unmarked=args.include_unmarked,
         allow_missing=args.allow_missing,
@@ -150,7 +176,7 @@ def check(paths: Sequence[Path]) -> int:
     return 1 if plan[_FIX] else 0
 
 
-def _attachment_lines(saved: SavedNotice) -> list[tuple[str, str]]:
+def _attachment_lines(saved: NoticeContent) -> list[tuple[str, str]]:
     """(첨부 한 줄, 형식 집계 이름). 한 줄은 모델이 첫 메시지에서 보는 첨부 목록과 같다."""
     library = Library(saved.notice_input(), Limits())
     listing = dict(zip(library.items, library.listing(), strict=True))
@@ -200,6 +226,49 @@ def _notes(saved: SavedNotice) -> list[str]:
     if saved.nested_folders:
         notes.append(f"안쪽 폴더의 페이지는 쓰지 않음: {', '.join(saved.nested_folders)}")
     return notes
+
+
+# ---------- link ----------
+
+
+async def check_link(url: str, *, transport: httpx.AsyncBaseTransport | None = None) -> int:
+    """학생이 링크를 붙였을 때와 같은 길로 공지 한 건을 읽어 check처럼 보여 준다. 읽지 못하면 1이다.
+
+    학교 서버에는 그 공지 페이지와 거기 걸린 첨부·본문 이미지만 묻는다(요청 사이 1초). 가져오지 못한
+    파일이 있어도 서비스는 가져오므로(원문 확인 필요가 된다) 알려만 준다.
+    """
+    try:
+        link = parse_link(url)
+    except LinkError as exc:
+        print(exc.message)
+        return 1
+    print(f"글 {link.entry_id} · {link.url}")
+    fetcher = LinkFetcher(LinkGate(), transport=transport)
+    try:
+        page, page_url = await read_page(fetcher, link)
+        print(f"    {page.title}")
+        print(
+            f"    {page.posted_on or '등록일 모름'} · {page.category or '분류 없음'}"
+            f"({page.opportunity_category}) · 캠퍼스 {page.campus or '없음'}"
+            f" → {_LINK_SCOPE[page.scope]}"
+        )
+        if page.scope == "seoul":
+            return 0
+        notice = await read_files(fetcher, page, page_url=page_url)
+    except LinkError as exc:
+        print(f"    {_FIX}: {exc.message}")
+        if exc.__cause__ is not None:  # 학교 사이트 오류면 밑의 원인(인증서·연결 거절 등)도 찍는다
+            print(f"    원인: {root_cause(exc)}")
+        return 1
+    finally:
+        await fetcher.aclose()
+    for line, _label in _attachment_lines(notice):
+        print(f"    {line}")
+    for name in notice.skipped_images:
+        print(f"    본문 이미지 뺌: {name}")
+    if notice.missing:
+        print("    받지 못한 파일이 있어요. 가져오면 원문 확인 필요가 돼요")
+    return 0
 
 
 # ---------- import ----------

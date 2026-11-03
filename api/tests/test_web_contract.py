@@ -42,6 +42,8 @@ PAIRS = [
     ("AlternativesResponse", "AlternativesResponse"),
     ("MaterialDetail", "MaterialDetail"),  # F-15
     ("MaterialSummaryResult", "MaterialSummaryResult"),
+    ("NoticeLinkStarted", "NoticeLinkStarted"),  # 학교 공지 링크(B안)
+    ("NoticeLinkResult", "NoticeLinkResult"),
     # 보내는 몸통이지만 어긋나면 똑같이 깨진다(구독이 저장되지 않아 푸시가 통째로 안 온다)
     ("PushSubscriptionRequest", "PushSubscriptionRequest"),
 ]

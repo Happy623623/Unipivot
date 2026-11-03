@@ -13,6 +13,7 @@ LLM 호출 오류는 잡지 않는다. 실행이 실패로 기록되고 저장�
 원문 확인 필요 이유(review_reasons)는 공고 상세에서 학생에게 그대로 보이므로 쉬운 말로 쓴다.
 """
 
+import asyncio
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
@@ -114,7 +115,8 @@ class ExtractionAgent:
         self.thinking = thinking
 
     async def run(self, notice: NoticeInput, log: RunLog) -> ExtractionResult:
-        library = Library(notice, self.limits)
+        # 첨부(PDF·HWP) 읽기는 오래 걸릴 수 있다. API 서버에서 다른 요청을 막지 않게 따로 돌린다
+        library = await asyncio.to_thread(Library, notice, self.limits)
         context = Context(
             evidence=library.evidence,
             attachments={attachment.seq: attachment for attachment in notice.attachments},
@@ -221,7 +223,9 @@ class ExtractionAgent:
         if name == FETCH_ORIGINAL:
             return await library.read_original(self.fetch_page, args.get("offset", 0))
         # READ_IMAGE: Vision 모델이 글자로 옮기고, 그 글자를 근거 대조에 쓴다
-        item, payload = library.vision_input(args.get("attachment_no"), args.get("start_page", 1))
+        item, payload = await asyncio.to_thread(  # PDF 쪽을 그림으로 바꾸는 일도 따로
+            library.vision_input, args.get("attachment_no"), args.get("start_page", 1)
+        )
         reply = await self.llm.generate(
             model=self.vision_model,
             system=None,
