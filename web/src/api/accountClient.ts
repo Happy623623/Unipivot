@@ -41,7 +41,8 @@ export async function saveProfile(profile: Profile): Promise<Profile> {
   return result.profile;
 }
 
-// POST /me/consents (온보딩 동의 단계). 필수 두 항목은 화면이 체크해야 부른다
+// POST /me/consents (온보딩 동의 단계, 약관이 바뀌어 다시 물을 때). 필수 항목은 화면이 모두 체크해야 부른다.
+// 만 14세 이상 확인은 따로 보내지 않는다 — 그 항목이 든 문구의 버전(consent_version)으로 남는다
 export function saveConsents(version: string, agreeIncomeInfo: boolean): Promise<ConsentResult> {
   if (USE_MOCKS) return mock.saveConsents(version, agreeIncomeInfo);
   return apiFetch<ConsentResult>("/me/consents", {
@@ -55,7 +56,7 @@ export function saveConsents(version: string, agreeIncomeInfo: boolean): Promise
   });
 }
 
-// PATCH /me/consents. 끄면 서버가 소득 3항목을 지우고 다시 판정한다
+// PATCH /me/consents. 끄면 서버가 소득 4항목을 지우고 다시 판정한다
 export function updateIncomeConsent(agree: boolean): Promise<IncomeConsentResult> {
   if (USE_MOCKS) return mock.updateIncomeConsent(agree);
   return apiFetch<IncomeConsentResult>("/me/consents", {

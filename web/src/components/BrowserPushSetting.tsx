@@ -8,7 +8,8 @@ import usePushSubscription, { DENIED_HELP } from "@/lib/usePushSubscription";
 //
 // 웹 푸시를 못 하는 브라우저나 공개 키가 없는 배포에서는 줄을 아예 그리지 않는다 — 켤 수 없는
 // 스위치를 보여 줄 까닭이 없다. 그 경우에도 알림함은 그대로 쌓인다.
-export default function BrowserPushSetting({ pushEnabled }: { pushEnabled: boolean }) {
+// offOnly: 약관에 다시 동의하기 전에는 이 브라우저 구독을 새로 올리지 않는다(끄기는 된다)
+export default function BrowserPushSetting({ pushEnabled, offOnly = false }: { pushEnabled: boolean; offOnly?: boolean }) {
   const { state, ready, busy, error, enable, disable } = usePushSubscription();
   if (!ready || !state.supported || !state.configured) return null;
   const denied = state.permission === "denied";
@@ -24,6 +25,7 @@ export default function BrowserPushSetting({ pushEnabled }: { pushEnabled: boole
         <Toggle
           checked={state.subscribed}
           disabled={denied}
+          locked={offOnly && !state.subscribed}
           busy={busy && !denied}
           label="이 브라우저에서 알림 받기"
           onChange={(checked) => void (checked ? enable() : disable())}
@@ -32,7 +34,9 @@ export default function BrowserPushSetting({ pushEnabled }: { pushEnabled: boole
       {denied && <p className="mt-2 text-[12px] text-[#667085]">{DENIED_HELP}</p>}
       {!denied && !pushEnabled && (
         <p className="mt-2 text-[12px] text-[#b7791f]">
-          위의 “푸시 알림 켜기”가 꺼져 있어요. 켜야 이 브라우저로도 알림이 와요.
+          {offOnly
+            ? "위의 “푸시 알림 켜기”가 꺼져 있어요."
+            : "위의 “푸시 알림 켜기”가 꺼져 있어요. 켜야 이 브라우저로도 알림이 와요."}
         </p>
       )}
       {error && (

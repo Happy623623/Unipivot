@@ -5,6 +5,7 @@
 
 import os
 import uuid
+from datetime import timedelta
 
 import psycopg
 import pytest
@@ -54,6 +55,8 @@ async def test_profile_repository_roundtrip() -> None:
 
         result = await repo.save_consent(user_id, "2026-10-07", agree_income_info=False)
         assert (result.consent_version, result.income_info_agreed_at) == ("2026-10-07", None)
+        me = await repo.get_me(user_id)
+        assert me is not None and me.consent_version == "2026-10-07"
         assert await meta.department_exists("인공지능학과")
         assert not await meta.department_exists("없는학과")
         changes = {
@@ -95,6 +98,55 @@ async def test_profile_repository_roundtrip() -> None:
         assert me is not None
         assert me.consented and me.calendar_connected and not me.income_info_consented
         assert (me.profile_completion.filled, me.unread_notifications) == (4, 0)
+    finally:
+        await conn.rollback()
+        await conn.close()
+
+
+async def test_consenting_again_keeps_the_income_values_only_when_agreed() -> None:
+    """약관이 바뀌어 다시 동의한다(F-02). 버전과 세 동의 시각이 이번 동의를 가리키고, 소득은 고른 대로다."""
+    conn = await connect()
+    try:
+        user_id = str(uuid.uuid4())
+        await conn.execute("insert into auth.users (id) values (%s)", (user_id,))
+        repo = ProfileRepository(conn)
+        await repo.ensure(user_id, "테스트 학생")
+        await repo.save_consent(user_id, "2026-10-07", agree_income_info=True)
+        await repo.update_profile(user_id, {"income_bracket": 3, "annual_income": 1200})
+        await conn.execute(
+            "update profiles set terms_agreed_at = terms_agreed_at - interval '1 day',"
+            " privacy_agreed_at = privacy_agreed_at - interval '1 day',"
+            " income_info_agreed_at = income_info_agreed_at - interval '1 day' where id = %s",
+            (user_id,),
+        )
+
+        result = await repo.save_consent(user_id, "2026-11-03", agree_income_info=True)
+        assert result.consent_version == "2026-11-03"
+        assert result.income_info_agreed_at == result.terms_agreed_at  # 이번 동의의 시각
+        profile = await repo.get_profile(user_id)
+        assert profile is not None and (profile.income_bracket, profile.annual_income) == (3, 1200)
+
+        # 설정에서 다시 켜도(이미 켜져 있으면) 처음 시각은 그대로다
+        await conn.execute(
+            "update profiles set income_info_agreed_at = income_info_agreed_at - interval '1 hour'"
+            " where id = %s",
+            (user_id,),
+        )
+        again = await repo.set_income_consent(user_id, True)
+        assert again.income_info_agreed_at == result.income_info_agreed_at - timedelta(hours=1)
+
+        result = await repo.save_consent(user_id, "2026-11-03", agree_income_info=False)
+        assert result.income_info_agreed_at is None
+        profile = await repo.get_profile(user_id)
+        assert profile is not None and (profile.income_bracket, profile.annual_income) == (
+            None,
+            None,
+        )
+        me = await repo.get_me(user_id)
+        assert me is not None and (me.consent_version, me.income_info_consented) == (
+            "2026-11-03",
+            False,
+        )
     finally:
         await conn.rollback()
         await conn.close()

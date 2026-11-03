@@ -1,3 +1,4 @@
+import { CONSENT_VERSION } from "@/lib/consent";
 import type { Department, Me, Profile, Settings } from "@/types/api";
 
 export const mockToday = "2026-10-05";
@@ -44,6 +45,7 @@ export const me: Me = {
   profile_completion: profileCompletion(profile),
   consented: true,
   income_info_consented: true, // 목 프로필에 소득 값이 있다(동의 없이 소득 값을 둘 수 없다)
+  consent_version: CONSENT_VERSION,
   unread_notifications: 3,
 };
 

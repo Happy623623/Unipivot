@@ -24,7 +24,7 @@ const meState = clone(initialMe);
 const profileState = clone(initialProfile);
 const settingsState = clone(initialSettings);
 const lmsState = clone(initialLmsConnection);
-// 상태 미리보기 "첫 접속"에서 이번 세션에 동의를 마쳤는지
+// 상태 미리보기 "첫 접속"·"약관 바뀜"에서 이번 세션에 동의를 마쳤는지
 let consentGiven = false;
 
 export function hasStoredConsent(): boolean {
@@ -46,6 +46,7 @@ export function storeIncomeConsent(agree: boolean, agreedAt: string): IncomeCons
 export function storeConsent(version: string, agreedAt: string, agreeIncomeInfo: boolean): ConsentResult {
   consentGiven = true;
   meState.consented = true;
+  meState.consent_version = version;
   const income = storeIncomeConsent(agreeIncomeInfo, agreedAt);
   return {
     terms_agreed_at: agreedAt,
@@ -115,6 +116,7 @@ export function disconnectStoredCalendar(): Me {
 
 export function deleteStoredAccount(): void {
   meState.consented = false;
+  meState.consent_version = null;
   consentGiven = false;
   meState.income_info_consented = false;
   meState.lms = null;

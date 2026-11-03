@@ -197,10 +197,13 @@ export default function ProfileInputModal({
             {needsIncome && (
               <div className="mb-4 rounded-[10px] bg-[#fff8e1] p-3 text-[12px] text-[#b7791f]">
                 {loaded.incomeConsented ? (
-                  <p>자격 판정에만 쓰고, 탈퇴하면 바로 지워요</p>
+                  <p>자격 판정에만 쓰고, 동의를 끄거나 탈퇴하면 바로 지워요</p>
                 ) : (
                   <>
-                    <p>소득·수급 정보는 선택 동의를 하면 입력할 수 있어요. 자격 판정에만 쓰고, 탈퇴하면 바로 지워요.</p>
+                    <p>
+                      소득·수급 정보(학자금 지원구간·기준 중위소득 %·본인 연 소득·기초생활수급·차상위 여부)는 선택 동의를 하면
+                      입력할 수 있어요. 자격 판정에만 쓰고, 동의를 끄거나 탈퇴하면 바로 지워요.
+                    </p>
                     <div className="mt-2">
                       <Button secondary onClick={agreeIncome} busy={agreeing}>
                         {agreeing ? "동의하는 중" : "동의하고 입력하기"}

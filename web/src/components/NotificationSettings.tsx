@@ -6,6 +6,7 @@ import type { NotificationType, Settings } from "@/types/api";
 interface NotificationSettingsProps {
   settings: Settings; // GET /me/settings (P1)
   onChange: (next: Settings) => void;
+  offOnly?: boolean; // 약관에 다시 동의하기 전: 켜진 것을 끄기만 한다(새로 켜면 새로 받는 것이 생긴다)
 }
 
 const notificationOptions: { type: NotificationType; label: string }[] = [
@@ -19,13 +20,14 @@ const notificationOptions: { type: NotificationType; label: string }[] = [
 ];
 
 // 설정의 알림 구역 (P1, F-06): 푸시 켜기, 종류별 끄기, LMS 과제 자동 캘린더 등록
-export default function NotificationSettings({ settings, onChange }: NotificationSettingsProps) {
+export default function NotificationSettings({ settings, onChange, offOnly = false }: NotificationSettingsProps) {
   return (
     <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
       <div className="flex items-center gap-2">
         <h2 className="text-[18px] font-semibold">알림</h2>
         <Badge tone="gray">P1</Badge>
       </div>
+      {offOnly && <p className="mt-1 text-[12px] font-semibold text-[#b7791f]">약관에 다시 동의하기 전에는 끄기만 할 수 있어요.</p>}
       <div className="mt-4 flex items-center justify-between gap-4">
         <div>
           <p className="text-[14px] font-semibold">푸시 알림 켜기</p>
@@ -33,17 +35,19 @@ export default function NotificationSettings({ settings, onChange }: Notificatio
         </div>
         <Toggle
           checked={settings.push_enabled}
+          locked={offOnly && !settings.push_enabled}
           label="푸시 알림 켜기"
           onChange={(checked) => onChange({ ...settings, push_enabled: checked })}
         />
       </div>
-      <BrowserPushSetting pushEnabled={settings.push_enabled} />
+      <BrowserPushSetting pushEnabled={settings.push_enabled} offOnly={offOnly} />
       <div className="mt-4 grid grid-cols-2 gap-3 max-[700px]:grid-cols-1">
         {notificationOptions.map((option) => (
           <div key={option.type} className="flex items-center justify-between gap-3 rounded-[10px] bg-[#f7f8fa] p-3">
             <span className="text-[13px]">{option.label}</span>
             <Toggle
               checked={!settings.muted_notification_types.includes(option.type)}
+              locked={offOnly && settings.muted_notification_types.includes(option.type)}
               label={option.label}
               onChange={(checked) =>
                 onChange({
@@ -61,6 +65,7 @@ export default function NotificationSettings({ settings, onChange }: Notificatio
         <span className="text-[14px] font-semibold">LMS 과제 마감을 Google Calendar에 자동으로 넣기</span>
         <Toggle
           checked={settings.calendar_auto_lms}
+          locked={offOnly && !settings.calendar_auto_lms}
           label="LMS 과제 마감을 Google Calendar에 자동으로 넣기"
           onChange={(checked) => onChange({ ...settings, calendar_auto_lms: checked })}
         />

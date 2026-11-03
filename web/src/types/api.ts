@@ -37,6 +37,7 @@ export interface Me {
   profile_completion: { filled: number; total: number };
   consented: boolean;
   income_info_consented: boolean;
+  consent_version: string | null; // 동의한 약관 버전(동의 전 null). 옛 api는 이 칸을 주지 않는다(lib/consent.ts)
   unread_notifications: number;
 }
 

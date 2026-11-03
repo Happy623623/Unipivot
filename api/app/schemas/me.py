@@ -119,6 +119,8 @@ class Me(BaseModel):
     profile_completion: ProfileCompletion
     consented: bool
     income_info_consented: bool
+    # 동의한 약관 버전(동의 전이면 null). 웹은 지금 동의 문구의 버전과 다르면 다시 묻는다(F-02)
+    consent_version: str | None
     unread_notifications: int
 
 

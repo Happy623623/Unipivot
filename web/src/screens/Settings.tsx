@@ -25,6 +25,7 @@ import SignOutSetting from "@/components/SignOutSetting";
 import Skeleton from "@/components/Skeleton";
 import Toast from "@/components/Toast";
 import { DEGREE_LABELS, regionText, type ProfileErrors } from "@/lib/profileFields";
+import { needsConsentRenewal } from "@/lib/consent";
 import useAsyncData from "@/lib/useAsyncData";
 import useLateOutcome, { lateFailure } from "@/lib/useLateOutcome";
 import type { Me, Profile, Settings as SettingsData } from "@/types/api";
@@ -89,6 +90,10 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
   const profile = profileOverride ?? request.data[1];
   const settings = settingsOverride ?? request.data[2];
   const departments = request.data[4];
+  // 약관이 바뀌었는데 아직 다시 동의하지 않았다(AppFrame이 설정만 열어 둔다). 처리를 멈추는 것(연결 해제, 알림·자동 등록
+  // 끄기, 소득 동의 끄기, 로그아웃, 탈퇴)은 그대로 두고, 새로 켜거나 받는 것(프로필 수정, 캘린더 연결, 알림·자동 등록·
+  // 브라우저 구독·소득 동의 켜기)만 다시 동의한 뒤에
+  const renewing = needsConsentRenewal(me);
   const age = profile.birth_date
     ? 2026 - Number(profile.birth_date.slice(0, 4))
     : null;
@@ -176,6 +181,19 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
   return (
     <>
       <Header title="설정" subtitle="프로필, 연결 서비스와 알림 설정을 관리해요." />
+      {renewing && (
+        <section className="rounded-2xl border border-[#dfe5ff] bg-[#f5f7ff] p-5">
+          <h2 className="text-[18px] font-semibold">약관이 바뀌었어요</h2>
+          <p className="mt-1 text-[13px] leading-6 text-[#475467]">
+            다시 동의하기 전에는 새로 켜거나 연결할 수 없어요(프로필 수정, 캘린더 연결, 알림·자동 등록·소득·수급 동의 켜기). 끄기,
+            연결 해제, 로그아웃, 탈퇴는 그대로 할 수 있어요.
+          </p>
+          <div className="mt-3">
+            <Button onClick={() => navigate({ name: "onboarding" })}>바뀐 약관 보기</Button>
+          </div>
+        </section>
+      )}
+      {!renewing && (
       <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
         <div className="flex items-start justify-between">
           <div>
@@ -201,16 +219,18 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
           ))}
         </div>
       </section>
+      )}
       <ConnectedServices
         me={me}
         lms={request.data[3]}
         calendarResult={calendarResult}
         onMeChange={setMeOverride}
+        connectLocked={renewing}
       />
-      <NotificationSettings settings={settings} onChange={updateSettings} />
+      <NotificationSettings settings={settings} onChange={updateSettings} offOnly={renewing} />
       <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
         <h2 className="text-[18px] font-semibold">계정</h2>
-        <IncomeConsentSetting consented={me.income_info_consented} onChanged={async () => {
+        <IncomeConsentSetting consented={me.income_info_consented} canTurnOn={!renewing} onChanged={async () => {
           setMeOverride(await getMe());
           setProfileOverride(await getProfile());
         }} />
@@ -256,7 +276,8 @@ export default function Settings({ navigate, calendarResult = null }: SettingsPr
       </Modal>
       <Modal open={deleteOpen} title="계정 탈퇴" onClose={() => setDeleteOpen(false)} busy={deleting}>
         <ModalDescription>
-          모든 개인 정보와 토큰, 올린 파일을 지워요. 공유한 포스터 공고는 이름 없이 남고, 캘린더에 이미 넣은 일정은 그대로 남아요.
+          프로필과 토큰, 올린 파일 같은 개인 정보를 바로 지워요. 처리 기록과 올린 포스터로 만든 공고 정보는 누구 것인지 지운 채
+          남고(처리방침 3장), 캘린더에 이미 넣은 일정은 그대로 남아요.
         </ModalDescription>
         <label className="mt-4 block text-[13px] font-semibold">
           확인을 위해 탈퇴를 입력해 주세요

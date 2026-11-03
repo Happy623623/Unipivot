@@ -1,6 +1,7 @@
 export type DevScenario =
   | "default"
   | "first_visit"
+  | "consent_outdated"
   | "lms_disconnected"
   | "lms_error"
   | "calendar_expired"
@@ -24,6 +25,7 @@ export function setDevScenario(scenario: DevScenario): void {
 export const scenarioLabels: Record<DevScenario, string> = {
   default: "기본",
   first_visit: "첫 접속(동의 전)",
+  consent_outdated: "약관 바뀜(다시 동의)",
   lms_disconnected: "LMS 미연결",
   lms_error: "LMS 오류",
   calendar_expired: "캘린더 만료",
