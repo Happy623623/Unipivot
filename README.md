@@ -4,7 +4,7 @@
 챙기는 웹 서비스다. SW창업캡스톤(AOP) 과제로, LLM Tool Calling 기반 에이전트 MVP · 최종 데모 · 테스트 시나리오
 측정(성공률·응답시간·비용)이 산출물이다.
 
-- 공고는 세 길로 들어온다 — 저장한 학교 공지(명령), 온통청년 청년정책(매일 자동), 학생이 올린 포스터(화면)
+- 공고는 세 길로 들어온다 — 학교 공지(팀이 저장한 공지는 명령, 학생이 붙인 공지 링크는 화면), 온통청년 청년정책(매일 자동), 학생이 올린 포스터(화면)
 - LLM은 **공고 원문에서 요건을 구조화**하는 데까지만 쓰고, **자격 판정은 코드**가 한다(`docs/판정엔진_규칙.md`)
 - 모든 LLM·외부 호출은 실행 로그(`agent_runs`·`tool_calls`·`llm_calls`)에 남고, 그 로그로 지표를 센다
 
@@ -56,6 +56,8 @@
 | `VAPID_PRIVATE_KEY` · `VAPID_SUBJECT` | 웹 푸시(`uv run python -m app.push.keys`로 만든다) |
 | `INTERNAL_API_KEY` | `/internal/*` 서비스 키 |
 | `SCHEDULER_ENABLED` | 서버 안 정기 작업(아래) |
+| `NOTICE_LINK_ENABLED` | 학교 공지 링크 가져오기(B안, 기본 true). 학교가 멈춰 달라고 하면 false로 두고 deploy |
+| `NOTICE_LINK_OPENS_AT` | 학교 공지 링크를 여는 시각(기본 2026-11-12 0시 KST, 처리방침 v0.2 시행). 로컬에서 미리 보려면 지난 시각을 넣는다. deploy는 옮기지 않는다 |
 
 키·`.env`·`.env.local`은 레포에 넣지 않는다. 예시는 `.env.example`에만 적는다.
 
@@ -75,6 +77,7 @@
 
     uv run python -m app.youth.cli fetch              # 온통청년 정책 수집(정기 작업과 같은 함수)
     uv run python -m app.crawl.cli import <공지 폴더>   # 저장한 학교 공지 넣기 + 요건 추출
+    uv run python -m app.crawl.cli link <공지 주소>     # 학교 공지 링크 한 건 읽어 보기(B안과 같은 길, DB·LLM 없이)
     uv run python -m app.eval.cli                      # 테스트 시나리오 전부 실행(시험용 DB에서만)
     uv run python -m app.eval.cli --out eval_baseline.json   # 베이스라인 저장(결과 JSON은 레포에 넣지 않는다)
     uv run python -m app.eval.compare <공지 폴더> --posters <포스터 폴더> --md compare.md   # 모델 비교(실제 Gemini, 결과는 레포에 넣지 않는다)
@@ -110,7 +113,7 @@
 | 4 | 정보 필요 → 빠진 항목만 입력 → 바로 다시 판정 | F-03·F-21 · S03 |
 | 5 | 지원 어려움 → 탈락 사유와 대체 공고(추천 이유) | F-22–F-24 · S02 |
 | 6 | 준비하기: 필요 서류 → 역산 준비 일정(플래너) → 마감일을 Google 캘린더에(처음이면 연결) | F-30–F-32 · S13 |
-| 7 | 포스터 사진 올리기 → 확인 화면 → 내 피드에만 | F-13 · S11·S12 |
+| 7 | 공고 등록: 학교 공지 링크 붙이기 → 모든 학생의 피드에 / 포스터 사진 올리기 → 확인 화면 → 내 피드에만 | F-10·F-13 · S11·S12 |
 | 8 | 학업: LearningX 연결 → 과제가 캘린더·플래너에, 강의계획서 가져오기, 강의자료 요약 | F-50·F-51·F-14·F-15 · S15–S19 |
 | 9 | 알림: 웹 푸시와 알림함(마감 임박·새 과제) | F-33·F-35 · S14 |
 | 10 | 지표: 테스트 시나리오 성공률·응답시간·비용, 판정 혼동행렬(`docs/베이스라인.md`) | PRD 8장 |

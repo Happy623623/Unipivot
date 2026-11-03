@@ -1,7 +1,12 @@
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_KST = timezone(timedelta(hours=9))
+# 처리방침 v0.2(학교 공지 링크를 적은 판)의 시행 시각. web/src/app/privacy/page.tsx의 EFFECTIVE와 같은 날이다
+POLICY_V02_EFFECTIVE = datetime(2026, 11, 12, tzinfo=_KST)
 
 
 class Settings(BaseSettings):
@@ -57,6 +62,20 @@ class Settings(BaseSettings):
     # 서버 안 스케줄러(app/scheduler.py). 꺼 두면 정기 작업은 /internal/jobs/*로만 돈다.
     # 바깥 크론을 쓸 때는 꺼 둔다 — 둘 다 켜면 같은 일이 두 번 돈다
     scheduler_enabled: bool = False
+    # 학교 공지 링크 가져오기(B안, POST /notices/link). 학교가 멈춰 달라고 하면 false로 두고 deploy한다 —
+    # 새로 읽기만 멈추고(409 NOTICE_LINK_DISABLED) 이미 가져온 공지는 그대로 준다
+    notice_link_enabled: bool = True
+    # 링크 가져오기를 여는 시각. 그 전에는 새로 읽지 않는다(409 NOTICE_LINK_DISABLED) — 이 기능을 적은 처리방침이
+    # 시행되기 전에 붙인 공지 주소를 남기지 않는다. 로컬에서 미리 보려면 지난 시각을 넣는다(배포에는 옮기지 않는다)
+    notice_link_opens_at: datetime | None = POLICY_V02_EFFECTIVE
+
+    @field_validator("notice_link_opens_at")
+    @classmethod
+    def _kst_if_no_offset(cls, value: datetime | None) -> datetime | None:
+        """시간대를 빼고 적었으면 KST로 본다(서버 시계와 견줄 수 있게)."""
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=_KST)
+        return value
 
     @property
     def storage_base_url(self) -> str:

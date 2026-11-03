@@ -10,7 +10,9 @@ export type DevScenario =
   | "poster_duplicate"
   | "poster_gone"
   | "syllabus_failure"
-  | "upload_limit";
+  | "upload_limit"
+  | "notice_link_failure"
+  | "notice_link_limit";
 
 let currentScenario: DevScenario = "default";
 
@@ -35,4 +37,6 @@ export const scenarioLabels: Record<DevScenario, string> = {
   poster_gone: "포스터 원본 없음",
   syllabus_failure: "계획서 읽기 실패",
   upload_limit: "업로드 한도 초과",
+  notice_link_failure: "공지 링크 읽기 실패",
+  notice_link_limit: "공지 링크 한도 초과",
 };

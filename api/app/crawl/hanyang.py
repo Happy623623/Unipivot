@@ -1,8 +1,9 @@
 """한양대 공지사항(www.hanyang.ac.kr/notice_all) 페이지를 읽는다. Liferay 게시판 HTML에 맞춘 파서다.
 
-학교 서버에는 접속하지 않는다. www·portal의 robots.txt가 모든 수집기를 막고 있어서(2026-10-08 확인)
-팀이 브라우저로 저장한 페이지를 읽는다(A안, app/crawl/saved.py). 학교가 수집을 허락하면(C안)
-같은 파서로 받아 온 HTML을 읽는다.
+이 모듈은 학교 서버에 접속하지 않고 HTML만 읽는다. www·portal의 robots.txt가 모든 수집기를 막고 있어서
+(2026-10-08 확인) 목록을 자동으로 훑지 않는다 — 팀이 브라우저로 저장한 페이지(A안, app/crawl/saved.py)와
+학생이 붙인 공지 한 건을 그 자리에서 받은 페이지(B안, app/crawl/link.py)를 같은 파서로 읽는다. 학교가 수집을
+허락하면(C안) 같은 파서로 받아 온 HTML을 읽는다.
 
 상세 페이지에서 읽는 곳:
 - 제목: div.noticeBoard-view-message 안의 h4

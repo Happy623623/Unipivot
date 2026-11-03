@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.auth import auth_settings_problem
 from app.background import TaskRunner
 from app.config import Settings, get_settings
+from app.crawl.service import LinkDesk
 from app.db import create_pools
 from app.errors import UnhandledErrorMiddleware, register_error_handlers
 from app.logging_redact import install_log_redaction
@@ -22,6 +23,7 @@ from app.routers import (
     materials,
     me,
     meta,
+    notices,
     notifications,
     opportunities,
     planner,
@@ -84,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="UNIPIVOT API", version="0.2.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.runner = TaskRunner()  # 요청이 끝난 뒤 이어서 할 일(준비하기 실행)
+    app.state.link_desk = LinkDesk()  # 학교 공지 링크(B안): 학교 서버 요청 간격과 돌고 있는 실행
     # 나중에 추가한 미들웨어가 바깥이다. 예외로 생긴 500에도 CORS 헤더가 붙게 CORS를 바깥에 둔다
     app.add_middleware(UnhandledErrorMiddleware)
     app.add_middleware(
@@ -104,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         materials.router,
         me.router,
         meta.router,
+        notices.router,
         notifications.router,
         events.router,
         opportunities.router,

@@ -115,10 +115,15 @@ export function consentRequired(error: unknown): "terms_privacy" | "income_info"
   return consent === "terms_privacy" || consent === "income_info" ? consent : null;
 }
 
-// 202로 받은 run_id를 1.5초 간격으로 최대 60초까지 확인한다 (API 2장)
-export async function waitForRun<R>(runId: string, onProgress?: (run: Run<R>) => void): Promise<Run<R>> {
+// 202로 받은 run_id를 1.5초 간격으로 최대 60초까지 확인한다 (API 2장). 학교 공지 링크처럼 학교 사이트를 읽은 뒤
+// 요건까지 정리하는 일은 더 오래 기다린다(timeoutMs)
+export async function waitForRun<R>(
+  runId: string,
+  onProgress?: (run: Run<R>) => void,
+  timeoutMs = 60_000,
+): Promise<Run<R>> {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 60_000) {
+  while (Date.now() - startedAt < timeoutMs) {
     const run = await apiFetch<Run<R>>(`/runs/${runId}`);
     onProgress?.(run);
     if (run.status === "succeeded" || run.status === "failed") return run;

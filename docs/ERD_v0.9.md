@@ -33,6 +33,8 @@
 > v0.9 보강(10/17): 주차 항목 첫 수집 표시(F-52)
 >
 > v0.9 보강(10/27): 탈퇴는 profiles 삭제 뒤 Supabase 로그인 계정(auth.users)도 지운다(스키마 변경 없음)
+>
+> v0.9 보강(11/04): 실행 종류 notice_link(학교 공지 링크, B안), 학교 공지 절에 B안
 
 ---
 
@@ -631,12 +633,13 @@ erDiagram
 - 크롤러가 게시글 첨부를 내려받아 Storage에 두고 행을 만든다. 추출 방식은 `extract_method`에, 실패 사유는 `extract_error`에 남긴다. 실패한 첨부가 있는 공고는 `needs_review`(원문 확인 필요 배지)다.
 - 어떤 첨부를 읽을지는 요건 추출 에이전트가 고른다(PRD 6장). 읽지 않은 첨부는 `extract_method`가 null이다. Vision으로 읽은 첨부는 옮겨 적은 글자를 extracted_text에 두고 extract_method는 vision이다.
 
-### 학교 공지 (A안)
+### 학교 공지 (A안·B안)
 
 - sources: 한양대 공지사항 행 하나(type school_notice, base_url https://www.hanyang.ac.kr/notice_all). last_collected_at은 가져오기를 마친 시각
 - opportunities: 학교 공지는 external_id가 게시판 글 번호(entryId), original_url이 고유 주소(https://www.hanyang.ac.kr/notice/url/…), raw_text가 게시판 정보 몇 줄 + 본문 글자(모델이 본 그대로)다. category는 공지분류로 정한다
 - opportunity_attachments: 학교 공지는 source_url이 학교 다운로드 주소다. 본문 이미지도 첨부 행으로 두고(source_url 없음) 첨부 번호를 이어서 쓴다. storage_path는 비운다(파일을 복제하지 않는다). 가져오지 못한 첨부는 extract_error를 남긴다
 - status: 학교 공지의 hidden은 가져오기가 쓴다(서울캠퍼스로 바뀌면 숨기고 돌아오면 푼다). expired는 내용이 바뀌었고 마감이 지나지 않았을 때 가져오기가 푼다
+- B안(학생이 붙인 공지 링크): 같은 출처 행·같은 규칙으로 넣는다(같은 글 번호면 같은 공고). 요건 추출 실행은 A안처럼 user_id가 없는 batch_crawl이고 opportunities.extraction_run_id가 그 실행이다. 붙인 학생의 실행은 따로 agent_runs(trigger_type notice_link, user_id = 그 학생)에 남는다 — tool_calls는 fetch_notice_page(입력: 글 번호·읽은 주소) → fetch_notice_files → import_notice(출력: opportunity_id·status·title)다. `GET /runs/{id}`의 결과와 하루 한도(사용자당 KST 하루 10건)를 이 실행으로 센다. 탈퇴하면 이 실행의 user_id는 null이 되고 공고는 남는다(모든 학생이 보는 학교 공지)
 
 ### 청년정책 (온통청년)
 
@@ -780,7 +783,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | calendar_provider | google, ics, device |
 | syllabus_item_type | midterm, final, presentation, assignment, etc |
 | job_status | pending, running, succeeded, failed |
-| run_trigger → text + check (`agent_runs.trigger_type`) | batch_crawl, poster_upload, prepare, syllabus_upload, material_upload, material_translate, lms_sync, notify, eval |
+| run_trigger → text + check (`agent_runs.trigger_type`) | batch_crawl, poster_upload, prepare, syllabus_upload, material_upload, material_translate, lms_sync, notify, eval, notice_link |
 | notification_type → text + check (`notifications.type`, `user_settings.muted_notification_types`) | new_eligible, new_assignment, new_material, schedule_change, task_due, deadline_soon, profile_needed |
 | opportunity_mark → text + check (`opportunity_marks.mark`) | interested, not_interested |
 | report_reason | wrong_info, duplicate, expired, inappropriate |
@@ -812,6 +815,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 11 | `supabase/migrations/20261017000000_lms_modules_synced_at.sql` | lms_courses.modules_synced_at(주차 항목 첫 수집, F-52) |
 | 12 | `supabase/migrations/20261017120000_annual_income_and_job_status.sql` | profiles.annual_income(만 원)·job_status, 소득 선택 동의 제약에 annual_income 추가, 요건 항목 2개 (F-21) |
 | 13 | `supabase/migrations/20261019120000_lms_announcement_attachments.sql` | lms_announcements.attachments(첨부 목록 jsonb, 주소 없음, F-54) |
+| 14 | `supabase/migrations/20261104000000_notice_link_trigger.sql` | agent_runs.trigger_type 제약에 notice_link(학교 공지 링크, B안) 추가. 여러 번 돌려도 같다 |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -898,6 +902,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-04): agent_runs.trigger_type에 notice_link(학교 공지 링크, B안), 학교 공지 절에 B안
 - v0.9 보강 (2026-10-19): lms_announcements.attachments(공지 첨부 목록, F-54). 7장 표에 빠져 있던 12번(F-21 연 소득·취업 상태)도 적었다
 - v0.9 보강 (2026-10-15): 포스터 추출 초안은 실행 기록(tool_calls.output)에 둔다(F-16), 스키마 변경 없음
 - v0.9 보강 (2026-10-15): 업로드 파일 저장 순서와 중복 처리 설명(F-13), 스키마 변경 없음

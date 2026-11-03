@@ -22,7 +22,7 @@ import email.policy
 import hashlib
 import re
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -61,34 +61,20 @@ class SavedFile:
 
 
 @dataclass(frozen=True)
-class SavedNotice:
-    folder: Path
-    page_file: Path
+class NoticeContent:
+    """공지 한 건: 읽은 페이지, 본문 글자, 첨부 파일. 가져오기(app/crawl/importer.py)는 이것만 쓴다.
+
+    A안(팀이 저장한 폴더, 아래 SavedNotice)과 B안(학생이 붙인 링크, app/crawl/link.py)이 같은 모양으로 만든다.
+    """
+
     page: NoticePage
     # 본문 글자. 본문 이미지 자리에는 "[이미지: 첨부 3번 포스터.jpg]"처럼 첨부 번호를 적었다
     text: str
     files: tuple[SavedFile, ...]
-    skipped_images: tuple[str, ...]  # 아이콘 크기라 뺀 본문 이미지
-    extra_files: tuple[str, ...]  # 폴더에 있지만 페이지 첨부가 아닌 파일(쓰지 않는다)
-    duplicate_files: tuple[str, ...]  # 같은 첨부를 두 번 받은 파일(내용이 같아 쓰지 않는다)
-    same_name_links: tuple[str, ...] = ()  # 이름이 같은 첨부가 여럿이라 내려받은 순서로 짝지은 이름
-    identical: tuple[
-        tuple[int, ...], ...
-    ] = ()  # 파일 내용이 같은 첨부 번호들(같은 첨부를 두 번 받았을 수 있다)
-    nested_folders: tuple[str, ...] = ()  # 안에 페이지가 있는 아래 폴더(예전 저장 등). 쓰지 않는다
 
     @property
     def missing(self) -> tuple[SavedFile, ...]:
         return tuple(file for file in self.files if file.data is None)
-
-    @property
-    def renamed(self) -> tuple[SavedFile, ...]:
-        """폴더 파일 이름이 페이지 이름과 달라 보이는 첨부. 맞게 짝지었는지 사람이 볼 수 있게 알려 준다."""
-        return tuple(
-            file
-            for file in self.files
-            if file.file_name and not file.body_image and _nfc(file.file_name) != _nfc(file.name)
-        )
 
     def body(self) -> str:
         """모델에 보낼 본문: 게시판 정보 몇 줄 + 본문 글자. opportunities.raw_text에도 이 글을 넣는다."""
@@ -119,7 +105,8 @@ class SavedNotice:
             body=self.body(),
             posted_on=self.page.posted_on,
             organizer=self.page.department,
-            # A안에서는 원문 다시 읽기(학교 서버 접속)를 쓰지 않는다. 저장한 페이지에 본문이 다 있다
+            # 원문 다시 읽기(학교 서버 접속)를 쓰지 않는다. A안은 저장한 페이지에, B안은 방금 받은 페이지에
+            # 본문이 다 있다
             original_url=None,
             attachments=tuple(
                 AttachmentInput(file.seq, file.name, file.data, file.source_url)
@@ -127,6 +114,69 @@ class SavedNotice:
                 if file.data is not None
             ),
         )
+
+
+@dataclass(frozen=True)
+class SavedNotice(NoticeContent):
+    """팀이 저장한 공지 폴더 하나(A안). 폴더를 읽으며 사람이 한 번 볼 것을 같이 남긴다."""
+
+    folder: Path
+    page_file: Path
+    skipped_images: tuple[str, ...]  # 아이콘 크기라 뺀 본문 이미지
+    extra_files: tuple[str, ...]  # 폴더에 있지만 페이지 첨부가 아닌 파일(쓰지 않는다)
+    duplicate_files: tuple[str, ...]  # 같은 첨부를 두 번 받은 파일(내용이 같아 쓰지 않는다)
+    same_name_links: tuple[str, ...] = ()  # 이름이 같은 첨부가 여럿이라 내려받은 순서로 짝지은 이름
+    identical: tuple[
+        tuple[int, ...], ...
+    ] = ()  # 파일 내용이 같은 첨부 번호들(같은 첨부를 두 번 받았을 수 있다)
+    nested_folders: tuple[str, ...] = ()  # 안에 페이지가 있는 아래 폴더(예전 저장 등). 쓰지 않는다
+
+    @property
+    def renamed(self) -> tuple[SavedFile, ...]:
+        """폴더 파일 이름이 페이지 이름과 달라 보이는 첨부. 맞게 짝지었는지 사람이 볼 수 있게 알려 준다."""
+        return tuple(
+            file
+            for file in self.files
+            if file.file_name and not file.body_image and _nfc(file.file_name) != _nfc(file.name)
+        )
+
+
+# 본문 이미지 하나: (이름, 데이터, 못 가져온 이유). 데이터가 None이면 못 가져왔다
+BodyImage = tuple[str, bytes | None, str | None]
+
+
+def add_body_images(
+    files: list[SavedFile], images: Sequence[BodyImage | None], *, missing_note: str
+) -> tuple[dict[int, str], list[str]]:
+    """본문 이미지를 첨부 뒤에 이어 붙인다. images는 본문에 나오는 순서이고 src가 빈 이미지는 None이다.
+
+    A안(폴더에서 읽음)과 B안(학교 서버에서 받음)이 같은 규칙을 쓴다. 못 가져온 이미지는 못 읽은 첨부로
+    남기고(포스터일 수 있다), 아이콘 크기(MIN_IMAGE_BYTES 미만)는 빼고, 같은 이미지가 두 번 나오면 첨부는
+    하나다. GIF처럼 못 읽는 형식도 첨부로 둔다(원문 확인 필요가 된다).
+    돌려주는 것: (본문 글자에 쓸 이미지 이름표 {본문 이미지 순번: "첨부 3번 포스터.jpg"}, 뺀 이미지 이름)
+    """
+    labels: dict[int, str] = {}
+    skipped: list[str] = []
+    seen: dict[str, str] = {}
+    for index, image in enumerate(images):
+        if image is None:
+            continue
+        name, data, problem = image
+        if data is None:
+            files.append(SavedFile(len(files) + 1, name, None, None, True, problem))
+            labels[index] = f"첨부 {len(files)}번 {name}({missing_note})"
+            continue
+        if len(data) < MIN_IMAGE_BYTES:
+            skipped.append(f"{name}(아이콘 크기)")
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        if digest not in seen:  # 같은 이미지가 본문에 두 번 나오면 첨부는 하나
+            files.append(
+                SavedFile(len(files) + 1, name, data, None, body_image=True, file_name=name)
+            )
+            seen[digest] = f"첨부 {len(files)}번 {name}"
+        labels[index] = seen[digest]
+    return labels, skipped
 
 
 def notice_folders(paths: Iterable[Path]) -> list[Path]:
@@ -186,28 +236,11 @@ def load_folder(folder: Path) -> SavedNotice:
             )
         )
 
-    labels: dict[int, str] = {}
-    skipped: list[str] = []
-    seen: dict[str, str] = {}
-    for index, src in enumerate(page.image_sources):
-        if not src:
-            continue
-        name, data, problem = _image(src, page_file, folder, page_url, resources)
-        if data is None:
-            files.append(SavedFile(len(files) + 1, name, None, None, True, problem))
-            labels[index] = f"첨부 {len(files)}번 {name}(저장 안 됨)"
-            continue
-        if len(data) < MIN_IMAGE_BYTES:
-            skipped.append(f"{name}(아이콘 크기)")
-            continue
-        # GIF처럼 못 읽는 형식도 첨부로 둔다. 못 읽은 첨부라 원문 확인 필요가 된다(포스터일 수 있다)
-        digest = hashlib.sha256(data).hexdigest()
-        if digest not in seen:  # 같은 이미지가 본문에 두 번 나오면 첨부는 하나
-            files.append(
-                SavedFile(len(files) + 1, name, data, None, body_image=True, file_name=name)
-            )
-            seen[digest] = f"첨부 {len(files)}번 {name}"
-        labels[index] = seen[digest]
+    images = [
+        _image(src, page_file, folder, page_url, resources) if src else None
+        for src in page.image_sources
+    ]
+    labels, skipped = add_body_images(files, images, missing_note="저장 안 됨")
 
     return SavedNotice(
         folder=folder,
@@ -476,18 +509,18 @@ def _image(
 ) -> tuple[str, bytes | None, str | None]:
     """본문 <img src> → (이름, 데이터, 못 가져온 이유)."""
     if src.startswith("data:"):
-        data = _data_uri(src)
+        data = data_uri(src)
         return "본문 이미지", data, None if data else "이미지 데이터를 읽지 못했어요"
     if resources is not None:  # MHTML: 저장할 때의 주소로 찾는다
         url = urljoin(page_url or "", src)
         data = resources.get(url, resources.get(src))
-        return _url_name(url), data, None if data is not None else _NOT_SAVED
+        return url_name(url), data, None if data is not None else _NOT_SAVED
     parts = urlsplit(src)
     if parts.scheme or src.startswith("//"):
-        return _url_name(src), None, _NOT_SAVED  # 서버 주소가 그대로 남았다("HTML만" 저장)
+        return url_name(src), None, _NOT_SAVED  # 서버 주소가 그대로 남았다("HTML만" 저장)
     path = (page_file.parent / unquote(parts.path)).resolve()
     if not path.is_relative_to(folder) or not path.is_file():
-        return _url_name(src), None, _NOT_SAVED
+        return url_name(src), None, _NOT_SAVED
     data, problem = _read(path, MAX_FILE_BYTES)
     return path.name, data, problem
 
@@ -525,7 +558,7 @@ def _header(value: object) -> str | None:
     return "".join(str(value).split()) or None
 
 
-def _data_uri(src: str) -> bytes | None:
+def data_uri(src: str) -> bytes | None:
     head, _, payload = src.partition(",")
     try:
         if head.endswith(";base64"):
@@ -535,7 +568,7 @@ def _data_uri(src: str) -> bytes | None:
         return None
 
 
-def _url_name(url: str) -> str:
+def url_name(url: str) -> str:
     """주소의 파일 이름. 학교 문서 주소는 /documents/…/포스터.jpg/<uuid>라 확장자가 있는 마디를 고른다."""
     parts = [unquote(part) for part in urlsplit(url).path.split("/") if part]
     named = [part for part in parts if re.search(r"\.[A-Za-z0-9]{2,5}$", part)]

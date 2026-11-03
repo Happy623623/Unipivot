@@ -6,11 +6,15 @@ import {
   getPosterPreviewState,
   EXTRACT_STEPS,
   fieldErrors,
+  importNoticeLink,
+  NOTICE_LINK_STEPS,
   registerPosterOpportunity,
+  SHOW_MOCK_NOTICE_STEPS,
   SHOW_MOCK_STEPS,
   uploadPosterFile,
 } from "@/api/client";
 import Header from "@/components/Header";
+import NoticeLinkForm, { type LinkProblem } from "@/components/NoticeLinkForm";
 import PosterAnalyzing, { type AnalyzeStep } from "@/components/PosterAnalyzing";
 import PosterDropzone from "@/components/PosterDropzone";
 import PosterDuplicate from "@/components/PosterDuplicate";
@@ -33,6 +37,7 @@ interface PosterUploadProps {
 
 type UploadStatus =
   | "idle"
+  | "linking" // 학교 공지 링크를 읽는 중(B안)
   | "uploading"
   | "analyzing"
   | "slow"
@@ -45,7 +50,10 @@ const READ_FAILED = "글자를 읽지 못했어요. 포스터 전체가 보이�
 const UPLOAD_FAILED = "파일을 올리지 못했어요. 잠시 후 다시 시도해 주세요";
 // 화면이 기다리는 60초를 넘겼다. 실행은 아직 돌고 있어서 실패가 아니다
 const STILL_READING = "포스터를 아직 읽고 있어요. 조금 뒤에 다시 올려 주세요";
-const SUBTITLE = "포스터를 올리면 AI가 제목, 마감일, 지원 조건을 자동으로 정리해요.";
+const SUBTITLE = "학교 공지 링크를 붙이거나 포스터를 올리면 AI가 제목, 마감일, 지원 조건을 정리해요.";
+const LINK_FAILED = "공지를 가져오지 못했어요. 잠시 후 다시 붙여 주세요";
+// 화면이 기다리는 시간을 넘겼다. 실행은 계속 돌고, 끝나면 같은 주소를 다시 붙일 때 바로 열린다
+const STILL_LINKING = "공지를 아직 정리하고 있어요. 잠시 뒤 같은 주소를 다시 붙이면 바로 열려요";
 const REGISTER_FAILED = "공고를 등록하지 못했어요. 잠시 후 다시 시도해 주세요";
 
 const wait = (milliseconds: number) =>
@@ -69,6 +77,11 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
   const [toast, showToast, , holdToast] = useToast();
   const [failureMessage, setFailureMessage] = useState(READ_FAILED);
   const [failureBadge, setFailureBadge] = useState("분석 실패");
+  const linkInputRef = useRef<HTMLInputElement>(null);
+  // 링크는 2분 넘게 걸릴 수 있다. 그동안 다른 화면으로 갔으면 끝나도 상세로 끌고 가지 않는다
+  const onScreen = useRef(true);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkProblem, setLinkProblem] = useState<LinkProblem | null>(null);
 
   const fail = (message: string, badge: string) => {
     setFailureMessage(message);
@@ -95,6 +108,18 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
     [],
   );
 
+  useEffect(() => {
+    onScreen.current = true;
+    return () => {
+      onScreen.current = false;
+    };
+  }, []);
+
+  // 링크를 읽지 못하고 입력 칸으로 돌아오면 초점을 칸에 둔다(읽는 동안 칸이 사라져 초점을 잃었다). 고쳐서 다시 붙인다
+  useEffect(() => {
+    if (status === "idle" && linkProblem) linkInputRef.current?.focus();
+  }, [status, linkProblem]);
+
   const reset = () => {
     if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
     objectUrlRef.current = null;
@@ -112,21 +137,58 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
   };
 
   // 목 모드는 실행이 없어 단계를 흉내 낸다. 실제 모드는 실행의 처리 과정을 그대로 받는다
-  const runMockSteps = async () => {
-    for (let index = 0; index < EXTRACT_STEPS.length; index += 1) {
+  const runMockSteps = async (labels: string[]) => {
+    for (let index = 0; index < labels.length; index += 1) {
       setSteps(
-        EXTRACT_STEPS.map((label, at) => ({
+        labels.map((label, at) => ({
           label,
           status: at < index ? "succeeded" : at === index ? "running" : "pending",
         })),
       );
       await wait(600);
     }
-    setSteps(EXTRACT_STEPS.map((label) => ({ label, status: "succeeded" })));
+    setSteps(labels.map((label) => ({ label, status: "succeeded" })));
+  };
+
+  // 학교 공지 링크(B안): 서버가 그 공지 한 건을 읽어 공고로 넣는다. 이미 가져온 공지면 바로 그 공고를 준다
+  const importLink = async () => {
+    const url = linkUrl.trim();
+    if (!url) return;
+    setLinkProblem(null);
+    setStatus("linking");
+    setSteps([{ label: NOTICE_LINK_STEPS[0], status: "running" }]);
+    const reading = importNoticeLink(url, (progress) => {
+      if (progress.length > 0) {
+        setSteps(progress.map((step) => ({ label: step.label, status: step.status })));
+      }
+    })
+      .then((value) => ({ value, error: null }))
+      .catch((error: unknown) => ({ value: null, error }));
+    if (SHOW_MOCK_NOTICE_STEPS) await runMockSteps(NOTICE_LINK_STEPS);
+    const read = await reading;
+    if (!onScreen.current) return; // 기다리는 동안 다른 화면으로 갔다. 가져온 공지는 피드에서 보인다
+    if (read.error || !read.value) {
+      // 실패 이유는 입력 칸 아래에 둔다. 주소를 고쳐 다시 붙이면 된다
+      const timedOut = read.error instanceof ApiError && read.error.code === "RUN_TIMEOUT";
+      setLinkProblem(
+        timedOut
+          ? { tone: "info", text: STILL_LINKING }
+          : { tone: "error", text: fieldErrors(read.error).url ?? errorMessage(read.error, LINK_FAILED) },
+      );
+      setStatus("idle");
+      return;
+    }
+    const { opportunity_id, status: found } = read.value;
+    showToast(found === "new" ? "공지를 가져왔어요" : "이미 가져온 공지예요. 그 공고로 갈게요");
+    setTimeout(() => {
+      if (onScreen.current) navigate({ name: "opportunity", id: opportunity_id });
+    }, 700);
   };
 
   const analyze = async (file?: File) => {
     if (!file) return;
+    // 포스터로 넘어왔다. 지난 링크 문구를 지운다 — 남겨 두면 다시 올리기로 돌아올 때 초점을 링크 칸이 가져간다
+    setLinkProblem(null);
     const validationError = await validatePosterFile(file);
     if (validationError) {
       fail(validationError, "올릴 수 없는 파일");
@@ -164,7 +226,7 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
     })
       .then((value) => ({ value, error: null }))
       .catch((error: unknown) => ({ value: null, error }));
-    if (SHOW_MOCK_STEPS) await runMockSteps();
+    if (SHOW_MOCK_STEPS) await runMockSteps(EXTRACT_STEPS);
 
     const extracted = await extraction;
     if (extracted.error) {
@@ -224,15 +286,25 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
 
   return (
     <>
-      <Header title="포스터로 공고 등록" subtitle={SUBTITLE} />
+      <Header title="공고 등록" subtitle={SUBTITLE} />
       <PosterFileInputs fileRef={fileInputRef} cameraRef={cameraInputRef} onPick={analyze} />
       {status === "idle" && (
-        <PosterDropzone
-          onDropFile={analyze}
-          onChooseFile={() => fileInputRef.current?.click()}
-          onUseCamera={() => cameraInputRef.current?.click()}
-        />
+        <>
+          <NoticeLinkForm
+            url={linkUrl}
+            onUrlChange={setLinkUrl}
+            onSubmit={importLink}
+            problem={linkProblem}
+            inputRef={linkInputRef}
+          />
+          <PosterDropzone
+            onDropFile={analyze}
+            onChooseFile={() => fileInputRef.current?.click()}
+            onUseCamera={() => cameraInputRef.current?.click()}
+          />
+        </>
       )}
+      {status === "linking" && <PosterAnalyzing steps={steps} title="공지를 읽고 있어요" />}
       {status === "uploading" && <PosterUploading fileName={fileName} />}
       {status === "analyzing" && (
         <div className="grid grid-cols-[1fr_1fr] gap-5 max-[900px]:grid-cols-1">

@@ -36,12 +36,14 @@ import type {
 } from "@/types/api";
 
 // 화면이 쓰는 데이터 함수는 모두 이 파일에서 가져간다.
-// 계정·LMS·포스터 함수는 accountClient.ts·lmsClient.ts·posterClient.ts에 두고 여기서 다시 내보낸다.
+// 계정·LMS·포스터·학교 공지 링크 함수는 accountClient.ts·lmsClient.ts·posterClient.ts·noticeClient.ts에 두고
+// 여기서 다시 내보낸다.
 // 공고 피드·상세·준비하기는 실제 API를 부르고, 아래 플래너 함수는 아직 목이다
 export * from "@/api/accountClient";
 export * from "@/api/documentsClient";
 export * from "@/api/lmsClient";
 export * from "@/api/materialsClient";
+export * from "@/api/noticeClient";
 export * from "@/api/posterClient";
 export * from "@/api/pushClient";
 export * from "@/api/syllabusClient";

@@ -4,10 +4,32 @@ import type { ReactNode } from "react";
 
 // 개인정보 처리방침(시범 운영판). 로그인 없이 열려야 해서 (app)·(auth) 묶음 밖에 둔다 — (app)은 들어오자마자
 // 내 정보를 불러 로그인으로 보낸다. 정적 페이지라 빌드 때 HTML로 만들어진다(Google 인증 플랫폼 게시에 쓰는 주소).
-// 방침 버전은 동의 버전(CONSENT_VERSION)과 따로 둔다. 문구를 바꾸면 시행일·버전을 올리고, 지난 버전은 맨 아래에 남긴다
-const EFFECTIVE = "2026년 10월 28일";
-const VERSION = "시범 운영판 v0.1";
+// 방침 버전은 동의 버전(CONSENT_VERSION)과 따로 둔다. 문구를 바꾸면 시행일·버전을 올리고, 지난 버전은 맨 아래에 남긴다.
+// 시행일은 합치는 날부터 7일 넘게 뒤로 잡는다(12장). 그동안은 맨 위 안내가 지난 버전이 적용된다고 알린다
+const EFFECTIVE = "2026년 11월 12일";
+const VERSION = "시범 운영판 v0.2";
 const OFFICER = { name: "최연우", role: "UNIPIVOT 팀장", email: "yunwoo8299@gmail.com" };
+// 이번 판에서 바뀐 곳(맨 위 안내)
+const CHANGES = [
+  "학교 공지 링크 가져오기를 적었습니다 — 붙인 공지 주소를 처리 기록에 남기고(1장), 그 공지의 본문·첨부를 Gemini로 보내며(2장), 가져온 공지는 탈퇴해도 남습니다(3장). 공지 내용만 보내고 이용자 정보는 보내지 않습니다(6장).",
+  "메뉴 이름이 바뀌어 '문서함'을 '내 파일'로 고쳤습니다(1장·2장).",
+];
+// 지난 버전. 바꿀 때마다 맨 앞에 더한다. 지난 판에서 이번 판과 다른 곳만 그대로 옮긴다(나머지는 같다)
+const PAST_VERSIONS = [
+  {
+    version: "시범 운영판 v0.1",
+    period: "2026년 10월 28일 ~ 2026년 11월 11일",
+    passages: [
+      ["1장 표 '처리 기록'", "AI 처리 단계, 소요 시간, 사용량·비용, 오류 내용과 그때의 처리 결과 — 오류 확인, 성능·비용 측정"],
+      ["1장 표 'LMS 연동(선택)'의 목적", "과제 마감·공지 알림, 캘린더 등록, 문서함"],
+      ["1장 표 아래", "(학교 공지 링크에 관한 줄 없음)"],
+      ["2장 첫째 줄", "학교 공지의 본문·첨부(이용자와 상관없이, 공지를 가져오거나 내용이 바뀌었을 때)"],
+      ["2장 넷째 줄", '강의자료 PDF(올려서 요약할 때)와 받아 둔 과목 공지 첨부(문서함에서 "요약하기"를 누를 때)'],
+      ["3장 남는 것", "(링크로 가져온 학교 공지에 관한 줄 없음)"],
+      ["6장 거부 방법과 영향의 괄호", "(학교 공지의 요건 추출은 이용자와 상관없이 합니다)"],
+    ],
+  },
+];
 
 export const metadata: Metadata = {
   title: "개인정보 처리방침 · UNIPIVOT",
@@ -90,6 +112,17 @@ export default function PrivacyPage() {
         <p className="mt-2 text-[13px] text-[#667085]">
           시행일: {EFFECTIVE} ({VERSION})
         </p>
+        <section aria-labelledby="changes-heading" className="mt-5 rounded-[14px] border border-[#dfe5ff] bg-[#f5f7ff] p-4 text-[13px] leading-6 text-[#344054]">
+          <h2 id="changes-heading" className="text-[14px] font-semibold text-[#181a20]">
+            {EFFECTIVE}부터 이렇게 바뀝니다
+          </h2>
+          <List>
+            {CHANGES.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </List>
+          <p className="mt-2">그 전까지는 맨 아래 &quot;지난 버전&quot;의 {PAST_VERSIONS[0].version}이 적용됩니다.</p>
+        </section>
         <p className="mt-5 text-[14px] leading-7 text-[#344054]">
           UNIPIVOT(이하 &quot;서비스&quot;)은 한양대학교 ERICA SW창업캡스톤디자인 과제로 시범 운영 중인 대학생용 공고 자격 판정·준비
           도우미입니다. 서비스는 「개인정보 보호법」에 따라 이용자의 개인정보를 아래와 같이 처리합니다.
@@ -123,7 +156,7 @@ export default function PrivacyPage() {
               [
                 "LMS 연동(선택)",
                 "LearningX 개인 액세스 토큰과 사용자 번호, 과목·과제(제출 여부 포함)·공지·주차 자료 목록, 과목 공지 첨부 파일",
-                "과제 마감·공지 알림, 캘린더 등록, 문서함",
+                "과제 마감·공지 알림, 캘린더 등록, 내 파일",
               ],
               ["업로드 파일(선택)", "포스터 사진·PDF, 강의계획서·강의자료 PDF", "공고 요건 추출, 시험·발표·과제 일정 추출, 강의자료 요약"],
               [
@@ -134,8 +167,8 @@ export default function PrivacyPage() {
               ["알림(선택)", "브라우저 웹 푸시 구독 정보(브라우저 정보 포함)", "마감·새 공고·새 과제 알림"],
               [
                 "처리 기록",
-                "AI 처리 단계, 소요 시간, 사용량·비용, 오류 내용과 그때의 처리 결과",
-                "오류 확인, 성능·비용 측정",
+                "AI 처리 단계, 소요 시간, 사용량·비용, 오류 내용과 그때의 처리 결과, 학교 공지 링크를 붙여 가져올 때 붙인 공지 주소",
+                "오류 확인, 성능·비용 측정, 링크 가져오기 하루 한도 확인",
               ],
               [
                 "이용 이벤트",
@@ -153,16 +186,20 @@ export default function PrivacyPage() {
             </li>
             <li>대학생 대상 서비스라 만 14세 미만 아동을 대상으로 하지 않습니다. 만 14세 미만인 것이 확인되면 그 정보를 지웁니다.</li>
             <li>LMS 연동·파일 업로드·캘린더·알림은 이용자가 켜거나 올릴 때만 처리합니다.</li>
+            <li>
+              학교 공지 링크를 붙이면 서비스가 그 공지 한 건과 첨부를 학교 홈페이지에서 읽어 공고로 넣습니다. 학교 공지라 모든 이용자에게
+              보이고, 누가 붙였는지는 다른 이용자에게 보이지 않습니다.
+            </li>
           </List>
         </Section>
 
         <Section title="2. 외부 AI(Google Gemini) 처리">
           <p>다음 자료는 요건 추출·분류·요약을 위해 Google Gemini(Google Cloud)로 보내 처리합니다.</p>
           <List>
-            <li>학교 공지의 본문·첨부(이용자와 상관없이, 공지를 가져오거나 내용이 바뀌었을 때)</li>
+            <li>학교 공지의 본문·첨부(팀이 공지를 가져오거나 내용이 바뀌었을 때, 이용자가 공지 링크를 붙였을 때)</li>
             <li>LearningX 과목 공지의 제목·본문(LearningX를 연결하면 동기화할 때 자동으로)</li>
             <li>이용자가 올린 포스터·강의계획서(올릴 때)</li>
-            <li>강의자료 PDF(올려서 요약할 때)와 받아 둔 과목 공지 첨부(문서함에서 &quot;요약하기&quot;를 누를 때)</li>
+            <li>강의자료 PDF(올려서 요약할 때)와 받아 둔 과목 공지 첨부(내 파일에서 &quot;요약하기&quot;를 누를 때)</li>
             <li>준비하기의 서류 안내를 만들 때 공고 제목·주최와 서류 이름(청년정책은 공고의 제출 서류 안내 글)</li>
           </List>
           <p>
@@ -205,6 +242,7 @@ export default function PrivacyPage() {
               파일은 지웁니다.
             </li>
             <li>같은 과목 수강생이 함께 쓰는 과목 공통 자료(주차 항목 제목, 과목 공지와 첨부 이름, 공지로 만든 공고)</li>
+            <li>이용자가 링크를 붙여 가져온 학교 공지(공고): 모든 이용자가 함께 보는 학교 공지라 그대로 둡니다.</li>
           </List>
           <p>서버 접속 기록과 로그인 기록은 탈퇴와 상관없이 수탁자(Supabase·Google Cloud·Vercel)의 보관 정책에 따라 일정 기간 뒤 지워집니다.</p>
           <p>
@@ -289,7 +327,7 @@ export default function PrivacyPage() {
             </li>
             <li>
               <strong>거부 방법과 영향</strong>: 포스터·강의계획서·강의자료를 올리지 않고 LearningX를 연결하지 않으면 이용자 자료는 Gemini로
-              가지 않습니다(학교 공지의 요건 추출은 이용자와 상관없이 합니다). 웹 화면 제공(Vercel)은 서비스 이용에 꼭 필요해서,
+              가지 않습니다(학교 공지의 요건 추출에는 공지 내용만 보내고 이용자 정보는 보내지 않습니다). 웹 화면 제공(Vercel)은 서비스 이용에 꼭 필요해서,
               원하지 않으면 탈퇴할 수 있습니다.
             </li>
           </List>
@@ -365,7 +403,22 @@ export default function PrivacyPage() {
 
         <Section title="12. 변경">
           <p>이 방침을 바꾸면 시행 7일 전부터 이 페이지에 바뀌는 내용과 시행일을 알립니다. 지난 버전은 이 페이지 아래에 남깁니다.</p>
-          <p className="text-[13px] text-[#667085]">지난 버전: 없음(첫 버전)</p>
+          <h3 className="mt-2 text-[15px] font-semibold text-[#181a20]">지난 버전</h3>
+          {PAST_VERSIONS.map((past) => (
+            <details key={past.version} className="rounded-[10px] border border-[#e5e7eb] p-3 text-[13px]">
+              <summary className="cursor-pointer font-semibold text-[#181a20]">
+                {past.version} ({past.period})
+              </summary>
+              <p className="mt-2 text-[#667085]">이번 판과 다른 곳만 옮겼습니다. 나머지는 같습니다.</p>
+              <List>
+                {past.passages.map(([where, text]) => (
+                  <li key={where}>
+                    <strong>{where}</strong>: {text}
+                  </li>
+                ))}
+              </List>
+            </details>
+          ))}
         </Section>
 
         <p className="mt-10 border-t border-[#e5e7eb] pt-5 text-[13px]">
