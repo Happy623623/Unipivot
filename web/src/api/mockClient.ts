@@ -88,7 +88,10 @@ export function getMe(): Promise<Me> {
   if (scenario === "first_visit" && !hasStoredConsent()) {
     result.consented = false;
     result.income_info_consented = false;
+    result.consent_version = null;
   }
+  // 지난 버전에 동의한 사람: 앱을 열면 바뀐 약관을 다시 묻는다(lib/consent.ts)
+  if (scenario === "consent_outdated" && !hasStoredConsent()) result.consent_version = "2026-10-07";
   if (scenario === "lms_disconnected") {
     result.lms = { status: "disconnected", last_synced_at: null };
   }

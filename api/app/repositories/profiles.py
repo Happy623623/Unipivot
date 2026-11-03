@@ -22,15 +22,24 @@ from app.schemas.me import (
 
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
-# 선택 동의를 하면 시각을 남기고(이미 있으면 유지), 철회하면 시각과 소득·수급 값을 한 번에 지운다.
-# 한 문장으로 바꿔야 DB 제약(profiles_income_consent_chk)을 지키며 철회할 수 있다
-_INCOME_CONSENT_SET = (
-    "income_info_agreed_at = case when %(agree)s then coalesce(income_info_agreed_at, now()) end,"
-    " income_bracket = case when %(agree)s then income_bracket end,"
-    " median_income_pct = case when %(agree)s then median_income_pct end,"
-    " annual_income = case when %(agree)s then annual_income end,"
-    " welfare_status = case when %(agree)s then welfare_status end"
-)
+
+def _income_consent_set(agreed_at: str) -> str:
+    """선택 동의를 하면 시각을 남기고, 철회하면 시각과 소득·수급 값을 한 번에 지운다.
+
+    한 문장으로 바꿔야 DB 제약(profiles_income_consent_chk)을 지키며 철회할 수 있다."""
+    return (
+        f"income_info_agreed_at = case when %(agree)s then {agreed_at} end,"
+        " income_bracket = case when %(agree)s then income_bracket end,"
+        " median_income_pct = case when %(agree)s then median_income_pct end,"
+        " annual_income = case when %(agree)s then annual_income end,"
+        " welfare_status = case when %(agree)s then welfare_status end"
+    )
+
+
+# 설정·소득 단계에서 켜면 처음 동의한 시각을 둔다. 동의 화면(POST)에서 동의하면 이번 시각으로 적는다 —
+# 약관이 바뀌어 다시 동의했을 때 세 동의의 시각과 버전이 같은 때를 가리키게(F-02)
+_INCOME_CONSENT_SET = _income_consent_set("coalesce(income_info_agreed_at, now())")
+_INCOME_CONSENT_NOW = _income_consent_set("now()")
 
 
 @dataclass(frozen=True)
@@ -92,6 +101,7 @@ class ProfileRepository:
             select p.id, p.display_name, p.hyin_verified_at,
                    p.terms_agreed_at is not null and p.privacy_agreed_at is not null as consented,
                    p.income_info_agreed_at is not null as income_info_consented,
+                   p.consent_version,
                    {filled} as filled,
                    exists(select 1 from oauth_tokens t where t.user_id = p.id
                           and t.provider = 'google' and t.refresh_token is not null)
@@ -120,6 +130,7 @@ class ProfileRepository:
             ),
             consented=row["consented"],
             income_info_consented=row["income_info_consented"],
+            consent_version=row["consent_version"],
             unread_notifications=row["unread"],
         )
 
@@ -157,7 +168,7 @@ class ProfileRepository:
         row = await (
             await self.conn.execute(
                 "update profiles set terms_agreed_at = now(), privacy_agreed_at = now(),"
-                f" consent_version = %(version)s, {_INCOME_CONSENT_SET} where id = %(id)s"
+                f" consent_version = %(version)s, {_INCOME_CONSENT_NOW} where id = %(id)s"
                 " returning terms_agreed_at, privacy_agreed_at, income_info_agreed_at,"
                 " consent_version",
                 {"version": version, "agree": agree_income_info, "id": user_id},

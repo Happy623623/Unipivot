@@ -9,11 +9,14 @@ import { pathnameToRoute, useAppNavigate } from "@/lib/routes";
 import { syncPushSubscription } from "@/lib/usePushSubscription";
 import useAsyncData from "@/lib/useAsyncData";
 import useRouteFocus from "@/lib/useRouteFocus";
+import { needsConsentRenewal } from "@/lib/consent";
 import { onSavedRead, setSavedReadsAccount } from "@/lib/savedReads";
 import useSessionWatch from "@/lib/useSessionWatch";
 import type { Me } from "@/types/api";
 
 // Make의 App.tsx가 하던 일: 내 정보 불러오기, 동의 전이면 온보딩으로 보내기, 상태 미리보기.
+// 약관이 바뀌었으면(lib/consent.ts) 온보딩에서 다시 묻는다. 설정은 그대로 열어 둔다 — 동의하지 않고 탈퇴하거나
+// 소득 동의를 철회할 수 있게(다른 화면으로 옮기면 다시 온보딩으로 간다).
 // 동의를 마친 사용자가 앱을 열면 app_open을 한 번 기록한다(서버가 KST 하루 1건만 남긴다).
 // 알림 목록은 패널을 열 때 받고(useNotifications), 여기서는 배지 숫자만 들고 있는다. 이 탭·다른 탭에서 읽음 처리가
 // 저장되면 그 수로 맞춘다(lib/savedReads.ts — 목록을 아직 안 받은 탭의 배지도 바로 맞는다).
@@ -43,11 +46,15 @@ export default function AppFrame({ children }: { children: ReactNode }) {
   useEffect(() => setSavedReadsAccount(meRequest.data?.user_id ?? null), [meRequest.data]);
 
   useEffect(() => {
-    if (meRequest.data && !meRequest.data.consented) router.replace("/onboarding");
-  }, [meRequest.data, router]);
+    const me = meRequest.data;
+    if (!me) return;
+    if (!me.consented || (needsConsentRenewal(me) && pathname !== "/settings")) router.replace("/onboarding");
+  }, [meRequest.data, pathname, router]);
 
+  // 다시 동의하기 전(약관이 바뀐 사람)에는 이용 기록(app_open)·푸시 구독을 올리지 않는다
   useEffect(() => {
-    if (!meRequest.data?.consented || openRecorded.current) return;
+    const me = meRequest.data;
+    if (!me?.consented || needsConsentRenewal(me) || openRecorded.current) return;
     openRecorded.current = true;
     recordEvent("app_open");
   }, [meRequest.data]);
@@ -55,7 +62,8 @@ export default function AppFrame({ children }: { children: ReactNode }) {
   // 서비스 워커를 등록하고, 이 브라우저가 이미 들고 있는 푸시 구독을 서버에 다시 올린다(F-33).
   // 브라우저가 구독 주소를 바꾸거나 같은 브라우저로 다른 사람이 로그인하면 여기서 맞춰진다
   useEffect(() => {
-    if (!meRequest.data?.consented || pushSynced.current) return;
+    const me = meRequest.data;
+    if (!me?.consented || needsConsentRenewal(me) || pushSynced.current) return;
     pushSynced.current = true;
     void syncPushSubscription();
   }, [meRequest.data]);

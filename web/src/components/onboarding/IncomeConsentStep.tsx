@@ -17,7 +17,7 @@ export default function IncomeConsentStep({ saving, onAgree, onSkip, onBack }: I
         판정해요.
       </p>
       <ul className="mt-4 list-disc rounded-[10px] bg-[#fff8e1] py-3 pl-8 pr-3 text-[12px] leading-5 text-[#b7791f]">
-        <li>수집 항목: 학자금 지원구간, 기준 중위소득 %, 기초생활수급·차상위 여부</li>
+        <li>수집 항목: 학자금 지원구간, 기준 중위소득 %, 본인 연 소득, 기초생활수급·차상위 여부</li>
         <li>이용 목적: 소득 기준이 있는 공고의 지원 자격 판정</li>
         <li>보관: 설정에서 동의를 철회하거나 탈퇴하면 바로 지워요</li>
       </ul>

@@ -48,6 +48,7 @@ class FakeProfileRepository:
                 "display_name": None,
                 "consented_at": None,
                 "income_agreed_at": None,
+                "consent_version": None,
                 "profile": Profile(),
             },
         )
@@ -67,6 +68,7 @@ class FakeProfileRepository:
             profile_completion=ProfileCompletion(filled=filled, total=len(COMPLETION_FIELDS)),
             consented=row["consented_at"] is not None,
             income_info_consented=row["income_agreed_at"] is not None,
+            consent_version=row["consent_version"],
             unread_notifications=0,
         )
 
@@ -93,6 +95,9 @@ class FakeProfileRepository:
         now = datetime.now(UTC)
         row = self.profiles[user_id]
         row["consented_at"] = now
+        row["consent_version"] = version
+        if agree_income_info:  # 동의 화면에서 동의하면 이번 시각으로 적는다(실제 저장소와 같다)
+            row["income_agreed_at"] = None
         self._set_income(row, agree_income_info, now)
         return ConsentResult(
             terms_agreed_at=now,

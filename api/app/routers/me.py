@@ -185,7 +185,7 @@ async def update_income_consent(
     feed: OpportunityRepoDep,
     now: NowDep,
 ) -> IncomeConsentResult:
-    """소득·수급 선택 동의와 철회 (F-02 소득 단계, F-06 설정). 철회하면 소득 3항목도 지운다."""
+    """소득·수급 선택 동의와 철회 (F-02 소득 단계, F-06 설정). 철회하면 소득 4항목도 지운다."""
     if not (await repo.get_consents(user.id)).terms_privacy:
         raise _consent_required("terms_privacy", "약관에 먼저 동의해 주세요.")
     result = await repo.set_income_consent(user.id, body.agree_income_info)

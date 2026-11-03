@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -71,6 +72,7 @@ def test_first_me_creates_profile(client: TestClient, auth: dict[str, str]) -> N
         False,
         False,
     )
+    assert body["consent_version"] is None  # 동의 전
     assert body["profile_completion"] == {"filled": 0, "total": 19}
 
 
@@ -118,6 +120,7 @@ def test_onboarding_flow(client: TestClient, auth: dict[str, str]) -> None:
 
     me = client.get("/api/v1/me", headers=auth).json()
     assert me["consented"] is True
+    assert me["consent_version"] == "2026-10-07"  # 웹이 지금 문구의 버전과 견준다
     assert me["profile_completion"]["filled"] == 5
 
     client.patch("/api/v1/me/profile", json={"grade": None}, headers=auth)  # null이면 지운다
@@ -223,6 +226,31 @@ def test_income_consent_order(client: TestClient, auth: dict[str, str]) -> None:
         "/api/v1/me/consents", json={"agree_income_info": True, "extra": 1}, headers=auth
     )
     assert res.status_code == 422
+
+
+def test_consenting_again_records_the_new_version(
+    client: TestClient, auth: dict[str, str], repo: FakeProfileRepository
+) -> None:
+    """약관이 바뀌면 웹이 같은 POST로 다시 묻는다. 새 버전이 남고, 소득 동의는 이번에 고른 대로다."""
+    consent(client, auth, agree_income_info=True)
+    client.patch("/api/v1/me/profile", json={"income_bracket": 3}, headers=auth)
+    before = datetime(2026, 10, 7, tzinfo=UTC)
+    repo.profiles[USER_ID]["income_agreed_at"] = before  # 지난 버전에 동의한 때
+
+    renewed = {**CONSENT, "consent_version": "2026-11-03", "agree_income_info": True}
+    res = client.post("/api/v1/me/consents", json=renewed, headers=auth)
+    assert res.status_code == 200
+    assert res.json()["consent_version"] == "2026-11-03"
+    # 소득 동의도 이번에 다시 한 시각으로 적는다
+    assert datetime.fromisoformat(res.json()["income_info_agreed_at"]) > before
+    me = client.get("/api/v1/me", headers=auth).json()
+    assert (me["consent_version"], me["income_info_consented"]) == ("2026-11-03", True)
+    assert client.get("/api/v1/me/profile", headers=auth).json()["income_bracket"] == 3
+
+    # 다시 물을 때 소득 동의를 빼면 소득 값이 지워진다(화면이 미리 알린다)
+    consent(client, auth, agree_income_info=False)
+    assert client.get("/api/v1/me", headers=auth).json()["income_info_consented"] is False
+    assert client.get("/api/v1/me/profile", headers=auth).json()["income_bracket"] is None
 
 
 def test_departments(client: TestClient, auth: dict[str, str]) -> None:

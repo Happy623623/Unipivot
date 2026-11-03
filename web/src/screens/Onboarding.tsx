@@ -15,6 +15,7 @@ import IncomeConsentStep from "@/components/onboarding/IncomeConsentStep";
 import LmsInviteStep from "@/components/onboarding/LmsInviteStep";
 import ProfileStep from "@/components/onboarding/ProfileStep";
 import Skeleton from "@/components/Skeleton";
+import { CONSENT_VERSION, needsConsentRenewal } from "@/lib/consent";
 import {
   buildProfileSteps,
   changeValue,
@@ -29,8 +30,6 @@ import {
 import useAsyncData from "@/lib/useAsyncData";
 import useSessionWatch from "@/lib/useSessionWatch";
 
-// 동의 문구를 바꾸면 버전도 바꾼다 (profiles.consent_version에 남는다)
-const CONSENT_VERSION = "2026-10-07";
 const CONSENT_FAILED = "동의를 저장하지 못했어요. 잠시 후 다시 눌러 주세요.";
 const PROFILE_FAILED = "프로필을 저장하지 못했어요. 입력한 값은 그대로 있으니 다시 눌러 주세요.";
 
@@ -65,7 +64,8 @@ export default function Onboarding({ onDone }: OnboardingProps) {
     const [me, profile] = request.data;
     setValues(toFormValues(profile));
     setIncomeConsented(me.income_info_consented);
-    setStage(me.consented ? { kind: "profile", index: 0 } : { kind: "consent" });
+    // 동의 전이거나, 동의했어도 약관이 바뀌었으면(lib/consent.ts) 동의부터
+    setStage(me.consented && !needsConsentRenewal(me) ? { kind: "profile", index: 0 } : { kind: "consent" });
   }, [request.data]);
 
   if (request.error) {
@@ -76,6 +76,9 @@ export default function Onboarding({ onDone }: OnboardingProps) {
   }
 
   const [me, profile] = request.data;
+  // 이미 동의한 사람에게 바뀐 약관을 다시 묻는 중이다. 다시 동의하면 프로필 단계 없이 홈으로 간다
+  // (알림 등으로 들어온 화면으로 돌려보내지는 않는다)
+  const renewing = needsConsentRenewal(me);
   // 이미 LearningX를 연결한 사람은 마지막 LMS 단계를 건너뛴다
   const finish = () => (me.lms?.status === "active" ? onDone() : setStage({ kind: "lms" }));
   // 소득 단계는 선택 동의를 했을 때만 입력받고, 안 했으면 동의를 한 번 더 묻는다
@@ -93,7 +96,8 @@ export default function Onboarding({ onDone }: OnboardingProps) {
     try {
       const result = await saveConsents(CONSENT_VERSION, choice.incomeInfo);
       setIncomeConsented(result.income_info_agreed_at !== null);
-      setStage({ kind: "profile", index: 0 });
+      if (renewing) onDone();
+      else setStage({ kind: "profile", index: 0 });
     } catch (caught) {
       setError(errorMessage(caught, CONSENT_FAILED));
     } finally {
@@ -125,7 +129,7 @@ export default function Onboarding({ onDone }: OnboardingProps) {
     setError(null);
     try {
       const next = fromFormValues(values, profile);
-      // 소득 3항목은 선택 동의를 했을 때만 보낸다 (설정의 ProfileForm과 같다)
+      // 소득 4항목은 선택 동의를 했을 때만 보낸다 (설정의 ProfileForm과 같다)
       await saveProfile(incomeConsented ? next : withoutIncome(next));
       openStep(index + 1);
     } catch (caught) {
@@ -148,10 +152,18 @@ export default function Onboarding({ onDone }: OnboardingProps) {
 
   return (
     <section className="mx-auto w-full max-w-[640px] rounded-[18px] border border-[#e5e7eb] bg-white p-8 max-[760px]:p-5">
-      <p className="text-[13px] font-semibold text-[#4f6ef7]">UNIPIVOT 시작하기</p>
-      <h1 className="mt-2 text-[24px] font-bold leading-[1.45]">{me.display_name}님에게 맞는 기회를 찾아드릴게요</h1>
+      <p className="text-[13px] font-semibold text-[#4f6ef7]">{renewing ? "UNIPIVOT" : "UNIPIVOT 시작하기"}</p>
+      <h1 className="mt-2 text-[24px] font-bold leading-[1.45]">
+        {renewing ? `${me.display_name}님, 잠깐 확인해 주세요` : `${me.display_name}님에게 맞는 기회를 찾아드릴게요`}
+      </h1>
       <div className="mt-6 border-t border-[#e5e7eb] pt-6">
-        {stage.kind === "consent" && <ConsentStep saving={saving} onAgree={agree} />}
+        {stage.kind === "consent" && (
+          <ConsentStep
+            saving={saving}
+            onAgree={agree}
+            renewal={renewing ? { incomeOn: me.income_info_consented } : undefined}
+          />
+        )}
         {stage.kind === "profile" && (
           <ProfileStep
             step={steps[stage.index]}

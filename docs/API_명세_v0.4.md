@@ -112,6 +112,8 @@
 >
 > v0.4 보강(10/30, 학업 새 정보): `GET /lms/updates`는 과목을 처음 받은 뒤 들어온 것만 주고(연결 전부터 있던 것은 뺀다, 공지는 그 뒤에 올린 것) 과제는 내지 않은 것만 준다. 순서는 과제(마감이 가까운 순) → 주차 항목(최신 먼저) → 공지(올린 순)다. 사용자 피드백 — 새 학업 정보가 뒤섞이고 지난 자료·낸 과제까지 나왔다
 >
+> v0.4 보강(11/03, 동의 문구): `GET /me`에 `consent_version`(동의한 약관 버전, 동의 전 null). 웹은 이 값이 지금 동의 문구의 버전보다 옛 버전이면 다시 묻고 `POST /me/consents`를 다시 부른다. 이때 소득 동의 시각도 이번 시각으로 적는다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -287,6 +289,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
   "profile_completion": { "filled": 6, "total": 19 },
   "consented": true,
   "income_info_consented": false,
+  "consent_version": "2026-11-03",
   "unread_notifications": 3
 }
 ```
@@ -294,6 +297,7 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - `consented`: 약관·개인정보 동의를 마쳤는지. false면 프론트가 온보딩 동의 단계로 보낸다
 - `unread_notifications`: 헤더 알림 배지 숫자
 - `income_info_consented`: 소득·수급 정보 선택 동의를 했는지. false면 소득 입력란을 열지 않는다
+- `consent_version`: 동의한 약관 버전(동의 전 null, 날짜 모양이라 글자 순서가 날짜 순서다). 웹은 이 값이 지금 동의 문구의 버전(`web/src/lib/consent.ts`)보다 옛 버전이면 온보딩 동의 단계에서 바뀐 점을 보여 주고 다시 묻는다. 다시 동의하기 전에는 설정만 열리고(끄기·연결 해제·로그아웃·탈퇴는 되고, 새로 켜거나 연결하는 것 — 프로필 수정·캘린더 연결·알림·자동 등록·브라우저 구독·소득 동의 켜기 — 은 막는다), 앱 열기 기록(`app_open`)·푸시 구독도 올리지 않는다. 다시 동의하면 홈으로 간다. 이 칸이 없는 옛 응답에서는 다시 묻지 않는다. api는 버전을 보지 않는다 — 다시 동의하기 전에도 LMS 동기화·알림은 그대로 돈다
 - `profile_completion.total`은 19다. 유학생 여부로 16, 학위과정으로 17, 취업 상태·본인 연 소득으로 19가 됐다(F-21). 평점 만점은 세지 않는다
 - `calendar_connected`는 로그인만 한 상태에서는 false다(증분 승인)
 - `hyin_verified`는 F-05가 P2라 MVP에서는 늘 false다
@@ -320,7 +324,8 @@ S1-1 완료 조건을 다음으로 바꾼다. 로그인만으로는 캘린더 �
 - 필수 동의 전에는 PATCH도 `403 CONSENT_REQUIRED`를 돌려준다
 - 둘 중 하나라도 false면 `422 VALIDATION_FAILED`
 - 동의 전에는 `/me/profile` 수정과 공고·플래너 API가 `403 CONSENT_REQUIRED`를 돌려준다
-- POST /me/consents에서 갖고 있던 소득 동의를 빼도 소득 3항목을 지우고 판정을 다시 계산한다.
+- POST /me/consents에서 갖고 있던 소득 동의를 빼도 소득 4항목을 지우고 판정을 다시 계산한다.
+- 약관이 바뀌어 다시 물을 때도 POST /me/consents를 부른다. 필수 동의 시각과 `consent_version`을 새로 적고, 소득 동의를 다시 하면 소득 값은 그대로 둔 채 동의 시각을 이번 시각으로 적는다(빼면 위처럼 지운다). PATCH(설정)로 이미 켜진 소득 동의를 다시 켜면 처음 동의한 시각을 둔다
 
 ### `GET /me/profile` · `PATCH /me/profile`
 

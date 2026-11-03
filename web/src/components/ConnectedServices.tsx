@@ -14,6 +14,7 @@ interface ConnectedServicesProps {
   lms: LmsConnection; // GET /lms/connection
   calendarResult: CalendarResult | null; // Google 화면에서 돌아온 결과 (/settings?calendar=…)
   onMeChange: (me: Me) => void; // 목 모드는 연결 결과를 바로 돌려준다
+  connectLocked?: boolean; // 약관에 다시 동의하기 전: 새로 연결하지 않고 해제만 한다
 }
 
 const RESULT_NOTICE: Record<CalendarResult, { text: string; tone: string }> = {
@@ -22,7 +23,13 @@ const RESULT_NOTICE: Record<CalendarResult, { text: string; tone: string }> = {
 };
 
 // 설정의 "연결된 서비스": Google Calendar 연결(증분 승인, API 4장)과 LearningX 연결 상태·해제
-export default function ConnectedServices({ me, lms: initialLms, calendarResult, onMeChange }: ConnectedServicesProps) {
+export default function ConnectedServices({
+  me,
+  lms: initialLms,
+  calendarResult,
+  onMeChange,
+  connectLocked = false,
+}: ConnectedServicesProps) {
   const [connecting, setConnecting] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [lms, setLms] = useState(initialLms);
@@ -107,6 +114,8 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
           </div>
           {me.calendar_connected ? (
             <Button secondary onClick={() => setCalendarOpen(true)}>연결 해제</Button>
+          ) : connectLocked ? (
+            <span className="shrink-0 text-[12px] text-[#667085]">다시 동의한 뒤에 연결</span>
           ) : (
             <Button secondary busy={connecting} onClick={connectCalendar}>
               {connecting ? "Google로 이동 중" : "연결하기"}
@@ -119,7 +128,9 @@ export default function ConnectedServices({ me, lms: initialLms, calendarResult,
             <p className="mt-1 text-[12px] text-[#667085]">
               {lms.status === "active"
                 ? `토큰 끝 4자리 ${lms.token_last4} · 마지막 동기화 ${lms.last_synced_at ? formatRelativeTime(lms.last_synced_at, nowIso()) : "없음"}`
-                : "연결되지 않음. 학업 화면에서 연결할 수 있어요."}
+                : connectLocked
+                  ? "연결되지 않음. 약관에 다시 동의한 뒤에 학업 화면에서 연결할 수 있어요."
+                  : "연결되지 않음. 학업 화면에서 연결할 수 있어요."}
             </p>
           </div>
           {lms.status === "active" && (

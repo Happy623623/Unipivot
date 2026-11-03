@@ -58,7 +58,7 @@ export const DEGREE_LABELS: Record<DegreeProgram, string> = {
   integrated: "석박사통합",
 };
 
-// 소득·수급 3항목은 선택 동의(소득·수급 정보)를 해야 저장된다 (동의 없이 값을 보내면 403)
+// 소득·수급 4항목은 선택 동의(소득·수급 정보)를 해야 저장된다 (동의 없이 값을 보내면 403)
 export function withoutIncome(profile: Profile): Profile {
   return { ...profile, income_bracket: null, median_income_pct: null, annual_income: null, welfare_status: null };
 }

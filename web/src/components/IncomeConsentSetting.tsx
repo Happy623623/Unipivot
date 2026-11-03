@@ -6,13 +6,15 @@ import Modal, { ModalCancelButton, ModalDescription } from "@/components/Modal";
 interface IncomeConsentSettingProps {
   consented: boolean; // GET /me의 income_info_consented
   onChanged: () => Promise<void>; // 내 정보·프로필 다시 불러오기
+  canTurnOn?: boolean; // 약관에 다시 동의하기 전(설정만 열린 때)에는 끌 수만 있다
 }
 
 // 설정 화면: 소득·수급 정보 선택 동의 켜기·끄기 (PATCH /me/consents)
-export default function IncomeConsentSetting({ consented, onChanged }: IncomeConsentSettingProps) {
+export default function IncomeConsentSetting({ consented, onChanged, canTurnOn = true }: IncomeConsentSettingProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const locked = !consented && !canTurnOn;
 
   const change = async (agree: boolean) => {
     setSaving(true);
@@ -34,7 +36,10 @@ export default function IncomeConsentSetting({ consented, onChanged }: IncomeCon
       <div className="mt-4 flex items-center justify-between gap-4">
         <div>
           <p className="text-[14px] font-semibold">소득·수급 정보 수집·이용 (선택)</p>
-          <p className="mt-1 text-[12px] text-[#667085]">자격 판정에만 쓰고, 탈퇴하면 바로 지워요.</p>
+          <p className="mt-1 text-[12px] leading-5 text-[#667085]">
+            학자금 지원구간·기준 중위소득 %·본인 연 소득·기초생활수급·차상위 여부를 자격 판정에만 써요. 끄거나 탈퇴하면 바로 지워요.
+          </p>
+          {locked && <p className="mt-1 text-[12px] font-semibold text-[#b7791f]">약관에 다시 동의한 뒤에 켤 수 있어요.</p>}
         </div>
         <button
           type="button"
@@ -42,10 +47,10 @@ export default function IncomeConsentSetting({ consented, onChanged }: IncomeCon
           aria-checked={consented}
           aria-label="소득·수급 정보 수집·이용 동의"
           // 바꾸는 동안 disabled로 막으면 초점이 빠진다. aria-disabled·aria-busy로 알리고 누름은 무시한다
-          aria-disabled={saving || undefined}
+          aria-disabled={saving || locked || undefined}
           aria-busy={saving || undefined}
           onClick={() => {
-            if (saving) return;
+            if (saving || locked) return;
             if (consented) setConfirmOpen(true);
             else void change(true);
           }}
