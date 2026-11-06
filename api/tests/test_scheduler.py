@@ -5,6 +5,8 @@
 """
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, time, timedelta
 
 import pytest
@@ -170,6 +172,39 @@ def test_the_app_has_three_jobs_and_only_sending_runs_at_start() -> None:
     assert jobs["LMS 동기화"].every == LMS_EVERY and not jobs["LMS 동기화"].at_start
     assert jobs["공고 알림 예약"].daily_at == SCHEDULE_AT
     assert not jobs["공고 알림 예약"].at_start
+
+
+async def test_the_schedule_job_judges_and_schedules_on_one_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """예약 작업은 연결 하나로 판정 다시 계산(OpportunityRepository)과 예약(NotificationRepository)을
+    한다. 배선이 어긋나면 서버는 뜨지만 매일 08:30에만 조용히 터진다."""
+    import app.scheduler as scheduler_module
+    from app.repositories.notifications import NotificationRepository
+    from app.repositories.opportunities import OpportunityRepository
+
+    conn = object()
+
+    class Pool:
+        @asynccontextmanager
+        async def connection(self) -> AsyncIterator[object]:
+            yield conn
+
+    calls: list[tuple[object, object, datetime]] = []
+
+    async def schedule(repo: object, opportunities: object, *, now: datetime) -> str:
+        calls.append((repo, opportunities, now))
+        return "예약함"
+
+    monkeypatch.setattr(scheduler_module, "schedule_notifications", schedule)
+    app = create_app(_settings())
+    app.state.pool = Pool()
+    jobs = {job.name: job for job in app_jobs(app, now=lambda: KST_NOON)}
+    assert await jobs["공고 알림 예약"].run() == "예약함"
+    [(repo, opportunities, now)] = calls
+    assert isinstance(repo, NotificationRepository) and repo.conn is conn
+    assert isinstance(opportunities, OpportunityRepository) and opportunities.conn is conn
+    assert now == KST_NOON
 
 
 def test_the_app_logs_are_visible() -> None:

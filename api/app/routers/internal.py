@@ -29,6 +29,7 @@ from app.lms.sync import LmsSyncServiceDep
 from app.push.deps import PushSenderDep
 from app.repositories.metrics import MetricsRepoDep
 from app.repositories.notifications import NotificationRepoDep
+from app.repositories.opportunities import OpportunityRepoDep
 from app.repositories.push import PushRepoDep
 from app.schemas.lms import SyncJobResult
 from app.schemas.metrics import (
@@ -99,10 +100,17 @@ async def lms_sync(service: LmsSyncServiceDep, now: NowDep, _: InternalKeyDep) -
 
 @router.post("/jobs/schedule-notifications", response_model=ScheduleResult)
 async def schedule_notifications(
-    repo: NotificationRepoDep, now: NowDep, _: InternalKeyDep
+    repo: NotificationRepoDep,
+    opportunities: OpportunityRepoDep,
+    now: NowDep,
+    _: InternalKeyDep,
 ) -> ScheduleResult:
-    """공고 알림(새 적격·마감 임박·정보 필요)을 예약한다. 하루 한 번 도는 작업이다."""
-    return await jobs.schedule_notifications(repo, now=now)
+    """공고 알림(새 적격·마감 임박·정보 필요)을 예약한다. 하루 한 번 도는 작업이다.
+
+    예약하기 전에 알림을 받을 수 있는 사용자의 낡은 판정을 다시 계산한다(`jobs.schedule_notifications`).
+    두 저장소는 같은 요청 연결을 쓴다.
+    """
+    return await jobs.schedule_notifications(repo, opportunities, now=now)
 
 
 @router.post("/jobs/send-notifications", response_model=SendResult)

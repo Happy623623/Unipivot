@@ -13,14 +13,18 @@ from typing import Any
 
 import psycopg
 import pytest
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
-from app.eligibility import KST
+from app import jobs
+from app.eligibility import ENGINE_VERSION, KST
 from app.eval.world import connect
 from app.repositories.notifications import (
     NOTIFY_HOUR,
     PROFILE_DAILY,
     NotificationRepository,
 )
+from app.repositories.opportunities import OpportunityRepository, Refresh
 from tests.db_world import DATABASE_URL
 
 pytestmark = [
@@ -43,12 +47,16 @@ class World:
     def repo(self) -> NotificationRepository:
         return NotificationRepository(self.conn)
 
-    async def user(self, **settings: Any) -> str:
+    async def user(self, *, consented: bool = True, **settings: Any) -> str:
+        """사용자 하나. consented면 약관·개인정보 동의를 마쳤다(예약 작업은 동의한 사용자만 판정한다)."""
         user_id = str(uuid.uuid4())
         self.users.append(user_id)
         await self.conn.execute("insert into auth.users (id) values (%s)", (user_id,))
+        agreed = NOW if consented else None
         await self.conn.execute(
-            "insert into profiles (id, display_name) values (%s, '알림 학생')", (user_id,)
+            "insert into profiles (id, display_name, terms_agreed_at, privacy_agreed_at)"
+            " values (%s, '알림 학생', %s, %s)",
+            (user_id, agreed, agreed),
         )
         if settings:
             names = ", ".join(("user_id", *settings))
@@ -90,6 +98,32 @@ class World:
             " missing_fields = excluded.missing_fields",
             (user_id, opportunity_id, status, list(missing)),
         )
+
+    async def requirement(
+        self, opportunity_id: str, field: str, operator: str, value: Any, *, version: int = 1
+    ) -> None:
+        """요건 한 줄. version이 1보다 크면 공고의 요건 버전을 그 값으로 둔다(다시 추출한 셈)."""
+        await self.conn.execute(
+            "insert into requirements (opportunity_id, clause_no, field, operator, value)"
+            " values (%s, 1, %s, %s, %s)",
+            (opportunity_id, field, operator, Jsonb(value)),
+        )
+        if version > 1:
+            await self.conn.execute(
+                "update opportunities set requirements_version = %s where id = %s",
+                (version, opportunity_id),
+            )
+
+    async def status(self, user_id: str, opportunity_id: str) -> str | None:
+        """저장된 판정. 없으면 None."""
+        row = await (
+            await self.conn.execute(
+                "select status::text as status from eligibility_results"
+                " where user_id = %s and opportunity_id = %s",
+                (user_id, opportunity_id),
+            )
+        ).fetchone()
+        return row["status"] if row else None
 
     async def mark(self, user_id: str, opportunity_id: str, mark: str) -> None:
         await self.conn.execute(
@@ -324,6 +358,181 @@ async def test_rows_that_lost_their_reason_are_removed() -> None:
         ]
 
 
+# ── 예약 앞에서 판정 다시 계산 (jobs.schedule_notifications) ──────────────
+
+
+async def _tx_conn() -> psycopg.AsyncConnection:
+    """요청 풀처럼 autocommit이 아닌 연결(블록이 끝날 때 커밋·롤백한다)."""
+    return await psycopg.AsyncConnection.connect(
+        DATABASE_URL, row_factory=dict_row, prepare_threshold=None
+    )
+
+
+async def _morning(
+    built: World, repo_type: type[OpportunityRepository] = OpportunityRepository
+) -> None:
+    """예약 작업을 운영처럼 돌린다. 요청·스케줄러처럼 autocommit이 아닌 연결 하나를 두 저장소에 함께
+    주고, 블록이 끝날 때 확정한다. 그래야 사용자마다 따로 확정하는지(세이브포인트가 아닌지) 볼 수 있다."""
+    async with await _tx_conn() as conn:
+        await jobs.schedule_notifications(NotificationRepository(conn), repo_type(conn), now=NOW)
+
+
+async def test_the_morning_job_judges_a_student_who_has_not_opened_the_feed() -> None:
+    """판정은 피드·상세를 열 때 계산된다. 예약 작업이 그 전에 다시 계산하지 않으면 공고가 들어온 뒤
+    앱을 열지 않은 학생에게는 새 공고·정보 필요 알림이 가지 않는다(PRD 6장)."""
+    async with world() as built:
+        student = await built.user()
+        await built.opportunity("새 장학", days=None)  # 요건 없음, 원문 확인 필요 아님 → 지원 가능
+        needs_gpa = await built.opportunity("평점 장학", days=None)
+        await built.requirement(needs_gpa, "gpa_last_semester", "gte", 3.0)  # 평점을 안 넣었다
+        await built.repo.schedule(now=NOW)
+        assert await built.keys(student) == []  # 저장된 판정이 없으면 저장소는 예약하지 않는다
+
+        await _morning(built)
+        assert await built.keys(student) == [
+            "new_eligible|새 장학|10-15 09:00|pending",
+            "profile_needed|평점 장학|10-15 09:00|pending",
+        ]
+
+
+async def test_the_morning_job_does_not_announce_with_an_old_judgment() -> None:
+    """요건을 다시 추출하면(요건 버전이 오르면) 저장된 판정은 낡은 것이다. 예약은 다시 계산한 판정을
+    보고, 옛 '지원 가능'으로 새 공고 알림을 만들지 않는다."""
+    async with world() as built:
+        student = await built.user()
+        await built.conn.execute(
+            "update profiles set gpa_last_semester = 3.0 where id = %s", (student,)
+        )
+        opportunity = await built.opportunity("다시 추출한 장학", days=None)
+        await built.conn.execute(  # 요건 버전 1, 지금 엔진으로 낸 '지원 가능'
+            "insert into eligibility_results (user_id, opportunity_id, status, condition_results,"
+            " requirements_version, engine_version) values (%s, %s, 'eligible', '[]'::jsonb, 1, %s)",
+            (student, opportunity, ENGINE_VERSION),
+        )
+        await built.requirement(opportunity, "gpa_last_semester", "gte", 4.0, version=2)
+
+        await _morning(built)
+        assert await built.status(student, opportunity) == "ineligible"
+        assert await built.keys(student) == []
+
+
+async def test_a_student_whose_judgment_fails_does_not_stop_the_others() -> None:
+    """한 사용자의 판정이 저장한 뒤에 터져도 그 사용자의 트랜잭션만 되돌리고(저장한 판정도) 나머지는 예약한다."""
+    async with world() as built:
+        broken, fine = await built.user(), await built.user()
+        opportunity = await built.opportunity("새 장학", days=None)
+
+        class Flaky(OpportunityRepository):
+            async def _upsert(
+                self, user_id: str, payload: list[dict[str, Any]], now: datetime
+            ) -> None:
+                await super()._upsert(user_id, payload, now)
+                if user_id == broken:
+                    await self.conn.execute("select 1 / 0")
+
+        await _morning(built, Flaky)
+        assert await built.status(broken, opportunity) is None
+        assert await built.keys(broken) == []
+        assert await built.keys(fine) == ["new_eligible|새 장학|10-15 09:00|pending"]
+
+
+async def test_the_morning_job_commits_each_student_before_the_next() -> None:
+    """사용자마다 따로 확정한다. 다음 사용자를 판정할 때 앞 사용자의 판정은 이미 보이고 프로필 잠금도
+    풀려 있다. 한 트랜잭션에 모두 넣으면 작업이 끝날 때까지 그 사용자의 프로필 저장·탈퇴가 기다린다."""
+    async with world() as built:
+        # 예약 작업은 사용자를 id 순으로 본다
+        first, second = sorted([await built.user(), await built.user()])
+        opportunity = await built.opportunity("새 장학", days=None)
+        seen: list[tuple[str | None, bool]] = []
+
+        class Watching(OpportunityRepository):
+            async def refresh_judgments(self, user_id: str, **kwargs: Any) -> Refresh:
+                if user_id == second:
+                    try:  # 다른 연결이 앞 사용자의 프로필을 바로 잠글 수 있나(탈퇴가 하는 잠금)
+                        await built.conn.execute(
+                            "select 1 from profiles where id = %s for update nowait", (first,)
+                        )
+                        free = True
+                    except psycopg.errors.LockNotAvailable:
+                        free = False
+                    seen.append((await built.status(first, opportunity), free))
+                return await super().refresh_judgments(user_id, **kwargs)
+
+        await _morning(built, Watching)
+        assert seen == [("eligible", True)]
+
+
+async def test_the_morning_job_stops_when_the_connection_is_lost(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """연결이 끊기면 남은 사용자도 모두 실패하므로 멈추고 오류를 올린다(사용자마다 실패를 쌓지 않는다).
+    앞 사용자의 판정은 이미 확정돼 남는다."""
+    async with world() as built:
+        first, second = sorted([await built.user(), await built.user()])
+        opportunity = await built.opportunity("새 장학", days=None)
+
+        class Cut(OpportunityRepository):
+            async def refresh_judgments(self, user_id: str, **kwargs: Any) -> Refresh:
+                if user_id == second:  # 이 사용자를 판정하는 중에 연결이 끊긴다
+                    await built.conn.execute(
+                        "select pg_terminate_backend(%s)", (self.conn.info.backend_pid,)
+                    )
+                return await super().refresh_judgments(user_id, **kwargs)
+
+        with pytest.raises(psycopg.OperationalError):
+            await _morning(built, Cut)
+        assert "판정을 다시 계산하지 못했어요" not in caplog.text
+        assert await built.status(first, opportunity) == "eligible"
+
+
+async def test_a_student_who_has_not_agreed_yet_is_not_judged() -> None:
+    """약관·개인정보 동의 전에는 판정하지 않는다. 프로필을 저장할 수 없고 앱을 쓰기 전이다."""
+    async with world() as built:
+        waiting = await built.user(consented=False)
+        opportunity = await built.opportunity("새 장학", days=None)
+
+        await _morning(built)
+        assert await built.status(waiting, opportunity) is None
+        assert await built.keys(waiting) == []
+
+
+async def test_a_student_who_left_during_the_job_is_not_brought_back() -> None:
+    """목록을 읽은 뒤 탈퇴한 학생(프로필은 지워 확정했고 로그인 계정은 아직 남음, app/account.py 3·4)의
+    프로필을 판정하며 다시 만들지 않는다."""
+    async with world() as built:
+        leaving = await built.user()
+        await built.opportunity("새 장학", days=None)
+
+        class Leaving(OpportunityRepository):
+            async def refresh_judgments(self, user_id: str, **kwargs: Any) -> Refresh:
+                if user_id == leaving:
+                    await built.conn.execute("delete from profiles where id = %s", (user_id,))
+                return await super().refresh_judgments(user_id, **kwargs)
+
+        await _morning(built, Leaving)
+        row = await (
+            await built.conn.execute(
+                "select count(*) as count from profiles where id = %s", (leaving,)
+            )
+        ).fetchone()
+        assert row is not None and row["count"] == 0
+
+
+async def test_a_student_who_turned_off_every_opportunity_alert_is_not_judged() -> None:
+    """공고 알림 세 종류를 모두 끈 학생은 받을 알림이 없으니 판정하지 않는다. 하나라도 켜 두면 한다."""
+    async with world() as built:
+        quiet = await built.user(
+            muted_notification_types=["new_eligible", "deadline_soon", "profile_needed"]
+        )
+        partly = await built.user(muted_notification_types=["new_eligible"])
+        opportunity = await built.opportunity("새 장학", days=None)
+
+        await _morning(built)
+        assert await built.status(quiet, opportunity) is None
+        assert await built.status(partly, opportunity) == "eligible"
+        assert await built.keys(partly) == []  # 새 공고 알림은 껐고, 마감이 없어 마감 임박도 없다
+
+
 # ── 발송 ───────────────────────────────────────────────────────────────────
 
 
@@ -386,7 +595,8 @@ async def test_a_hidden_opportunity_is_checked_again_before_sending() -> None:
 
 
 async def test_only_one_profile_notice_goes_out_a_day() -> None:
-    """ERD: profile_needed 하루 1건 제한은 발송 배치가 건다."""
+    """ERD: profile_needed 하루 1건 제한은 발송 배치가 건다. 넘는 알림은 다음 날 알림 시각(09:00)으로
+    미룬다 — 알림함에도 그때 나오고(PRD F-33: 하루 1건), 다음 날 0시에 푸시가 나가지 않는다."""
     async with world() as built:
         student = await built.user()
         for index in range(3):
@@ -398,10 +608,92 @@ async def test_only_one_profile_notice_goes_out_a_day() -> None:
         first = (await built.repo.send(now=NOW + timedelta(days=1))).result
         assert (first.due, first.sent, first.skipped) == (3, PROFILE_DAILY, 3 - PROFILE_DAILY)
         later = (await built.repo.send(now=NOW + timedelta(days=1, hours=1))).result
-        assert later.sent == 0  # 같은 날에는 더 보내지 않는다
-        tomorrow = (await built.repo.send(now=NOW + timedelta(days=2))).result
+        assert (later.due, later.sent) == (0, 0)  # 미뤘으니 같은 날에는 다시 보지 않는다
+        assert await built.repo.unread(student, now=NOW + timedelta(days=1, hours=1)) == 1
+        early = (await built.repo.send(now=NOW + timedelta(days=2))).result
+        assert early.sent == 0  # 다음 날도 알림 시각 전(08:00)에는 보내지 않는다
+        tomorrow = (await built.repo.send(now=NOW + timedelta(days=2, hours=2))).result
         assert tomorrow.sent == PROFILE_DAILY
         assert "거주지역을 입력하면 판정할 수 있어요" in (await built.bodies(student))[0]
+
+
+async def test_profile_notices_over_the_limit_do_not_hold_up_other_notices() -> None:
+    """한도에 걸린 정보 필요 알림이 발송 묶음을 채워도 다른 알림은 나간다. 정보 필요 알림은 맨 뒤에 보고,
+    한도를 넘은 행은 다음 날로 미뤄 묶음에 다시 들어오지 않는다. 전에는 그런 행이 묶음(500건)보다 많으면
+    마감 임박·새 과제 알림이 계속 나가지 못했다 — 여기서는 묶음을 2건으로 줄여 본다."""
+    async with world() as built:
+        asking, waiting = await built.user(), await built.user()
+        for index in range(3):
+            opportunity = await built.opportunity(f"정보 필요 {index}", days=10)
+            await built.judge(asking, opportunity, "undetermined", ["region"])
+        await built.repo.schedule(now=NOW)  # 10-15 09:00에 정보 필요 3건
+        fresh = await built.opportunity("새 장학", days=None)  # 마감이 없어 마감 임박 알림은 없다
+        await built.judge(waiting, fresh, "eligible")
+        await built.repo.schedule(now=NOW + timedelta(hours=4))  # 10-16 09:00에 새 공고 1건
+        sent_at = NOW + timedelta(days=1, hours=4)  # 10-16 12:00
+
+        await built.repo.send(now=sent_at, limit=2)
+        assert await built.keys(waiting) == ["new_eligible|새 장학|10-16 09:00|succeeded"]
+        second = (await built.repo.send(now=sent_at, limit=2)).result
+        assert (second.due, second.sent, second.skipped) == (2, 0, 2)  # 한도에 걸려 미룬다
+        assert (await built.repo.send(now=sent_at, limit=2)).result.due == 0
+        later = [line for line in await built.keys(asking) if line.endswith("10-17 09:00|pending")]
+        assert len(later) == 2
+
+
+async def test_a_late_send_does_not_move_a_notice_that_was_just_sent() -> None:
+    """겹친 발송: 늦은 쪽이 보낼 목록을 읽은 뒤 먼저 쪽이 그 알림을 보내고 확정하면, 늦은 쪽에는 한도를
+    넘은 정보 필요 알림으로 보인다. 그래도 이미 보낸 알림은 다음 날로 옮기지 않는다(알림함에서 사라진다)."""
+    async with world() as built:
+        student = await built.user()
+        opportunity = await built.opportunity("정보 필요", days=10)
+        await built.judge(student, opportunity, "undetermined", ["region"])
+        await built.repo.schedule(now=NOW)
+        early, late = await _tx_conn(), await _tx_conn()
+
+        class Late(NotificationRepository):
+            async def sent_today(self, *, now: datetime, kind: str) -> dict[str, int]:
+                # 늦은 쪽이 보낼 목록을 읽은 뒤, 먼저 쪽이 그 알림을 보내고 확정했다
+                await NotificationRepository(early).send(now=now)
+                await early.commit()
+                return await super().sent_today(now=now, kind=kind)
+
+        try:
+            result = (await Late(late).send(now=NOW + timedelta(days=1))).result
+            await late.commit()
+        finally:
+            await early.close()
+            await late.close()
+        # 남이 닫은 알림은 sent·skipped 어디에도 세지 않는다(명세 12장)
+        assert (result.due, result.sent, result.skipped) == (1, 0, 0)
+        assert await built.keys(student) == ["profile_needed|정보 필요|10-15 09:00|succeeded"]
+
+
+async def test_a_deferred_profile_notice_goes_out_before_newer_ones() -> None:
+    """미룬 정보 필요 알림은 다음 날 09:00에 새로 생긴 것과 시각이 같아진다. 그래도 먼저 만든 것부터
+    보낸다 — 번호(id) 순이면 날마다 새 알림에 밀려 마감까지 못 나갈 수 있다."""
+    async with world() as built:
+        student = await built.user()
+        older = await built.opportunity("먼저 생긴 공고", days=10)
+        newer = await built.opportunity("나중 생긴 공고", days=10)
+        low, high = sorted([uuid.uuid4(), uuid.uuid4()])  # 먼저 만든 알림의 번호가 더 크다
+        at = NOW + timedelta(days=1, hours=1)  # 10-16 09:00
+        for notification, opportunity, created in (
+            (high, older, NOW - timedelta(days=1)),  # 어제 한도에 걸려 미뤄진 알림
+            (low, newer, NOW + timedelta(days=1)),  # 오늘 아침 새로 만든 알림
+        ):
+            await built.conn.execute(
+                "insert into notifications (id, user_id, type, opportunity_id, title, body,"
+                " scheduled_at, dedupe_key, created_at) values (%s, %s, 'profile_needed', %s,"
+                " '프로필 정보가 필요해요', '본문', %s, 'profile_needed:opp:' || %s, %s)",
+                (notification, student, opportunity, at, opportunity, created),
+            )
+
+        await built.repo.send(now=at + timedelta(hours=1))
+        assert await built.keys(student) == [
+            "profile_needed|먼저 생긴 공고|10-16 09:00|succeeded",
+            "profile_needed|나중 생긴 공고|10-17 09:00|pending",
+        ]
 
 
 # ── 알림함 ─────────────────────────────────────────────────────────────────

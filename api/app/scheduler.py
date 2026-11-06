@@ -38,6 +38,7 @@ from app.llm.deps import llm_for
 from app.lms.sync import lms_sync_service_for
 from app.push.deps import push_sender_for
 from app.repositories.notifications import NotificationRepository
+from app.repositories.opportunities import OpportunityRepository
 from app.repositories.push import PushRepository
 from app.youth.client import YouthPolicyClient
 
@@ -147,8 +148,11 @@ def app_jobs(app: Any, *, now: Callable[[], datetime] = current_time) -> list[Jo
             )
 
     async def schedule() -> Any:
+        # 판정 다시 계산과 예약을 한 연결에서 한다(블록이 끝나면 함께 커밋)
         async with state.pool.connection() as conn:
-            return await schedule_notifications(NotificationRepository(conn), now=now())
+            return await schedule_notifications(
+                NotificationRepository(conn), OpportunityRepository(conn), now=now()
+            )
 
     async def sync() -> Any:
         service = lms_sync_service_for(
