@@ -10,13 +10,19 @@
 | deadline_soon | `deadline_soon:opp:{id}:D-3`·`:D-1` | 적격이거나 준비한 공고. 마감일이 있어야 한다 |
 | profile_needed | `profile_needed:opp:{id}` | 판정 불가 + 물어볼 항목이 있음 |
 
+예약은 저장된 판정(`eligibility_results`)을 본다. 판정은 학생이 피드·상세를 열 때 계산되므로, 예약
+작업(`app/jobs.py`)이 예약하기 전에 `alert_users`(동의를 마친 사용자)의 낡은 판정을 사용자마다 다시
+계산해 확정한다(PRD 6장).
+
 세 종류 모두 **숨긴 공고(관심 없음)와 설정에서 끈 종류는 만들지 않는다**(F-45, ERD). 알림 시각은
 KST 09:00이고, **그 시점이 이미 지났으면 만들지 않는다** — 마감 이틀 전에 들어온 공고가 D-3·D-1을
 한꺼번에 받으면 안 된다.
 
 **발송**(5분마다): `scheduled_at`이 지난 pending 행을 닫는다. 보내기 전에 숨김을 다시 보고,
-profile_needed는 사용자당 KST 하루 1건까지만 보낸다(ERD). 푸시 구독이 없거나 푸시를 끈 사용자는
-푸시만 건너뛰고 행은 알림함에 남는다. 실제 푸시 발송은 F-33이다.
+profile_needed는 사용자당 KST 하루 1건까지만 보낸다(ERD). 넘는 행은 다음 날 09:00으로 미룬다 — 그대로
+두면 계속 보낼 때가 된 행으로 남아 발송 묶음(`SEND_LIMIT`)을 차지하고, 그런 행이 묶음보다 많아지면 다른
+알림이 나가지 못한다. 알림함에도 미룬 시각에 나온다(PRD F-33: 하루 1건). 정보 필요 알림은 다른 알림 뒤에
+본다. 푸시 구독이 없거나 푸시를 끈 사용자는 푸시만 건너뛰고 행은 알림함에 남는다. 실제 푸시 발송은 F-33이다.
 
 공고 공개 범위 조건은 `repositories/opportunities.py`의 VISIBLE과 같은 뜻이지만, 그 상수는 한 사용자
 (`%(uid)s`)를 보는 문장용이라 여기서는 `p.id`로 다시 쓴다.
@@ -150,6 +156,22 @@ class NotificationRepository:
         self.conn = conn
 
     # ── 예약 ────────────────────────────────────────────────────────────────
+
+    async def alert_users(self) -> list[str]:
+        """공고 알림을 받을 사용자: 약관·개인정보 동의를 마쳤고 공고 알림 세 종류를 모두 끄지는 않은 사용자(id 순).
+
+        예약 작업이 예약하기 전에 이 사용자들의 낡은 판정을 다시 계산한다(`app/jobs.py`). 동의 전 사용자는
+        프로필을 저장할 수 없고 앱을 쓰기 전이라 판정하지 않는다(동의는 `GET /me`의 consented와 같은 뜻).
+        """
+        rows = await self._rows(
+            "select p.id::text as id from profiles p"
+            " left join user_settings s on s.user_id = p.id"
+            " where p.terms_agreed_at is not null and p.privacy_agreed_at is not null"
+            " and not (coalesce(s.muted_notification_types, '{}') @> %(kinds)s::text[])"
+            " order by p.id",
+            {"kinds": list(_KINDS)},
+        )
+        return [row["id"] for row in rows]
 
     async def schedule(self, *, now: datetime) -> ScheduleResult:
         """공고 알림 세 종류를 예약하고, 조건에서 빠진 pending 행을 지운다."""
@@ -290,7 +312,7 @@ class NotificationRepository:
     # ── 발송 ────────────────────────────────────────────────────────────────
 
     async def due(self, *, now: datetime, limit: int = SEND_LIMIT) -> list[Due]:
-        """보낼 때가 된 pending 알림. 오래된 것부터다."""
+        """보낼 때가 된 pending 알림. 오래된 것부터 보되, 정보 필요 알림은 맨 뒤다(_DUE)."""
         rows = await self._rows(_DUE, {"now": now, "limit": limit})
         return [
             Due(
@@ -343,6 +365,24 @@ class NotificationRepository:
         closed = {row["id"] for row in rows}  # UUID로 비교한다(넘긴 글자 모양·대소문자와 상관없이)
         return [item for item in ids if UUID(item) in closed]
 
+    async def _defer(self, ids: Sequence[str], *, now: datetime) -> int:
+        """하루 한도를 넘은 정보 필요 알림을 다음 날 알림 시각(KST 09:00)으로 미룬다.
+
+        그대로 두면 계속 보낼 때가 된 행으로 남아 발송 묶음을 차지한다. 그런 행이 묶음(SEND_LIMIT)보다
+        많아지면 그 뒤의 알림(마감 임박·새 과제)이 나가지 못하고, 다음 날 0시에 정보 필요 푸시가 나간다.
+        그새 다른 발송이 닫은 행은 건드리지 않는다(`status = 'pending'`). 미룬 수를 돌려준다.
+        미뤄도 만든 시각(`created_at`)은 그대로라, 다음 날 새로 생긴 정보 필요 알림보다 먼저 나간다(_DUE).
+        """
+        if not ids:
+            return 0
+        tomorrow = now.astimezone(KST).date() + timedelta(days=1)
+        cursor = await self.conn.execute(
+            f"update notifications set scheduled_at = {_AT_HOUR % '%(day)s'}"
+            " where id = any(%(ids)s::uuid[]) and status = 'pending'",
+            {"day": tomorrow, "ids": list(ids)},
+        )
+        return max(cursor.rowcount, 0)
+
     async def commit_sent(self) -> None:
         """닫은 알림을 먼저 확정한다. 푸시를 보내기 **전에** 부른다(app/jobs.py).
 
@@ -354,7 +394,9 @@ class NotificationRepository:
         await self.conn.commit()
 
     async def send(self, *, now: datetime, limit: int = SEND_LIMIT) -> Sent:
-        """보낼 때가 된 알림을 닫는다. 숨긴 공고와 하루 한도를 넘는 알림은 보내지 않고 둔다.
+        """보낼 때가 된 알림을 닫는다. 숨긴 공고는 보내지 않고 두고, 하루 한도를 넘는 정보 필요 알림은
+        다음 날 09:00으로 미룬다(_defer). skipped는 숨긴 것과 **실제로 미룬** 것이다 — 겹친 발송에서 남이
+        그새 닫은 알림은 어디에도 세지 않는다(명세 12장).
 
         **푸시는 여기서 보내지 않는다.** 보낸 알림 번호를 함께 돌려주고, 부른 쪽(내부 작업)이
         푸시 발송기에 넘긴다 — DB 트랜잭션을 쥔 채로 바깥을 부르지 않는다.
@@ -364,21 +406,26 @@ class NotificationRepository:
         due = await self.due(now=now, limit=limit)
         already = await self.sent_today(now=now, kind="profile_needed")
         sending: list[str] = []
+        later: list[str] = []
+        dismissed = 0
         for item in due:
             if item.dismissed:
+                dismissed += 1
                 continue
             if item.type == "profile_needed":
                 if already.get(item.user_id, 0) >= PROFILE_DAILY:
+                    later.append(item.id)
                     continue
                 already[item.user_id] = already.get(item.user_id, 0) + 1
             sending.append(item.id)
         closed = await self.mark_sent(sending, now=now)
+        deferred = await self._defer(later, now=now)
         return Sent(
             result=SendResult(
                 due=len(due),
                 sent=len(closed),
                 pushable=await self.pushable(closed),
-                skipped=len(due) - len(sending),
+                skipped=dismissed + deferred,
             ),
             ids=closed,
         )
@@ -560,7 +607,9 @@ _STALE = (
 )
 
 
-# 보낼 때가 된 알림. 숨긴 공고는 함께 알려 주고(보내지 않고 둔다) 오래된 것부터 본다
+# 보낼 때가 된 알림. 숨긴 공고는 함께 알려 주고(보내지 않고 둔다) 오래된 것부터 본다 — 시각이 같으면
+# 먼저 만든 것부터다(미룬 정보 필요 알림이 다음 날 새로 생긴 것에 밀리지 않게). 정보 필요 알림은 맨
+# 뒤다 — 하루 1건이라 급하지 않고, 아침마다 미룬 행이 사용자 수만큼 한꺼번에 돌아온다
 _DUE = (
     "select n.id, n.user_id, n.type, coalesce(m.mark = 'not_interested', false) as dismissed"
     " from notifications n"
@@ -568,7 +617,7 @@ _DUE = (
     " on n.opportunity_id is not null and m.user_id = n.user_id"
     " and m.opportunity_id = n.opportunity_id"
     " where n.status = 'pending' and n.scheduled_at <= %(now)s"
-    " order by n.scheduled_at, n.id limit %(limit)s"
+    " order by n.type = 'profile_needed', n.scheduled_at, n.created_at, n.id limit %(limit)s"
 )
 
 _LIST = (

@@ -7,6 +7,7 @@
 막으려는 것이다. 여기 함수들은 FastAPI를 모른다 — 다 만들어진 저장소·서비스와 `now`만 받는다.
 """
 
+import logging
 from datetime import date, datetime
 
 from psycopg import AsyncConnection
@@ -18,6 +19,7 @@ from app.errors import ApiError
 from app.lms.sync import LmsSyncService
 from app.push.send import PushSender
 from app.repositories.notifications import NotificationRepository
+from app.repositories.opportunities import OpportunityRepository
 from app.repositories.push import PushRepository
 from app.schemas.lms import SyncJobResult
 from app.schemas.notifications import ScheduleResult, SendResult
@@ -26,6 +28,7 @@ from app.youth.client import YouthApiError, YouthPolicyClient
 from app.youth.deps import ClientFactory
 from app.youth.importer import collect
 
+logger = logging.getLogger(__name__)
 CONNECT_TIMEOUT = 10  # 수집용 연결. psycopg 기본값(130초)은 막힌 네트워크에서 너무 오래 기다린다
 
 
@@ -47,12 +50,51 @@ async def lms_sync(service: LmsSyncService, *, now: datetime) -> SyncJobResult:
     )
 
 
-async def schedule_notifications(repo: NotificationRepository, *, now: datetime) -> ScheduleResult:
+async def schedule_notifications(
+    repo: NotificationRepository, opportunities: OpportunityRepository, *, now: datetime
+) -> ScheduleResult:
     """공고 알림(새 적격·마감 임박·정보 필요)을 예약한다.
+
+    예약은 저장된 판정(`eligibility_results`)을 본다. 판정은 학생이 피드·상세를 열 때 계산되므로,
+    예약하기 전에 공고 알림을 받을 사용자(동의를 마치고 공고 알림을 모두 끄지는 않은 사용자)마다 낡은
+    판정(새 공고, 요건·엔진 버전이 바뀐 공고, 날이 바뀐 공고)을 다시 계산한다(PRD 6장 — 알림 작업이
+    사용자마다 같은 판정 함수를 부른다). 그러지 않으면 공고가 들어온 뒤 앱을 열지 않은 학생에게는 새 공고
+    알림이 가지 않고, 요건을 다시 추출한 공고는 옛 판정으로 알림이 나간다. 판정은 코드라 모델을 부르지 않는다.
+
+    사용자마다 따로 확정한다. 한 트랜잭션에 모두 넣으면 작업이 끝날 때까지 사용자마다 프로필 행 잠금을
+    쥐어 그 사용자의 피드·프로필 저장·탈퇴가 기다리고, 세이브포인트가 사용자 수만큼 쌓인다. 한 사용자의
+    판정이 실패하면 그 사용자만 되돌리고 나머지와 예약은 계속한다. 연결이 끊기면 남은 사용자도 모두
+    실패하므로 멈춘다. 목록을 읽은 뒤 그새 탈퇴한 사용자는 건너뛴다(프로필을 되살리지 않는다).
+
+    부르는 쪽(요청·스케줄러)은 autocommit이 아닌 연결 하나를 두 저장소에 함께 준다. 목록을 읽은
+    트랜잭션은 여기서 닫고(그래야 아래 블록이 세이브포인트가 아니라 사용자마다의 트랜잭션이 된다), 예약은
+    부르는 쪽이 블록을 끝내며 확정한다.
 
     같은 알림은 한 번만 만들고(사용자당 `dedupe_key` 1행), 마감이 바뀌면 아직 보내지 않은 행의
     시각만 고친다. 보낼 이유가 없어진 행은 지운다(저장소 머리말).
     """
+    conn = opportunities.conn
+    users = await repo.alert_users()
+    await conn.commit()
+    judged = failed = 0
+    for user_id in users:
+        try:
+            async with conn.transaction():
+                refresh = await opportunities.refresh_judgments(
+                    user_id, now=now, create_profile=False
+                )
+            judged += refresh.judged
+        except Exception:
+            if conn.closed:  # 연결이 끊겼다. 남은 사용자도 모두 실패한다
+                raise
+            failed += 1  # 그 사용자만 건너뛴다. 다음 예약 때 다시 본다
+            logger.exception("알림 예약 전에 판정을 다시 계산하지 못했어요: user %s", user_id)
+    logger.info(
+        "알림 예약 전 판정: 사용자 %d명, 다시 계산한 판정 %d건, 실패 %d명",
+        len(users),
+        judged,
+        failed,
+    )
     return await repo.schedule(now=now)
 
 
@@ -65,8 +107,8 @@ async def send_notifications(
 ) -> SendResult:
     """보낼 때가 된 알림을 보낸다.
 
-    숨긴 공고의 알림과 하루 한도를 넘는 알림은 보내지 않고 둔다. 푸시 구독이 없거나 푸시를 끈
-    사용자는 푸시만 건너뛰고 알림함에는 남는다(F-35).
+    숨긴 공고의 알림은 보내지 않고 두고, 하루 한도를 넘는 정보 필요 알림은 다음 날 09:00으로 미룬다.
+    푸시 구독이 없거나 푸시를 끈 사용자는 푸시만 건너뛰고 알림함에는 남는다(F-35).
 
     푸시는 **알림함 행을 닫아 확정(커밋)한 뒤에** 보낸다(F-33). 푸시가 실패하거나 작업이 중간에 멈춰도
     알림은 보낸 것으로 남는다 — 같은 알림을 두 번 보내지 않는 쪽을 택했다(명세 10장). 발송이 둘 겹치면

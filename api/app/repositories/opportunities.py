@@ -477,13 +477,22 @@ class OpportunityRepository:
         force: bool = False,
         include_expired: bool = False,
         display_name: str | None = None,
+        create_profile: bool = True,
     ) -> Refresh:
         """피드에 나올 공고(include_expired면 지난 공고까지)의 낡은 판정을 다시 계산해 저장한다.
 
         force면 그 공고를 모두 다시 판정하고 나머지 공고의 판정은 지운다.
-        프로필 행이 없으면(첫 요청이 피드) display_name과 함께 만든다.
+        프로필 행이 없으면(첫 요청이 피드) display_name과 함께 만든다. create_profile=False면 만들지 않고
+        아무것도 하지 않는다 — 사용자 목록을 먼저 읽고 판정하는 알림 예약 작업(`app/jobs.py`)이 그새 탈퇴한
+        사용자의 프로필을 되살리지 않게.
         """
-        profile = Profile.from_row(await self._lock_profile(user_id, display_name))
+        if create_profile:
+            row: dict[str, Any] | None = await self._lock_profile(user_id, display_name)
+        else:
+            row = await self._locked_profile(user_id)
+        if row is None:  # 그새 탈퇴했다(create_profile=False일 때만 없을 수 있다)
+            return Refresh(judged=0, changed=0)
+        profile = Profile.from_row(row)
         today = now.astimezone(KST).date()
         stale = await (
             await self.conn.execute(
@@ -749,13 +758,17 @@ class OpportunityRepository:
             "insert into profiles (id, display_name) values (%s, %s) on conflict do nothing",
             (user_id, display_name),
         )
-        row = await (
+        row = await self._locked_profile(user_id)
+        assert row is not None
+        return row
+
+    async def _locked_profile(self, user_id: str) -> dict[str, Any] | None:
+        """있는 프로필 행만 잠근 뒤 읽는다(_lock_profile과 같은 잠금). 없으면 None이다."""
+        return await (
             await self.conn.execute(
                 "select * from profiles where id = %s for no key update", (user_id,)
             )
         ).fetchone()
-        assert row is not None
-        return row
 
     async def _upsert(self, user_id: str, payload: list[dict[str, Any]], now: datetime) -> None:
         """판정 여러 개를 한 문장으로 저장한다(_payload 모양)."""
