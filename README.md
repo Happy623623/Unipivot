@@ -8,6 +8,22 @@
 - LLM은 **공고 원문에서 요건을 구조화**하는 데까지만 쓰고, **자격 판정은 코드**가 한다(`docs/판정엔진_규칙.md`)
 - 모든 LLM·외부 호출은 실행 로그(`agent_runs`·`tool_calls`·`llm_calls`)에 남고, 그 로그로 지표를 센다
 
+## 이렇게 써요
+
+**내게 맞는 공고를 찾고, 모자란 정보만 넣으면 바로 다시 판정해요. 준비 일정은 마감일에서 거꾸로 만들어요.**
+
+![공고 자격 판정과 준비 일정](.github/assets/unipivot-demo.gif)
+
+**포스터 한 장을 올리면 AI가 제목·마감·지원 조건을 정리해 공고로 등록해요.**
+
+![포스터로 공고 등록](.github/assets/unipivot-poster.gif)
+
+**LMS(LearningX)를 연결하면 과제·자료·공지를 과목별로 모아 보여 줘요.**
+
+![LMS 과목 화면](.github/assets/unipivot-lms.gif)
+
+> 화면은 목데이터 모드(`NEXT_PUBLIC_USE_MOCKS=true`)로 녹화했다 — 실제 학생 정보가 없다.
+
 ## 구조
 
 | 폴더 | 내용 | 기준 |
