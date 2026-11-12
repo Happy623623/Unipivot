@@ -34,6 +34,11 @@ pytestmark = [
 ]
 
 NOW = datetime(2026, 10, 15, 8, 0, tzinfo=KST)  # 알림 시각(09:00) 전
+ASKED = (
+    "region",
+    "age",
+    "enrollment_status",
+)  # 서로 다른 물어볼 항목 셋(정보 필요 알림은 항목마다 하나)
 
 
 @dataclass
@@ -599,9 +604,9 @@ async def test_only_one_profile_notice_goes_out_a_day() -> None:
     미룬다 — 알림함에도 그때 나오고(PRD F-33: 하루 1건), 다음 날 0시에 푸시가 나가지 않는다."""
     async with world() as built:
         student = await built.user()
-        for index in range(3):
+        for index, field in enumerate(ASKED):  # 묻는 항목이 셋이라 알림도 셋(항목 단위로 묶는다)
             opportunity = await built.opportunity(f"정보 필요 {index}", days=10)
-            await built.judge(student, opportunity, "undetermined", ["region"])
+            await built.judge(student, opportunity, "undetermined", [field])
             await built.view(student, opportunity)
         await built.repo.schedule(now=NOW)
 
@@ -614,7 +619,11 @@ async def test_only_one_profile_notice_goes_out_a_day() -> None:
         assert early.sent == 0  # 다음 날도 알림 시각 전(08:00)에는 보내지 않는다
         tomorrow = (await built.repo.send(now=NOW + timedelta(days=2, hours=2))).result
         assert tomorrow.sent == PROFILE_DAILY
-        assert "거주지역을 입력하면 판정할 수 있어요" in (await built.bodies(student))[0]
+        assert sorted(await built.bodies(student)) == [
+            "정보 필요 0 · 거주지역을 입력하면 판정할 수 있어요",
+            "정보 필요 1 · 나이를 입력하면 판정할 수 있어요",
+            "정보 필요 2 · 학적 상태를 입력하면 판정할 수 있어요",
+        ]
 
 
 async def test_profile_notices_over_the_limit_do_not_hold_up_other_notices() -> None:
@@ -623,9 +632,9 @@ async def test_profile_notices_over_the_limit_do_not_hold_up_other_notices() -> 
     마감 임박·새 과제 알림이 계속 나가지 못했다 — 여기서는 묶음을 2건으로 줄여 본다."""
     async with world() as built:
         asking, waiting = await built.user(), await built.user()
-        for index in range(3):
+        for index, field in enumerate(ASKED):
             opportunity = await built.opportunity(f"정보 필요 {index}", days=10)
-            await built.judge(asking, opportunity, "undetermined", ["region"])
+            await built.judge(asking, opportunity, "undetermined", [field])
         await built.repo.schedule(now=NOW)  # 10-15 09:00에 정보 필요 3건
         fresh = await built.opportunity("새 장학", days=None)  # 마감이 없어 마감 임박 알림은 없다
         await built.judge(waiting, fresh, "eligible")
@@ -694,6 +703,126 @@ async def test_a_deferred_profile_notice_goes_out_before_newer_ones() -> None:
             "profile_needed|먼저 생긴 공고|10-16 09:00|succeeded",
             "profile_needed|나중 생긴 공고|10-17 09:00|pending",
         ]
+
+
+# ── 정보 필요 알림은 항목 단위로 (11/19) ─────────────────────────────────────
+
+
+async def test_profile_notices_are_grouped_by_the_field_they_ask_for() -> None:
+    """같은 항목을 묻는 공고가 여럿이면 알림은 하나다. 대표는 마감이 가장 가까운 공고이고, 문구에 남은 수를 적는다."""
+    async with world() as built:
+        student = await built.user()
+        for title, days in (("거주 10일", 10), ("거주 5일", 5), ("거주 마감 없음", None)):
+            opportunity = await built.opportunity(title, days=days)
+            await built.judge(student, opportunity, "undetermined", ["region", "age"])
+        alone = await built.opportunity("나이 하나", days=20)
+        await built.judge(student, alone, "undetermined", ["age"])
+
+        result = await built.repo.schedule(now=NOW)
+
+        assert result.by_type["profile_needed"] == 2  # 공고는 넷, 묻는 첫 항목은 둘
+        assert [line for line in await built.keys(student) if "profile_needed" in line] == [
+            "profile_needed|나이 하나|10-15 09:00|pending",
+            "profile_needed|거주 5일|10-15 09:00|pending",
+        ]
+        assert sorted(await built.bodies(student)) == [
+            "거주 5일 외 2개 · 거주지역을 입력하면 판정할 수 있어요",
+            "나이 하나 · 나이를 입력하면 판정할 수 있어요",
+        ]
+        keys = await built.conn.execute(
+            "select dedupe_key from notifications where user_id = %s order by 1", (student,)
+        )
+        assert [row["dedupe_key"] for row in await keys.fetchall()] == [
+            "profile_needed:field:age",
+            "profile_needed:field:region",
+        ]
+
+
+async def test_a_grouped_notice_follows_the_count_and_leaves_when_answered() -> None:
+    """공고 수가 바뀌면 아직 보내지 않은 행의 대표·문구를 고치고, 그 항목을 넣어 묶인 공고가 모두 판정되면 지운다."""
+    async with world() as built:
+        student = await built.user()
+        near = await built.opportunity("가까운 마감", days=3)
+        far = await built.opportunity("먼 마감", days=10)
+        for opportunity in (near, far):
+            await built.judge(student, opportunity, "undetermined", ["region"])
+        await built.repo.schedule(now=NOW)
+        assert await built.bodies(student) == [
+            "가까운 마감 외 1개 · 거주지역을 입력하면 판정할 수 있어요"
+        ]
+
+        await built.mark(student, near, "not_interested")  # 대표를 숨겼다 → 다음 공고가 대표
+        moved = await built.repo.schedule(now=NOW)
+        assert (moved.created, moved.rescheduled, moved.removed) == (0, 1, 0)
+        assert await built.keys(student) == ["profile_needed|먼 마감|10-15 09:00|pending"]
+        assert await built.bodies(student) == ["먼 마감 · 거주지역을 입력하면 판정할 수 있어요"]
+        assert (await built.repo.schedule(now=NOW)).rescheduled == 0  # 바뀐 것이 없으면 그대로
+
+        await built.judge(student, far, "eligible")  # 거주지역을 넣어 판정됐다
+        answered = await built.repo.schedule(now=NOW)
+        assert answered.removed == 1
+        assert [line for line in await built.keys(student) if "profile_needed" in line] == []
+
+
+async def test_answering_one_field_moves_the_question_to_the_next_one() -> None:
+    """거주지역을 넣었는데 그 공고가 이제 나이를 물으면, 거주지역 알림은 지우고 나이 알림을 새로 만든다."""
+    async with world() as built:
+        student = await built.user()
+        opportunity = await built.opportunity("두 항목 장학", days=10)
+        await built.judge(student, opportunity, "undetermined", ["region", "age"])
+        await built.repo.schedule(now=NOW)
+
+        await built.judge(student, opportunity, "undetermined", ["age"])  # 거주지역을 넣었다
+        moved = await built.repo.schedule(now=NOW)
+
+        assert (moved.created, moved.removed) == (1, 1)
+        assert await built.bodies(student) == ["두 항목 장학 · 나이를 입력하면 판정할 수 있어요"]
+
+
+async def test_a_field_is_asked_once_even_when_new_opportunities_need_it() -> None:
+    """보낸 항목은 다시 묻지 않는다(항목당 1회) — 같은 항목을 묻는 공고가 새로 들어와도 알림을 만들지 않는다."""
+    async with world() as built:
+        student = await built.user()
+        first = await built.opportunity("첫 공고", days=10)
+        await built.judge(student, first, "undetermined", ["region"])
+        await built.repo.schedule(now=NOW)
+        await built.repo.send(now=NOW + timedelta(hours=2))
+        later = await built.opportunity("나중 공고", days=10)
+        await built.judge(student, later, "undetermined", ["region"])
+
+        again = await built.repo.schedule(now=NOW + timedelta(days=1))
+
+        assert (again.created, again.rescheduled) == (0, 0)
+        assert await built.keys(student) == ["profile_needed|첫 공고|10-15 09:00|succeeded"]
+
+
+async def test_old_per_opportunity_profile_notices_are_cleared() -> None:
+    """공고마다 한 행이던 옛 키(profile_needed:opp:…)의 pending 행은 다음 예약이 지운다. 보낸 행은 알림함에 남는다."""
+    async with world() as built:
+        student = await built.user()
+        opportunities = [await built.opportunity(f"옛 알림 {index}", days=10) for index in range(3)]
+        for index, opportunity in enumerate(opportunities):
+            await built.judge(student, opportunity, "undetermined", ["region"])
+            await built.conn.execute(
+                "insert into notifications (user_id, type, opportunity_id, title, body,"
+                " scheduled_at, dedupe_key, status, sent_at) values (%s, 'profile_needed', %s,"
+                " '프로필 정보가 필요해요', '옛 문구', %s, 'profile_needed:opp:' || %s, %s, %s)",
+                (
+                    student,
+                    opportunity,
+                    NOW - timedelta(days=1),
+                    opportunity,
+                    "succeeded" if index == 0 else "pending",
+                    NOW - timedelta(days=1) if index == 0 else None,
+                ),
+            )
+
+        result = await built.repo.schedule(now=NOW)
+
+        assert (result.created, result.removed) == (1, 2)
+        lines = await built.keys(student)
+        assert "profile_needed|옛 알림 0|10-14 08:00|succeeded" in lines  # 보낸 것은 그대로
+        assert sum("pending" in line for line in lines) == 1  # 항목 단위 새 행 하나
 
 
 # ── 알림함 ─────────────────────────────────────────────────────────────────
