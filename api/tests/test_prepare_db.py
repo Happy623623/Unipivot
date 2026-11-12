@@ -237,6 +237,15 @@ async def test_prepare_fills_guides_and_counts_back(settings: Settings) -> None:
             ("get_document_guide", 1),
             ("build_prep_plan", 0),
         ]
+        # 엔진 도장(O2): 준비하기 실행은 서류 안내 엔진으로 센다(역산 일정은 코드다)
+        (stamp,) = await rows(
+            "select engine, engine_version, model from agent_runs where id = %s", run_id
+        )
+        assert stamp == {
+            "engine": "guide.documents",
+            "engine_version": 1,
+            "model": settings.guide_model,
+        }
         assert logged[0]["output"] == {
             "documents": 3,
             "dictionary": 2,

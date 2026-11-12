@@ -11,6 +11,8 @@
 LLM 호출 오류는 잡지 않는다. 실행이 실패로 기록되고 저장하지 않으므로 다음 수집 때 다시 돈다.
 
 원문 확인 필요 이유(review_reasons)는 공고 상세에서 학생에게 그대로 보이므로 쉬운 말로 쓴다.
+이유마다 코드(app.engines.ReviewCode)를 같이 붙여 결과의 review_codes로 낸다 — 화면에는 쓰지 않고,
+부르는 쪽이 실행 기록(agent_runs.review_codes)에 남겨 엔진별 지표가 센다(명세 v1 3.3).
 """
 
 import asyncio
@@ -22,6 +24,7 @@ from typing import Any, Protocol
 
 from app.attachments import clean_text
 from app.eligibility import Department
+from app.engines.review import ReviewCode, ReviewReason, review_codes, review_texts
 from app.extraction.models import ExtractionResult, Limits, NoticeInput
 from app.extraction.prompt import (
     FETCH_ORIGINAL,
@@ -49,15 +52,23 @@ from app.llm import (
     UserTurn,
 )
 
-# 원문 확인 필요 이유. 상한·도구 이름 같은 내부 말 대신 학생이 알아들을 말로 쓴다
-_READ_CAP = "읽기 횟수 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함"
-_TOKEN_CAP = "처리 분량 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함"
-_UNREADABLE = "읽지 못한 첨부가 있음"  # 상세 첨부 목록에도 실패로 보인다
-_NO_SUBMISSION = "자격 요건을 정리하지 못함"
-_MODEL_FLAG = "AI가 원문 확인이 필요하다고 표시함"  # 모델이 이유(review_note)를 쓰지 않았을 때
+# 원문 확인 필요 이유. 상한·도구 이름 같은 내부 말 대신 학생이 알아들을 말로 쓴다.
+# 코드(ReviewCode)는 화면에 쓰지 않고 실행 기록(agent_runs.review_codes)에만 남는다(명세 v1 3.3)
+_READ_CAP = ReviewReason(
+    ReviewCode.READ_CAP, "읽기 횟수 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함"
+)
+_TOKEN_CAP = ReviewReason(
+    ReviewCode.TOKEN_CAP, "처리 분량 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함"
+)
+# 상세 첨부 목록에도 실패로 보인다
+_UNREADABLE = ReviewReason(ReviewCode.UNREADABLE, "읽지 못한 첨부가 있음")
+_NO_SUBMISSION = ReviewReason(ReviewCode.NO_SUBMISSION, "자격 요건을 정리하지 못함")
+# 모델이 이유(review_note)를 쓰지 않았을 때
+_MODEL_FLAG = ReviewReason(ReviewCode.MODEL_FLAG, "AI가 원문 확인이 필요하다고 표시함")
 # 모델이 모호하다고 한 조건과 코드가 모호로 바꾼 조건(근거 없음, 모양이 틀림, 목록에 없는 학과) 모두다
-_AMBIGUOUS = "자동으로 판정할 수 없는 조건이 있음"
-_NOT_READ = "첨부를 읽지 않고 자격 제한이 없다고 봄"
+_AMBIGUOUS = ReviewReason(ReviewCode.AMBIGUOUS, "자동으로 판정할 수 없는 조건이 있음")
+_LOW_CONFIDENCE = ReviewReason(ReviewCode.LOW_CONFIDENCE, LOW_CONFIDENCE)
+_NOT_READ = ReviewReason(ReviewCode.NOT_READ, "첨부를 읽지 않고 자격 제한이 없다고 봄")
 
 
 class RunLog(Protocol):
@@ -87,9 +98,9 @@ class _State:
     nudged: bool = False
     forcing: bool = False
     accepted: Submission | None = None
-    reasons: list[str] = field(default_factory=list)
+    reasons: list[ReviewReason] = field(default_factory=list)
 
-    def force(self, reason: str) -> None:
+    def force(self, reason: ReviewReason) -> None:
         self.forcing = True
         self.reasons.append(reason)
 
@@ -268,26 +279,28 @@ class ExtractionAgent:
         reasons = list(state.reasons)
         if any(attachment.error for attachment in attachments):
             reasons.append(_UNREADABLE)
-        reasons += library.partial_reads()
+        reasons += [ReviewReason(ReviewCode.PARTIAL_READ, note) for note in library.partial_reads()]
         submission = state.accepted
         if submission is None:
             reasons.append(_NO_SUBMISSION)
             return ExtractionResult(
                 succeeded=False,
                 needs_review=True,
-                review_reasons=tuple(dict.fromkeys(reasons)),
+                review_reasons=review_texts(reasons),
                 attachments=attachments,
+                review_codes=review_codes(reasons),
             )
-        reasons += submission.fixes
+        reasons += [ReviewReason(ReviewCode.REPAIRED, fix) for fix in submission.fixes]
         if submission.needs_review:
             # 모델이 쓴 이유는 AI가 쓴 글임을 밝혀 보인다(프롬프트가 쉬운 말 한 문장을 시킨다).
             # 공고 속 지시문이 끼어들 수 있는 글이라 상세가 주소를 지우고 한 줄로 정리한다
             note = submission.review_note
-            reasons.append(f"AI 메모: {note}" if note else _MODEL_FLAG)
+            flag = ReviewReason(ReviewCode.MODEL_FLAG, f"AI 메모: {note}") if note else _MODEL_FLAG
+            reasons.append(flag)
         if any(requirement.is_ambiguous for requirement in submission.requirements):
             reasons.append(_AMBIGUOUS)
         if submission.confidence < Decimal(str(self.limits.low_confidence)):
-            reasons.append(LOW_CONFIDENCE)
+            reasons.append(_LOW_CONFIDENCE)
         if not submission.requirements and library.unread():
             reasons.append(_NOT_READ)
         confidence = submission.confidence
@@ -303,8 +316,9 @@ class ExtractionAgent:
             easy_summary=submission.easy_summary,
             confidence=confidence,
             needs_review=bool(reasons),
-            review_reasons=tuple(dict.fromkeys(reasons)),
+            review_reasons=review_texts(reasons),
             attachments=attachments,
+            review_codes=review_codes(reasons),
         )
 
 

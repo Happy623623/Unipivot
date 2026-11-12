@@ -4,7 +4,9 @@
 
 1. 분류할 공지를 집는다(`AnnouncementRepository.claim` — 최근 공지와, 공고를 못 만든 기회성 공지). 집은 공지는
    2시간 동안 다른 동기화가 집지 못하고(임대), 실패하면 더 늦춰 다시 집는다(5번까지)
-2. 공지마다 모델을 **한 번** 불러 네 갈래와 한 줄 요약을 받는다(`app/lms/classify.py`)
+2. 공지마다 모델을 **한 번** 불러 네 갈래와 한 줄 요약을 받는다(`app/lms/classify.py`). 분류도 동기화 실행의
+   **자식 실행**이다(엔진 `classify.announcement`, O2) — 공지의 `classified_run_id`가 그 자식이고, 동기화에는
+   `classify_announcement` 한 줄이 남는다
 3. 기회성이면 공지 글을 공고 원문으로 삼아 **요건 추출 에이전트**를 돌리고, 공고 행과 요건·서류를
    한 트랜잭션에 쓴다. 공고는 그 과목 수강생만 본다(`visible_canvas_course_id`). 요건 추출은 동기화 실행의
    **자식 실행**이고(실행 트리 O1) 공고의 `extraction_run_id`가 그 자식이다 — 동기화에는 `extract_announcement`
@@ -35,6 +37,7 @@ from psycopg import AsyncConnection
 
 from app.agent_log import AgentRun
 from app.eligibility import KST, Department
+from app.engines.review import ReviewCode
 from app.extraction.agent import ExtractionAgent
 from app.extraction.models import NoticeInput
 from app.extraction.store import load_departments
@@ -59,6 +62,9 @@ DepartmentsFor = Callable[[AsyncConnection], Awaitable[Sequence[Department]]]
 MAX_PER_SYNC = 5  # 한 동기화에서 분류할 공지 수 상한(비용)
 RECENT_DAYS = 30  # 이보다 오래된 공지는 분류하지 않는다(지금 할 일이 없다)
 CLASSIFY_TOOL = "classify_announcement"  # 실행 기록의 도구 이름(처리 과정 F-42)
+# 엔진 등록부 id(O2). 분류·요건 추출의 자식 실행에 이 이름·버전을 남긴다
+CLASSIFY_ENGINE = "classify.announcement"
+EXTRACT_ENGINE = "extract.requirements"
 SCHEDULE_TITLE = "{course} 수업 일정이 바뀌었어요"  # 일정 변경 알림 제목(F-53 2부)
 TOPIC_PATH = "{base}/courses/{course}/discussion_topics/{topic}"
 DEFAULT_KIND: Category = "etc"  # 분류를 다시 하지 않는 재시도에서 쓰는 공고 종류
@@ -177,22 +183,30 @@ class AnnouncementService:
             return AnnouncementOutcome(classified=0, opportunities=1 if made else 0)
         async with run.tool(CLASSIFY_TOOL, {"announcement_id": announcement.id}) as call:
             assert self.llm is not None
-            result = await classify(
-                self.llm,
-                model=self.classify_model,
-                title=announcement.title,
-                body=announcement.message,
-                posted_on=_posted_on(announcement, now),
-            )
-            await run.record_llm(
-                provider=self.llm.provider,
-                model=self.classify_model,
-                input_tokens=result.reply.usage.input_tokens,
-                output_tokens=result.reply.usage.output_tokens,
-                latency_ms=result.reply.latency_ms,
-                tool_call=call,
-            )
-            call.output = {"category": result.category, "summary": result.summary}
+            # 공지 분류는 동기화 실행의 자식 실행이다(엔진 등록부 O2). 모델 호출은 자식에 남고 동기화 실행에는
+            # 이 도구 한 줄이 남는다. 갈래는 그 과목 수강생 모두의 할 일·알림·공고가 되어 user_id를 남기지 않는다
+            async with run.child(engine=CLASSIFY_ENGINE) as child:
+                result = await classify(
+                    self.llm,
+                    model=self.classify_model,
+                    title=announcement.title,
+                    body=announcement.message,
+                    posted_on=_posted_on(announcement, now),
+                )
+                await child.record_llm(
+                    provider=self.llm.provider,
+                    model=self.classify_model,
+                    input_tokens=result.reply.usage.input_tokens,
+                    output_tokens=result.reply.usage.output_tokens,
+                    latency_ms=result.reply.latency_ms,
+                )
+                if not result.submitted:  # 제출이 없어 general로 둔 공지
+                    child.review_codes = (str(ReviewCode.NO_SUBMISSION),)
+            call.output = {
+                "category": result.category,
+                "summary": result.summary,
+                "classify_run_id": child.id,
+            }
         on = _schedule_day(result, now)
         scheduled: AnnouncementOutcome | None = None
         # 갈래와 일정 변경 할 일·알림을 한 트랜잭션에 쓴다. 할 일·알림 쓰기가 터지면 갈래도 되돌아가
@@ -202,7 +216,7 @@ class AnnouncementService:
                 announcement.id,
                 category=result.category,
                 summary=result.summary,
-                run_id=run.id,
+                run_id=child.id,  # 갈래를 정한 엔진 실행(어느 엔진 버전·모델이 정했는지 거슬러 간다)
             )
             if written and on is not None:
                 scheduled = await self._schedule(
@@ -278,8 +292,9 @@ class AnnouncementService:
             # 요건 추출은 동기화 실행의 자식 실행이다(실행 트리 O1). 공고의 extraction_run_id가 이 자식이라
             # 공고 상세의 처리 과정(F-42)에 동기화의 다른 단계(과목 받기·다른 공지의 분류)가 섞이지 않는다.
             # 공고는 수강생 모두가 보므로 자식에는 user_id를 남기지 않는다(동기화한 학생은 부모에만 있다)
-            async with run.child() as child:
+            async with run.child(engine=EXTRACT_ENGINE) as child:
                 extraction = await agent.run(notice, child)
+                child.review_codes = extraction.review_codes  # 엔진 도장(O2)
             async with self.transaction() as conn:
                 opportunity_id = await self.repo_for(conn).create_opportunity(
                     announcement,

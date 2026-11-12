@@ -25,9 +25,16 @@ trigger_type·scenario_code를 그대로 받는다. 자식의 토큰·비용은 
 
 async with agent_run(connect, trigger="lms_sync", user_id=user.id) as run:   # 뿌리(흐름)
     async with run.tool("extract_announcement", {...}) as call:               # 부모에 남는 한 줄
-        async with run.child() as child:                                      # 자식(엔진)
+        async with run.child(engine="extract.requirements") as child:         # 자식(엔진)
             result = await agent.run(notice, child)                           # 도구·모델 기록은 자식에
+            child.review_codes = result.review_codes
         call.output = {"extraction_run_id": child.id}
+
+**엔진 도장**(엔진 등록부, O2). 엔진 한 번인 실행은 engine(등록부 id)·engine_version을 실행 행을 만들 때 남기고,
+끝날 때 model(이 실행에서 마지막으로 부른 모델)·review_codes(원문 확인 이유 코드)를 남긴다. 엔진이 여럿인
+흐름(LMS 동기화·학교 공지 링크)은 뿌리에 engine이 없고 자식마다 있다. 엔진 하나뿐인 흐름(포스터·계획서·
+강의자료·준비하기·A안 공지 추출)은 뿌리가 곧 엔진 한 번이라 뿌리에 남긴다. 엔진별 지표는 engine이 있는
+실행만 센다. 결과를 여러 학생이 보는 엔진(shared_output)의 실행에는 user_id를 남기지 못한다(ValueError).
 """
 
 import time
@@ -41,6 +48,7 @@ from typing import Any
 from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 
+from app.engines.registry import get_engine
 from app.errors import ApiError
 from app.pricing import cost_usd as priced_cost
 from app.schemas.me import PROFILE_FIELDS
@@ -51,9 +59,11 @@ LogConnect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 # 자식 실행 행. 부모 행에서 trigger_type·scenario_code를 받고(scenario를 주면 그 값), 뿌리는 부모의 뿌리다
 # (부모가 뿌리면 부모 자신). 부모 행이 없으면 아무 행도 만들지 않는다
 _CHILD = (
-    "insert into agent_runs (user_id, trigger_type, scenario_code, parent_run_id, root_run_id)"
+    "insert into agent_runs (user_id, trigger_type, scenario_code, parent_run_id, root_run_id,"
+    " engine, engine_version)"
     " select %(user)s, p.trigger_type, coalesce(%(scenario)s, p.scenario_code), p.id,"
-    " coalesce(p.root_run_id, p.id) from agent_runs p where p.id = %(parent)s returning id"
+    " coalesce(p.root_run_id, p.id), %(engine)s, %(version)s from agent_runs p"
+    " where p.id = %(parent)s returning id"
 )
 SECRET_HINTS = ("token", "secret", "password", "authorization", "api_key")
 # 프로필 값은 LLM에도 로그에도 넣지 않는다(PRD 6장). 실수로 들어와도 여기서 지운다
@@ -79,6 +89,22 @@ def scrub(value: Any) -> Any:
 
 def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
+
+
+def _engine(engine: str | None, user_id: str | None) -> dict[str, Any]:
+    """실행 행에 남길 엔진 이름·버전(등록부). 모르는 엔진이면 KeyError다.
+
+    결과를 여러 학생이 보는 엔진(shared_output)의 실행에 user_id를 주면 ValueError다 — 누가 불렀는지는
+    부모(학생의 실행)에만 남긴다(명세 v1 6장 5번).
+    """
+    if engine is None:
+        return {"engine": None, "version": None}
+    spec = get_engine(engine)
+    if spec.shared_output and user_id is not None:
+        raise ValueError(
+            f"{engine}의 결과는 여러 학생이 봐요. 이 실행에는 user_id를 남기지 않아요(명세 v1 6장 5번)."
+        )
+    return {"engine": spec.id, "version": spec.version}
 
 
 @dataclass
@@ -108,6 +134,10 @@ class AgentRun:
     # 직접 잰 시간(ms). 넣으면 이 값을 agent_runs.latency_ms에 쓴다. 비우면 agent_run 블록 전체를 잰다.
     # 블록 끝에 치우는 일이 붙는 실행(시나리오 실행)이 일한 시간만 남기려고 쓴다
     latency_ms: int | None = None
+    # 이 실행에서 마지막으로 부른 모델(record_llm이 채운다). 끝날 때 agent_runs.model에 쓴다
+    model: str | None = None
+    # 원문 확인 이유 코드(app.engines.ReviewCode). 엔진 결과를 받은 쪽이 블록 안에서 넣는다
+    review_codes: tuple[str, ...] = ()
     _seq: int = 0
 
     @asynccontextmanager
@@ -169,24 +199,31 @@ class AgentRun:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         self.cost_usd += cost
+        self.model = model
 
     @asynccontextmanager
     async def child(
-        self, *, user_id: str | None = None, scenario_code: str | None = None
+        self,
+        *,
+        engine: str | None = None,
+        user_id: str | None = None,
+        scenario_code: str | None = None,
     ) -> AsyncIterator["AgentRun"]:
         """이 실행 아래에 자식 실행 하나를 연다(엔진 한 번 — 실행 트리, 명세 v1 3.6).
 
-        user_id는 기본으로 비운다. 지금 자식은 모두 결과를 여러 학생이 보는 요건 추출이라 누가 불렀는지
-        자식에 남기지 않는다 — 부모(학생의 실행)에만 남는다(명세 v1 6장 5번). scenario_code를 주면 부모의 값
-        대신 그것을 붙인다(시험이 자기 실행을 찾는 표시).
+        engine은 등록부의 엔진 id다(O2). 자식 행에 그 이름과 버전을 남긴다. user_id는 기본으로 비운다 —
+        지금 자식은 모두 결과를 여러 학생이 보는 엔진(요건 추출·공지 분류)이라 누가 불렀는지 자식에 남기지
+        않고 부모(학생의 실행)에만 남는다(명세 v1 6장 5번). scenario_code를 주면 부모의 값 대신 그것을
+        붙인다(시험이 자기 실행을 찾는 표시).
 
         블록 안의 도구·모델 기록은 자식에 남는다. 끝나면 성공이든 실패든 자식의 토큰·비용을 부모에 더한다.
         블록이 터지면 자식을 실패로 닫고 그 예외를 그대로 올린다(부모를 닫는 것은 부모를 연 쪽이다).
         """
+        stamp = _engine(engine, user_id)
         started = time.perf_counter()
         async with self.connect() as conn:
             cursor = await conn.execute(
-                _CHILD, {"user": user_id, "scenario": scenario_code, "parent": self.id}
+                _CHILD, {"user": user_id, "scenario": scenario_code, "parent": self.id, **stamp}
             )
             row = await cursor.fetchone()
         if row is None:
@@ -210,14 +247,19 @@ async def start_run(
     trigger: str,
     user_id: str | None = None,
     scenario_code: str | None = None,
+    engine: str | None = None,
 ) -> str:
-    """실행 행만 만든다(status running). 이어서 agent_run(run_id=...)으로 기록하거나 abandon_run으로 닫는다."""
+    """실행 행만 만든다(status running). 이어서 agent_run(run_id=...)으로 기록하거나 abandon_run으로 닫는다.
+
+    engine을 주면(등록부 id) 그 이름과 버전을 남긴다 — 엔진 하나뿐인 흐름의 뿌리(포스터·계획서 등)다.
+    """
+    stamp = _engine(engine, user_id)
     async with connect() as conn:
         _require_autocommit(conn)
         cursor = await conn.execute(
-            "insert into agent_runs (user_id, trigger_type, scenario_code) values (%s, %s, %s)"
-            " returning id",
-            (user_id, trigger, scenario_code),
+            "insert into agent_runs (user_id, trigger_type, scenario_code, engine, engine_version)"
+            " values (%(user)s, %(trigger)s, %(scenario)s, %(engine)s, %(version)s) returning id",
+            {"user": user_id, "trigger": trigger, "scenario": scenario_code, **stamp},
         )
         return str((await cursor.fetchone())["id"])
 
@@ -240,18 +282,22 @@ async def agent_run(
     user_id: str | None = None,
     scenario_code: str | None = None,
     run_id: str | None = None,
+    engine: str | None = None,
 ) -> AsyncIterator[AgentRun]:
     """실행 하나를 기록한다. connect는 autocommit 연결 공급자다(db.get_log_connect, 또는 using(conn)).
 
     한 줄 쓸 때마다 빌렸다 돌려주므로, 모델을 기다리는 동안 로그 연결을 쥐지 않는다.
     autocommit이어야 실패한 실행도 남는다. run_id를 주면 start_run으로 만든 행을 이어서 쓴다
-    (latency_ms는 여기부터 잰다).
+    (latency_ms는 여기부터 잰다). engine(등록부 id)은 행을 만들 때만 남긴다 — run_id로 이어 쓰는 실행의
+    엔진은 그 행을 만든 start_run에 준다(둘 다 주면 ValueError).
     """
     started = time.perf_counter()
     if run_id is None:
         run_id = await start_run(
-            connect, trigger=trigger, user_id=user_id, scenario_code=scenario_code
+            connect, trigger=trigger, user_id=user_id, scenario_code=scenario_code, engine=engine
         )
+    elif engine is not None:
+        raise ValueError("run_id로 이어 쓰는 실행의 엔진은 start_run(engine=...)에서 남겨요.")
     else:
         async with connect() as conn:
             _require_autocommit(conn)
@@ -281,14 +327,16 @@ async def _finish(run: AgentRun, started: float, status: str, error: str | None)
     async with run.connect() as conn:
         await conn.execute(
             "update agent_runs set status = %s, finished_at = now(), latency_ms = %s,"
-            " input_tokens = %s, output_tokens = %s, cost_usd = %s, error_message = %s"
-            " where id = %s",
+            " input_tokens = %s, output_tokens = %s, cost_usd = %s, model = %s,"
+            " review_codes = %s, error_message = %s where id = %s",
             (
                 status,
                 latency,
                 run.input_tokens,
                 run.output_tokens,
                 run.cost_usd,
+                run.model,
+                list(run.review_codes),
                 error,
                 run.id,
             ),

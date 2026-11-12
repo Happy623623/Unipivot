@@ -37,6 +37,7 @@ from app.youth.convert import raw_section
 logger = logging.getLogger(__name__)
 Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 GUIDE_FAILED = "필요 서류를 확인하지 못했어요. 잠시 후 다시 눌러 주세요."
+ENGINE = "guide.documents"  # 엔진 등록부 id(O2)
 STOPPED = "준비 일정을 만들다 멈췄어요. 다시 눌러 주세요."
 
 
@@ -108,7 +109,11 @@ class PrepareService:
         self, user_id: str, opportunity_id: str, *, deadline: date, today: date
     ) -> Started:
         """실행 행과 계획 행을 만들고 일을 띄운다. 그새 다른 요청이 계획을 만들었으면 그 계획을 준다."""
-        run_id = await start_run(self.log_connection, trigger="prepare", user_id=user_id)
+        # 서류 안내(사전 + 사전에 없는 것만 모델) → 역산 일정(코드). 엔진 도장은 서류 안내다(O2) —
+        # 역산은 코드라 시간·비용이 거의 없고, 이 흐름에서 엔진다운 일(모델)은 서류 안내뿐이다
+        run_id = await start_run(
+            self.log_connection, trigger="prepare", user_id=user_id, engine=ENGINE
+        )
         try:
             async with self.transaction() as conn:
                 plan_id = await PrepareRepository(conn).create_plan(user_id, opportunity_id, run_id)

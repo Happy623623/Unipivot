@@ -88,3 +88,5 @@ class ExtractionResult:
     needs_review: bool = False  # 원문 확인 필요 배지
     review_reasons: tuple[str, ...] = ()  # 배지를 단 이유. 처리 과정(F-42)에 보여준다
     attachments: tuple[AttachmentOutcome, ...] = ()
+    # 같은 이유의 코드(app.engines.ReviewCode). 화면에는 쓰지 않고 실행 기록(agent_runs.review_codes)에 남긴다
+    review_codes: tuple[str, ...] = ()

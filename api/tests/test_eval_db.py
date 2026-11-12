@@ -105,6 +105,7 @@ async def test_an_announcement_extraction_is_a_child_run_of_the_sync() -> None:
 
     자식에는 사용자가 없지만 뿌리(학생의 동기화)로 찾아 시나리오 번호가 붙고, 그 모델 호출이 시나리오 비용에
     들어간다(분류 둘 + 요건 추출 하나 = 세 번). 빠뜨리면 요건 추출 비용이 시나리오에서 사라진다.
+    공지 분류도 자식 실행이라(엔진 등록부 O2) 자식은 셋이고, 자식마다 엔진 이름·버전과 부른 모델이 남는다.
     """
     s23 = next(one for one in SCENARIOS if one.code == "S23")
     report = await run_scenarios(DATABASE_URL, [s23], now=DEFAULT_NOW)
@@ -112,25 +113,40 @@ async def test_an_announcement_extraction_is_a_child_run_of_the_sync() -> None:
     assert result.ok, result.error
 
     found = await rows(
-        "select c.trigger_type, c.scenario_code, c.user_id, p.trigger_type as parent_trigger,"
-        " c.root_run_id = c.parent_run_id as under_root,"
-        " (select count(*) from llm_calls l where l.run_id = c.id) as calls"
+        "select c.engine, c.engine_version, c.trigger_type, c.scenario_code, c.user_id,"
+        " p.trigger_type as parent_trigger, c.root_run_id = c.parent_run_id as under_root,"
+        " (select count(*) from llm_calls l where l.run_id = c.id) as calls,"
+        " c.model = (select max(l.model) from llm_calls l where l.run_id = c.id) as model_stamped"
         " from agent_runs c join agent_runs p on p.id = c.parent_run_id"
-        " where c.id = any(%s::uuid[])",
+        " where c.id = any(%s::uuid[]) order by c.engine, c.started_at",
         result.child_run_ids,
     )
     assert [
         (
+            row["engine"],
+            row["engine_version"],
             row["trigger_type"],
             row["parent_trigger"],
             row["scenario_code"],
             row["user_id"],
             row["under_root"],
             row["calls"],
+            row["model_stamped"],
         )
         for row in found
-    ] == [("lms_sync", "lms_sync", "S23", None, True, 1)]
+    ] == [
+        ("classify.announcement", 1, "lms_sync", "lms_sync", "S23", None, True, 1, True),
+        ("classify.announcement", 1, "lms_sync", "lms_sync", "S23", None, True, 1, True),
+        ("extract.requirements", 1, "lms_sync", "lms_sync", "S23", None, True, 1, True),
+    ]
     assert result.llm_calls == 3
+    # 동기화 뿌리는 엔진이 여럿인 흐름이라 엔진 칸이 비고, 모델 호출이 모두 자식에 있어 모델 칸도 빈다
+    roots = await rows(
+        "select distinct p.engine, p.model from agent_runs c join agent_runs p"
+        " on p.id = c.parent_run_id where c.id = any(%s::uuid[])",
+        result.child_run_ids,
+    )
+    assert [(row["engine"], row["model"]) for row in roots] == [(None, None)]
 
 
 async def test_a_failing_scenario_is_recorded_and_does_not_stop_the_rest() -> None:

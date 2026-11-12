@@ -35,6 +35,7 @@ from app.crawl.service import (
 )
 from app.db import create_pools
 from app.eligibility import KST
+from app.engines import ENGINES
 from app.extraction.prompt import READ_TEXT, SUBMIT
 from app.llm import ToolResultTurn
 from app.llm.deps import get_llm
@@ -286,7 +287,8 @@ async def notice_row(entry: int) -> dict[str, Any] | None:
     found = await rows(
         "select o.*, r.trigger_type as run_trigger, r.user_id as run_user,"
         " r.parent_run_id::text as run_parent, r.root_run_id::text as run_root,"
-        " r.cost_usd as run_cost from opportunities o"
+        " r.cost_usd as run_cost, r.engine as run_engine, r.engine_version as run_engine_version,"
+        " r.model as run_model, r.review_codes as run_review_codes from opportunities o"
         " left join agent_runs r on r.id = o.extraction_run_id"
         " where o.source_type = 'school_notice' and o.external_id = %s",
         str(entry),
@@ -343,14 +345,22 @@ async def test_a_linked_notice_becomes_a_school_notice_everyone_sees(settings: S
         # 누가 붙였는지는 학생의 실행(부모)에만 있다
         assert (row["run_trigger"], row["run_user"]) == ("notice_link", None)
         assert (row["run_parent"], row["run_root"]) == (body["run_id"], body["run_id"])
+        # 엔진 도장(O2): 자식은 요건 추출 엔진 한 번이다. 이름·버전·부른 모델이 남는다
+        assert (row["run_engine"], row["run_engine_version"], row["run_model"]) == (
+            "extract.requirements",
+            ENGINES["extract.requirements"].version,
+            settings.extraction_model,
+        )
         (user_run,) = await rows(
-            "select r.user_id::text as user_id, r.cost_usd, r.parent_run_id,"
+            "select r.user_id::text as user_id, r.cost_usd, r.parent_run_id, r.engine, r.model,"
             " (select count(*) from llm_calls l where l.run_id = r.id) as llm"
             " from agent_runs r where r.id = %s",
             body["run_id"],
         )
         assert (user_run["user_id"], user_run["llm"]) == (world.user, 0)
         assert user_run["parent_run_id"] is None  # 학생의 실행이 뿌리다
+        # 학생의 실행은 수집 + 요건 추출 흐름이라 엔진 칸이 비고, 모델은 자식만 불렀다
+        assert (user_run["engine"], user_run["model"]) == (None, None)
         # 모델 호출은 자식에 남고, 그 비용은 끝날 때 부모(학생의 실행)에 더해진다
         assert user_run["cost_usd"] == row["run_cost"] and row["run_cost"] > 0
         inputs = await rows(
@@ -644,6 +654,7 @@ async def test_a_file_that_could_not_be_read_is_kept_for_review(settings: Settin
         row = await notice_row(entry)
         assert row is not None and row["needs_review"] is True
         assert "가져오지 못해 읽지 않은 첨부: 1. 선발요강.hwpx" in row["review_reasons"]
+        assert "MISSING_FILE" in row["run_review_codes"]  # 같은 이유의 코드가 요건 추출 실행에(O2)
         (failed,) = await rows(
             "select extract_error from opportunity_attachments where opportunity_id = %s and seq = 1",
             row["id"],

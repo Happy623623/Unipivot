@@ -34,6 +34,7 @@ from app.uploads.storage import StorageDep, StorageError, StorageMissing, Supaba
 logger = logging.getLogger(__name__)
 Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 TRIGGER = "material_upload"
+ENGINE = "summarize.material"  # 엔진 등록부 id(O2). 이 실행이 곧 엔진 한 번이다
 STORAGE_FAILED = "올린 강의자료를 불러오지 못했어요. 잠시 후 다시 눌러 주세요."
 GONE = "저장한 파일이 없어졌어요. 강의자료를 다시 올려 주세요."
 NOT_PDF = "PDF만 요약할 수 있어요. LMS에서 PDF로 받은 자료를 올려 주세요."
@@ -121,7 +122,9 @@ class MaterialService:
             raise ApiError(502, "LLM_ERROR", MODEL_FAILED)
         if stopped_run is not None:
             await self._close(stopped_run)
-        run_id = await start_run(self.log_connection, trigger=TRIGGER, user_id=job.user_id)
+        run_id = await start_run(
+            self.log_connection, trigger=TRIGGER, user_id=job.user_id, engine=ENGINE
+        )
         try:
             async with self.repos() as repo:
                 current = await repo.start(

@@ -80,6 +80,8 @@ async def run(
 ) -> tuple[Any, MemoryRunLog]:
     log = MemoryRunLog()
     result = await ExtractionAgent(llm, model=MODEL, **options).run(notice, log)
+    # 이유 문구가 있으면 코드도 있다(O2). 엔진별 지표는 코드로 "원문 확인 필요" 실행을 센다
+    assert bool(result.review_codes) == bool(result.review_reasons) == result.needs_review
     return result, log
 
 
@@ -102,6 +104,7 @@ async def test_body_only_notice_is_submitted_without_reading() -> None:
     result, log = await run(llm)
 
     assert result.succeeded and not result.needs_review and result.review_reasons == ()
+    assert result.review_codes == ()
     assert [
         (r.clause_no, r.field, r.operator, r.value, r.is_ambiguous) for r in result.requirements
     ] == [
@@ -231,6 +234,7 @@ async def test_second_failure_is_stored_as_ambiguous() -> None:
         "형식이 틀린 거주지역 조건을 원문 확인 조건으로 바꿈",
         "자동으로 판정할 수 없는 조건이 있음",
     )
+    assert result.review_codes == ("REPAIRED", "AMBIGUOUS")  # 고친 것 둘은 코드 하나다
 
 
 async def test_read_cap_forces_submission_and_needs_review() -> None:
@@ -256,6 +260,7 @@ async def test_read_cap_forces_submission_and_needs_review() -> None:
     ]  # 막힌 호출은 실행하지 않는다
     assert result.succeeded and result.needs_review
     assert "읽기 횟수 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함" in result.review_reasons
+    assert result.review_codes[0] == "READ_CAP"
     # 코드가 시킨 제출이라 실행 로그에 남긴다. 처리 과정에서 정해진 단계로 보인다
     assert log.tools[-1].output == {"accepted": True, "problems": [], "forced": True}
 
@@ -272,6 +277,7 @@ async def test_token_cap_forces_submission() -> None:
     note = llm.requests[1].turns[-1].results[0].content["note"]  # type: ignore[union-attr]
     assert note == FORCED
     assert "처리 분량 한도에 닿아 그때까지 읽은 내용으로 조건을 정리함" in result.review_reasons
+    assert result.review_codes[0] == "TOKEN_CAP"
     assert [tool.output.get("forced") for tool in log.tools] == [None, True]
 
 
@@ -332,7 +338,7 @@ async def test_forced_request_answered_in_text_is_still_forced() -> None:
 
 
 @pytest.mark.parametrize(
-    ("extra", "reasons"),
+    ("extra", "reasons", "codes"),
     [
         # 모델이 쓴 이유는 AI가 쓴 글임을 밝혀 보인다(공고 상세가 한 줄로 정리한다)
         (
@@ -341,21 +347,31 @@ async def test_forced_request_answered_in_text_is_still_forced() -> None:
                 "review_note": "세부 자격이 포스터의 QR 코드 안내에 있어 확인하지 못함",
             },
             ("AI 메모: 세부 자격이 포스터의 QR 코드 안내에 있어 확인하지 못함",),
+            ("MODEL_FLAG",),
         ),
-        ({"needs_review": True}, ("AI가 원문 확인이 필요하다고 표시함",)),
-        ({"needs_review": True, "review_note": "  "}, ("AI가 원문 확인이 필요하다고 표시함",)),
-        ({"confidence": 0.4}, ("AI가 정리한 조건을 확신하지 못함",)),
-        # 신뢰도를 읽지 못해 코드가 0.50으로 고친 제출도 같은 한 줄이다
-        ({"confidence": "높음"}, ("AI가 정리한 조건을 확신하지 못함",)),
+        ({"needs_review": True}, ("AI가 원문 확인이 필요하다고 표시함",), ("MODEL_FLAG",)),
+        (
+            {"needs_review": True, "review_note": "  "},
+            ("AI가 원문 확인이 필요하다고 표시함",),
+            ("MODEL_FLAG",),
+        ),
+        ({"confidence": 0.4}, ("AI가 정리한 조건을 확신하지 못함",), ("LOW_CONFIDENCE",)),
+        # 신뢰도를 읽지 못해 코드가 0.50으로 고친 제출도 같은 한 줄이다. 코드는 고친 것과 낮은 신뢰도 둘이다
+        (
+            {"confidence": "높음"},
+            ("AI가 정리한 조건을 확신하지 못함",),
+            ("REPAIRED", "LOW_CONFIDENCE"),
+        ),
     ],
 )
 async def test_review_reasons_are_plain_words(
-    extra: dict[str, Any], reasons: tuple[str, ...]
+    extra: dict[str, Any], reasons: tuple[str, ...], codes: tuple[str, ...]
 ) -> None:
     answer = call(SUBMIT, **submission(GPA, **extra))
     result, _ = await run(ScriptedLlm(answer, answer))
     assert result.succeeded and result.needs_review
     assert result.review_reasons == reasons
+    assert result.review_codes == codes
 
 
 async def test_prompt_asks_for_unreadable_sources_and_plain_notes() -> None:
@@ -411,6 +427,7 @@ async def test_no_submission_is_a_failed_extraction() -> None:
     assert llm.requests[1].turns[-1] == UserTurn(NUDGE)  # 한 번은 제출하라고 다시 말한다
     assert not result.succeeded and result.needs_review
     assert result.requirements == () and result.review_reasons == ("자격 요건을 정리하지 못함",)
+    assert result.review_codes == ("NO_SUBMISSION",)
     assert log.tools == []
 
 
@@ -477,6 +494,7 @@ async def test_partly_read_scan_needs_review() -> None:
     assert log.tools[0].output["pages"] == "1–2/3"
     assert result.succeeded and result.needs_review
     assert "첨부 '공고문(스캔).pdf' 2/3쪽만 읽음" in result.review_reasons
+    assert "PARTIAL_READ" in result.review_codes
 
 
 async def test_unreadable_attachment_marks_review() -> None:
@@ -492,6 +510,7 @@ async def test_unreadable_attachment_marks_review() -> None:
     assert "1. 요강.docx — 못 읽음: DOCX는 아직 못 읽어요" in llm.requests[0].turns[0].text  # type: ignore[union-attr]
     assert result.attachments[0].error == "DOCX는 아직 못 읽어요"
     assert result.needs_review and "읽지 못한 첨부가 있음" in result.review_reasons
+    assert result.review_codes[0] == "UNREADABLE"
 
 
 async def test_fetch_original_reads_the_page() -> None:
@@ -570,6 +589,7 @@ async def test_no_requirements_with_unread_attachment_needs_review() -> None:
 
     assert result.succeeded and result.requirements == ()
     assert result.review_reasons == ("첨부를 읽지 않고 자격 제한이 없다고 봄",)
+    assert result.review_codes == ("NOT_READ",)
 
 
 async def test_calls_after_an_accepted_submission_are_skipped() -> None:
