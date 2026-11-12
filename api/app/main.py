@@ -54,20 +54,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.pool, app.state.log_pool = create_pools(settings.database_url)
         await app.state.pool.open()
         await app.state.log_pool.open()
-    # 정기 작업(알림 발송·LMS 동기화·알림 예약). 끄면 /internal/jobs/*로만 돈다
+    # 정기 작업(알림 발송·LMS 동기화·알림 예약·청년정책 수집)은 예약표(job_schedule)를 따른다. DB가 있으면
+    # tick 함수(POST /internal/jobs/tick)를 늘 두고, SCHEDULER_ENABLED면 서버 안에서 1분마다 돌린다
     app.state.scheduler = None
-    if settings.scheduler_enabled and app.state.pool is None:
+    if app.state.pool is not None:
+        app.state.scheduler = Scheduler(app_jobs(app), connect=app.state.pool.connection)
+    if settings.scheduler_enabled and app.state.scheduler is None:
         logger.warning(
             "SCHEDULER_ENABLED가 켜져 있지만 DATABASE_URL이 없어 정기 작업을 띄우지 않아요"
         )
     elif settings.scheduler_enabled:
-        app.state.scheduler = Scheduler(app_jobs(app))
         app.state.scheduler.start()
     try:
         yield
     finally:
         # 뜨는 중이나 도는 중에 터져도 여기를 지난다 — 안 닫으면 DB 풀의 일꾼이 남아 서버가 안 꺼진다
-        # 새 일을 더 띄우지 않게 스케줄러를 먼저 멈춘다
+        # 새 일을 더 띄우지 않게 스케줄러를 먼저 멈춘다(돌던 정기 작업은 취소하고 예약표 임대를 푼다)
         if app.state.scheduler is not None:
             await app.state.scheduler.stop()
         # 돌던 준비하기를 잠깐 기다린다(못 끝내면 다음 요청이 멈춘 실행으로 보고 다시 만든다)

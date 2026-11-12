@@ -171,7 +171,7 @@ async def test_the_scheduler_line_saves_policies_the_same_way(
     mine: set[str] = set()
     try:
         async with lifespan(app):
-            job = {job.name: job for job in app_jobs(app)}["청년정책 수집"]
+            job = {job.name: job for job in app_jobs(app)}["fetch-policies"]
             result = await job.run()
         mine.add(result.run_id)
         assert (result.new, result.skipped, result.complete) == (2, 1, True)

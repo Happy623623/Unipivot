@@ -59,8 +59,8 @@ class Settings(BaseSettings):
     lms_api_base: str = "https://learning.hanyang.ac.kr"
     # /internal/* 호출에 쓰는 서비스 키(명세 12장의 X-Internal-Key). 비우면 그 경로가 모두 403이다
     internal_api_key: str = ""
-    # 서버 안 스케줄러(app/scheduler.py). 꺼 두면 정기 작업은 /internal/jobs/*로만 돈다.
-    # 바깥 크론을 쓸 때는 꺼 둔다 — 둘 다 켜면 같은 일이 두 번 돈다
+    # 서버 안 스케줄러(app/scheduler.py) — 1분마다 예약표(job_schedule)를 본다. 꺼 두면 정기 작업은
+    # /internal/jobs/*(tick 포함)로만 돈다. 바깥 크론이 tick을 불러도 예약표 덕에 작업마다 한 번만 돈다
     scheduler_enabled: bool = False
     # 학교 공지 링크 가져오기(B안, POST /notices/link). 학교가 멈춰 달라고 하면 false로 두고 deploy한다 —
     # 새로 읽기만 멈추고(409 NOTICE_LINK_DISABLED) 이미 가져온 공지는 그대로 준다

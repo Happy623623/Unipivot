@@ -5,7 +5,7 @@ tests/test_youth_job_db.py가 본다.
 """
 
 from collections.abc import Iterator
-from datetime import time
+from datetime import UTC, datetime, time
 from typing import Any
 
 import pytest
@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
 from app.main import create_app
-from app.scheduler import FETCH_AT, SCHEDULE_AT, app_jobs
+from app.scheduler import FETCH_AT, SCHEDULE_AT, app_jobs, first_run
 
 KEY = "youth-job-internal-test-key"
 
@@ -61,13 +61,20 @@ def test_the_scheduler_adds_the_job_only_with_a_youth_key(
 ) -> None:
     with caplog.at_level("WARNING"):
         without = {job.name for job in app_jobs(create_app(_settings()))}
-    assert "청년정책 수집" not in without
+    assert "fetch-policies" not in without
     assert any("YOUTH_API_KEY" in record.message for record in caplog.records)
 
     jobs = {job.name: job for job in app_jobs(create_app(_settings(youth_api_key="x-key")))}
-    assert set(jobs) == {"알림 발송", "LMS 동기화", "공고 알림 예약", "청년정책 수집"}
-    assert jobs["청년정책 수집"].daily_at == FETCH_AT
-    assert not jobs["청년정책 수집"].at_start  # --reload 때마다 온통청년을 600번 부르면 안 된다
+    assert set(jobs) == {
+        "send-notifications",
+        "lms-sync",
+        "schedule-notifications",
+        "fetch-policies",
+    }
+    assert jobs["fetch-policies"].daily_at == FETCH_AT
+    # 처음 차례는 다음 04:00이다 — --reload 때마다 온통청년을 600번 부르면 안 된다
+    now = datetime(2026, 11, 18, 3, 0, tzinfo=UTC)  # KST 정오
+    assert first_run(jobs["fetch-policies"], now) > now
 
 
 def test_fetching_runs_before_the_daily_scheduling() -> None:

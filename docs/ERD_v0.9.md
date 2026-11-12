@@ -587,6 +587,7 @@ erDiagram
 | 알림 | notifications | 알림 예약·발송 기록(중복 발송 방지)과 앱 내 알림함 읽음 상태 | F-33, F-35 |
 | 로깅 | usage_events | 화면·API에서 기록하는 사용 이벤트. 제품 지표 원천 | 8장 지표 |
 | 로깅 | agent_runs / tool_calls / llm_calls | 에이전트 실행·도구·LLM 호출 로그 | F-42, 8장 지표 |
+| 운영 | job_schedule | 정기 작업 예약표 — 작업마다 다음 차례·임대·마지막 실패(5장) | PRD 9장 스케줄러 |
 
 ## 5. 핵심 설계 결정
 
@@ -770,6 +771,14 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 - `.ics` 내려받기는 `calendar_events`에 기록하지 않는다(제약). 동기화 상태가 없고, 다시 내려받을 때 유니크 충돌이 난다.
 - LMS 분반 한정 공지는 `is_section_specific = true`로 저장하고 MVP에서는 보여주지 않는다. 조건부 공개 모듈 항목(선행 조건이 있는 주차 자료)은 과목 공통으로 저장되므로 아직 열리지 않은 학생에게도 보일 수 있다. 이는 MVP의 한계로 둔다.
 
+### 정기 작업 예약표 (11/18)
+
+- **`job_schedule`**: 정기 작업마다 한 줄(`name` = `send-notifications`·`lms-sync`·`schedule-notifications`·`fetch-policies`, `/internal/jobs/*` 주소 끝과 같다). 키는 `next_run_at`(다음 차례)이다. 사용자 데이터가 아니라 서버 작업의 시각표다
+- **집기 = 임대**: 서버 안 tick(1분)이나 `POST /internal/jobs/tick`이 `next_run_at <= now`이고 `lease_until`이 없거나 지난 줄만, `attempts + 1`·`lease_until = now + 30분`을 걸며 한 문장으로 집는다(조건부 갱신). 그래서 서버가 몇 대 떠도, 서버 안 tick과 바깥 크론을 같이 켜도 작업마다 한 번만 돈다
+- **끝나면**: `next_run_at` = 지금 이후 첫 차례(간격 작업은 끝난 시각 + 간격, 날짜 작업은 다음 KST 08:30·04:00), `lease_until`·`attempts`·`last_error`를 비우고 `last_finished_at`을 적는다. 며칠 밀렸어도 한 번만 돈다
+- **실패하면**: `next_run_at` = min(now + 첫 늦춤 × 2^(attempts − 1), 다음 정해진 차례). 간격 작업은 첫 늦춤이 간격이라 늘 간격 뒤, 날짜 작업은 30분부터. `last_error`에 가린 이유(500자)
+- 줄은 서버가 처음 tick할 때 넣는다(간격 작업은 바로, 날짜 작업은 다음 KST 시각). 있는 줄은 덮어쓰지 않는다 — 재시작해도 간격을 처음부터 다시 재지 않는다
+
 ## 6. Enum 정의
 
 | Enum | 값 |
@@ -825,6 +834,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 14 | `supabase/migrations/20261104000000_notice_link_trigger.sql` | agent_runs.trigger_type 제약에 notice_link(학교 공지 링크, B안) 추가. 여러 번 돌려도 같다 |
 | 15 | `supabase/migrations/20261114000000_lms_announcement_lease.sql` | lms_announcements.retry_at·attempts(과목 공지 큐 임대, 실패하면 늦추고 5번이면 뺌). 여러 번 돌려도 같다 |
 | 16 | `supabase/migrations/20261117000000_agent_run_tree.sql` | agent_runs.parent_run_id·root_run_id(실행 트리, 부분 인덱스 둘). 여러 번 돌려도 같다 |
+| 17 | `supabase/migrations/20261118000000_job_schedule.sql` | job_schedule(정기 작업 예약표 — 작업마다 한 줄, 다음 차례·임대·횟수·마지막 실패). RLS를 켜고 정책을 두지 않는다(백엔드만). 줄은 서버가 처음 tick할 때 넣는다. 여러 번 돌려도 같다 |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -846,7 +856,7 @@ Storage는 SQL로 만들지 않는다. 대시보드에서 버킷을 비공개로
 | opportunities | 공개 범위 규칙(5장) | 백엔드만 |
 | requirements, opportunity_documents, opportunity_attachments | 공고를 볼 수 있으면 | 백엔드만 |
 | departments | 로그인 사용자 모두 | 백엔드만 |
-| oauth_tokens, lms_connections, agent_runs, tool_calls, llm_calls, sources, usage_events | 아무도 직접 못 읽음 | 백엔드만 |
+| oauth_tokens, lms_connections, agent_runs, tool_calls, llm_calls, sources, usage_events, job_schedule | 아무도 직접 못 읽음 | 백엔드만 |
 
 - 로그인하지 않은 요청(anon)은 어떤 행도 읽지 못한다. 클라이언트용 쓰기 정책은 하나도 없다.
 - 처리 과정 표시(F-42)는 API가 단계명·상태·소요 시간만 골라서 준다. 실행 로그를 직접 읽는 정책은 두지 않는다.
@@ -911,6 +921,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-18): job_schedule — 정기 작업 예약표(작업마다 한 줄, 다음 차례·임대 30분·실패하면 늦춤). 서버가 꺼져 있던 차례를 깨어나 한 번 따라잡고, 몇 대가 떠도 작업마다 한 번만 돈다
 - v0.9 보강 (2026-11-17): agent_runs.parent_run_id·root_run_id — 실행 트리(O1). LMS 기회성 공지·학교 공지 링크의 요건 추출이 자식 실행이 되고, 시나리오 지표는 뿌리만 센다
 - v0.9 보강 (2026-11-14): lms_announcements.retry_at·attempts — 과목 공지 큐 임대(집을 때 2시간, 실패하면 30분×2^(시도−1)로 늦추고 5번이면 줄에서 뺀다)
 - v0.9 보강 (2026-11-06): 알림 예약 앞에서 낡은 판정을 다시 계산(F-33), 하루 한도를 넘은 정보 필요 알림은 다음 날 09:00으로 미룸, 스키마 변경 없음

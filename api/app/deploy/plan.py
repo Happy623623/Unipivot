@@ -250,7 +250,7 @@ def warnings(settings: Settings) -> list[str]:
     if settings.scheduler_enabled:
         found.append(
             "로컬 .env의 SCHEDULER_ENABLED가 true예요. 배포한 서버와 같은 DB를 쓰니, 배포한 뒤에는 로컬을 "
-            "false로 두세요(둘 다 켜면 알림이 두 번 나가요)"
+            "false로 두세요(예약표 덕에 작업은 한 번만 돌지만, 로컬이 먼저 집으면 로컬 코드·설정으로 돌아요)"
         )
     return found
 

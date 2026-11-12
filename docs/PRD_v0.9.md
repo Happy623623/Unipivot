@@ -472,7 +472,7 @@ P0 18개, P1 5개다. v0.8 번호는 대조용으로 남긴다.
 | 프론트 | Next.js | 대시보드·플래너 UI, 서비스 워커로 웹 푸시, 배포 간편 |
 | 백엔드 | FastAPI (Python) | 에이전트 루프, 크롤러, PDF 파싱, LLM SDK 모두 Python 생태계가 유리 |
 | DB · 인증 · 스토리지 | Supabase | Postgres + Google OAuth + 파일 저장, RLS로 개인정보 접근 제어, 필요 시 pgvector |
-| 스케줄러 | **FastAPI 안 스케줄러**(`SCHEDULER_ENABLED`, `app/scheduler.py`) | 알림 발송(5분)·LMS 동기화(30분)·공고 알림 예약(KST 08:30)·청년정책 수집(KST 04:00)을 서버가 직접 돈다. 10/18 결정 — 배포한 서버(Cloud Run, 인스턴스 1개·CPU 늘 켬)에서도 이것을 쓰고, 바깥 크론(GitHub Actions·Supabase pg_cron)은 쓰지 않는다(10/23). `POST /internal/jobs/*`와 **같은 함수**를 부르고, 둘을 같이 켜지 않는다. 워커는 하나로 둔다 |
+| 스케줄러 | **FastAPI 안 스케줄러**(`SCHEDULER_ENABLED`, `app/scheduler.py`) | 알림 발송(5분)·LMS 동기화(30분)·공고 알림 예약(KST 08:30)·청년정책 수집(KST 04:00)을 서버가 직접 돈다. 10/18 결정 — 배포한 서버(Cloud Run, 인스턴스 1개·CPU 늘 켬)에서도 이것을 쓰고, 바깥 크론(GitHub Actions·Supabase pg_cron)은 쓰지 않는다(10/23). `POST /internal/jobs/*`와 **같은 함수**를 부른다. 11/18부터 다음 차례를 **예약표**(`job_schedule`)에 두고 1분마다 때가 된 줄을 조건부 갱신으로 집는다 — 서버가 꺼져 있던 차례를 깨어나 한 번 따라잡고, 서버가 둘 떠도·바깥 크론(`POST /internal/jobs/tick`)과 같이 켜도 작업마다 한 번만 돈다 |
 | 크롤링 | requests + BeautifulSoup, 필요 시 Playwright | JS 렌더링 페이지만 Playwright |
 | 문서 처리 | PDF·HWPX·HWP 텍스트 추출, 이미지와 글자 없는 스캔본만 Vision | LLM 비용 절감. 구형 HWP 변환 방법은 장학 공지 30건 샘플로 확인해 정한다 |
 | ICS 처리 | 표준 라이브러리로 직접 생성(RFC 5545, `app/calendar/ics.py`) | .ics 내려받기 파일 생성. 일정 몇 개뿐이라 줄 접기·글자 피하기만 있으면 된다 |
