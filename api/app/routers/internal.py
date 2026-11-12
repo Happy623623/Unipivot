@@ -6,6 +6,7 @@
 - `POST /internal/jobs/schedule-notifications` 공고 알림 예약(하루 한 번)
 - `POST /internal/jobs/send-notifications` 예약된 알림 발송(5분마다)
 - `POST /internal/jobs/fetch-policies` 온통청년 정책 수집(하루 한 번)
+- `POST /internal/jobs/tick` 예약표에서 때가 된 정기 작업을 집어 뒤에서 돌린다(서버 안 tick과 같은 함수)
 
 키가 틀렸을 때와 서버에 키가 없을 때 모두 403이다. 부른 쪽에 서버 설정 상태를 알려 주지 않는다.
 키 값은 응답·로그에 남기지 않는다.
@@ -16,7 +17,7 @@ import secrets
 from datetime import date, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, Query, Request
 
 from app import jobs
 from app.agent_log import LogConnect
@@ -31,6 +32,7 @@ from app.repositories.metrics import MetricsRepoDep
 from app.repositories.notifications import NotificationRepoDep
 from app.repositories.opportunities import OpportunityRepoDep
 from app.repositories.push import PushRepoDep
+from app.schemas.jobs import TickResult
 from app.schemas.lms import SyncJobResult
 from app.schemas.metrics import (
     EvalCheck,
@@ -88,8 +90,8 @@ async def read_metrics(
     return await repo.metrics((start, end))
 
 
-# 아래 세 작업의 알맹이는 `app/jobs.py`에 있다. 서버 안 스케줄러(app/scheduler.py)가 같은 함수를
-# 부른다 — 손으로 부를 때와 저절로 돌 때가 달라지지 않게 한 곳에 뒀다.
+# 아래 네 작업의 알맹이는 `app/jobs.py`에 있다. 서버 안 스케줄러(app/scheduler.py)가 예약표를 보고 같은
+# 함수를 부른다 — 손으로 부를 때와 저절로 돌 때가 달라지지 않게 한 곳에 뒀다.
 
 
 @router.post("/jobs/lms-sync", response_model=SyncJobResult)
@@ -144,6 +146,19 @@ async def fetch_policies(
         make_client=make_client,
         today=now.astimezone(KST).date(),
     )
+
+
+@router.post("/jobs/tick", response_model=TickResult, status_code=202)
+async def tick(request: Request, _: InternalKeyDep) -> TickResult:
+    """예약표(`job_schedule`)에서 때가 된 정기 작업을 집어 뒤에서 돌린다 — 서버 안 tick(1분마다)과 같은 함수다.
+
+    바깥 크론(Cloud Scheduler 등)이 1분마다 부르면 서버 안 tick 없이도 작업이 제때 돈다. 둘을 같이 켜도
+    작업마다 한 번만 돈다(줄을 집는 것이 임대 한 문장이다). 작업은 뒤에서 돌고, 응답은 집은 작업 이름뿐이다.
+    """
+    scheduler = request.app.state.scheduler
+    if scheduler is None:  # DB가 없는 서버
+        raise ApiError(503, "DB_UNAVAILABLE", "데이터베이스에 연결할 수 없어요.")
+    return TickResult(started=await scheduler.tick())
 
 
 @router.post("/eval/run", response_model=EvalRunResult)

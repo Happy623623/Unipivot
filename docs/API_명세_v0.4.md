@@ -122,6 +122,8 @@
 >
 > v0.4 보강(11/17, 실행 트리): 기회성 과목 공지의 요건 추출과 학교 공지 링크의 요건 추출은 그 동기화·링크 실행의 **자식 실행**이다(`agent_runs.parent_run_id`). 공고 상세의 처리 과정(`process.extraction`)은 그 자식 실행의 단계만 보여 줘 동기화 단계가 섞이지 않는다. `GET /runs/{id}`의 `steps`는 그 실행 자신의 단계이고, 동기화에는 `extract_announcement`(기회성 공지에서 지원 자격 정리) 한 줄이 더해진다. 응답 모양은 그대로다
 >
+> v0.4 보강(11/18, 정기 작업 예약표): 서버 안 스케줄러가 작업마다 "돌고 → 자고" 대신 1분마다 예약표(`job_schedule`)를 보고 때가 된 작업을 집는다. 서버가 08:30에 꺼져 있어도 깨어나 그날 예약을 한 번 하고, 서버가 둘 떠도 작업마다 한 번만 돈다. 같은 tick을 `POST /internal/jobs/tick`(202 `{started}`)으로도 부른다. 네 작업 주소와 응답은 그대로다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1515,6 +1517,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 | `POST /internal/jobs/lms-sync` | 스케줄러(30분) | LMS 연결된 사용자의 과목·과제 동기화(F-51). 오래 안 한 사람부터 한 번에 50명까지 보고, 최근 5분 안에 동기화를 시작한 사람은 건너뛴다. 한 사람이 실패해도 다음 사람을 계속하고(실패는 그 사람의 실행 기록에 남는다), 토큰이 막힌 사람만 연결을 `error`로 바꾼다. 응답은 `{users, synced, failed, skipped, new_assignments, due_changed, submitted}`이고 `skipped`는 그새 대시보드가 동기화를 시작했거나 연결이 사라진 사람 수다 |
 | `POST /internal/jobs/schedule-notifications` | 스케줄러(매일) | 공고 알림 예약(새 적격·마감 임박 D-3·D-1·정보 필요). 예약하기 전에 공고 알림을 받을 사용자(약관·개인정보 동의를 마쳤고 세 종류를 모두 끄지는 않은 사용자)의 낡은 판정을 피드와 같은 방식으로 다시 계산해 사용자마다 확정한다(한 사용자가 실패하면 그 사용자만 건너뛰고, 연결이 끊기면 멈춘다). 사용자당 `dedupe_key` 1행으로 upsert하고, 마감이 바뀌면 아직 보내지 않은 행의 시각만 고치며, 보낼 이유가 없어진 pending 행은 지운다. 응답은 `{created, rescheduled, removed, by_type}` |
 | `POST /internal/jobs/send-notifications` | 스케줄러(5분) | 예약된 알림 발송. 보내기 전에 숨김을 다시 보고, `profile_needed`는 사용자당 KST 하루 1건까지만 보내고, 넘는 것은 다음 날 KST 09:00으로 미룬다(알림함에도 그때 나온다). 정보 필요 알림은 다른 알림 뒤에 본다. `skipped`는 숨긴 공고와 미룬 정보 필요 알림 수다. 푸시 구독이 없거나 푸시를 끈 사용자는 푸시만 건너뛰고 행은 알림함에 남는다. 응답은 `{due, sent, pushable, skipped, pushed, push_failed, push_dropped}`다 — `pushable`은 푸시를 보낼 수 있었던 알림 수, `pushed`는 푸시 서비스가 받아 준 구독 수(한 알림에 구독이 여러 개면 여러 번 센다), `push_failed`는 실패한 구독 수, `push_dropped`는 사라져서(404·410) 지운 구독 수다. 알림함 행을 닫아 **확정(커밋)한 뒤에** 푸시를 보낸다 — 푸시 도중 작업이 멈춰도 같은 푸시를 다시 보내지 않는다. 발송이 둘 겹치면(배포 중 인스턴스 둘, 스케줄러와 수동 호출) 같은 알림을 함께 골라도 행을 먼저 닫은 쪽만 푸시한다. 늦은 쪽은 그 알림을 `sent`·`pushable`·`skipped` 어디에도 세지 않는다(그래서 `due`가 둘의 합보다 클 수 있다) |
+| `POST /internal/jobs/tick` | 서버 안 스케줄러(1분)·바깥 크론 | 예약표(`job_schedule`)에서 때가 된 정기 작업(위 넷)을 집어 뒤에서 돌린다 — 서버 안 tick과 같은 함수다. 202 `{started: [줄 이름…]}`(이른 차례부터, 비었으면 때가 된 작업이 없거나 남이 이미 집었다). 결과는 로그와 예약표에 남는다. 서버 안 tick과 같이 켜도 작업마다 한 번만 돈다. DB가 없는 서버는 503 `DB_UNAVAILABLE` |
 | `POST /internal/jobs/expire-opportunities` | 스케줄러(매일) | 마감 지난 공고 `expired` 처리 |
 | `POST /internal/eval/run` | 개발자 | 요청 예: `{ "scenario_codes": ["S01", "S09"], "now": "2026-10-12T09:00:00+09:00", "fixtures": "recorded" }`. `now`로 시계를 고정하고, `fixtures: recorded`면 LMS·Google·온통청년 대신 녹화한 응답을 쓴다. 테스트용 Google 계정에 만든 이벤트는 끝나면 지운다. `agent_runs.scenario_code`로 기록. 지금은 사람이 `python -m app.eval.cli`로 돌린다(배포 때 같은 함수 `app/eval.run_scenarios`를 부른다). 시나리오 하나가 `agent_runs` 한 줄(trigger `eval`)이고, 확인한 것은 그 아래 `tool_calls`에 `check`로 남는다. 시나리오가 만든 실행(준비하기·포스터 추출)에도 같은 `scenario_code`를 붙이므로, 비용은 `agent_runs.cost_usd`가 아니라 `scenario_code`로 묶은 `llm_calls`를 더해서 센다. 응답은 `now`·`priced_on`·`scenarios`·`passed`·`success_rate`·`latency{p50_ms,p95_ms}`·`cost_usd`·`llm_calls`·`results[]`다. 시험용 DB가 아니면(Supabase 주소) 409 `EVAL_NOT_ALLOWED`로 거절한다 — 시나리오가 사용자·공고를 만들고 지우기 때문이다 |
 | `GET /internal/metrics` | 개발자 | 기간별 성공률·응답시간(p50·p95)·호출비용 집계에 두 가지를 더한다. 하나는 제품 지표 5개(판정 불가 비율과 원인 상위 3개, 즉석 입력 응답률, 준비하기 전환율, LMS 연결 완료율, 주간 재방문율)이고, 다른 하나는 최근 eval 실행 기준의 판정 혼동행렬이다. 비용은 모델 단가표(적용 날짜 포함)로 계산한다. 호출비용은 `scenario_code`로 묶은 `llm_calls`를 더한다(시나리오 실행 행의 `cost_usd`는 0이다). 실행 수·성공률·응답시간과 혼동행렬은 뿌리 실행(`parent_run_id is null`)만 센다 — 자식 실행은 부모의 trigger·시나리오 번호를 그대로 받는다. 기간은 `?from=&to=`(KST 날짜, 양 끝 포함)이고 주지 않으면 오늘까지 30일이다. 응답은 `from`·`to`와 세 묶음이다 — `scenarios`(`runs`·`passed`·`success_rate`·`latency{p50_ms,p95_ms}`·`cost_usd`·`llm_calls`·`by_scenario[]`), `eligibility`(`run_started_at`·`checks`·`correct`·`accuracy`·`rows[]{expected,counts,total}`·`eligible_to_ineligible`·`ineligible_to_eligible`), `product`(`undetermined`·`profile_prompt`·`prepare_conversion`·`lms_connect`·`weekly_return`, 각각 `{numerator,denominator,rate}`이고 `undetermined`에는 `top_missing_fields[]`가 더 있다). 비율은 분모가 0이면 `rate`가 `null`이다. 혼동행렬은 시나리오 번호마다 가장 최근 실행만 센다. 판정 불가 비율만 기간이 아니라 지금 저장된 판정(활성 공고) 기준이다 |
@@ -1522,21 +1525,26 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 
 ### 서버 안 스케줄러
 
-`SCHEDULER_ENABLED=true`면 서버가 세 작업을 직접 돈다(PRD 9장). 위 표의 작업을 **같은 함수**로 부르므로
-손으로 부를 때와 결과가 같다.
+`SCHEDULER_ENABLED=true`면 서버가 1분마다 **예약표**(`job_schedule`, 작업마다 한 줄 — 다음 차례가 DB에 있다)를 보고
+때가 된 작업을 집어 돌린다(PRD 9장). 위 표의 작업을 **같은 함수**로 부르므로 손으로 부를 때와 결과가 같다.
+같은 tick을 `POST /internal/jobs/tick`으로도 부를 수 있다.
 
-| 작업 | 주기 | 서버를 켤 때 |
+| 작업(예약표 줄 이름) | 차례 | 처음 차례 |
 | --- | --- | --- |
-| 알림 발송 | 5분 | 바로 한 번 돈다(꺼져 있던 동안 밀린 알림을 보낸다) |
-| LMS 동기화 | 30분 | 안 돈다 |
-| 공고 알림 예약 | 하루 한 번 KST 08:30 | 안 돈다 |
-| 청년정책 수집 | 하루 한 번 KST 04:00 | 안 돈다. `YOUTH_API_KEY`가 없으면 목록에 넣지 않는다(경고 한 줄) |
+| 알림 발송(`send-notifications`) | 끝난 때부터 5분 | 바로(꺼져 있던 동안 밀린 알림을 보낸다) |
+| LMS 동기화(`lms-sync`) | 끝난 때부터 30분 | 바로 |
+| 공고 알림 예약(`schedule-notifications`) | 하루 한 번 KST 08:30 | 다음 08:30 |
+| 청년정책 수집(`fetch-policies`) | 하루 한 번 KST 04:00 | 다음 04:00. `YOUTH_API_KEY`가 없으면 집지 않는다(경고 한 줄) |
 
 - 예약이 **KST 08:30**인 것은 알림 시각이 09:00이고 지난 시각은 만들지 않기 때문이다(PRD F-33)
 - 청년정책 수집이 **KST 04:00**인 것은 예약(08:30) 전에 끝나 그날 새 정책이 그날 예약에 들어가게 하려는 것이다
-- 작업 하나가 실패해도 로그만 남기고 다음 차례에 다시 돈다. 주기보다 오래 걸려도 겹쳐 돌지 않는다
-- **바깥 크론과 같이 켜지 않는다.** 바깥에서 부르려면 이 값을 꺼 둔다
-- **워커는 하나여야 한다.** 여러 프로세스로 띄우면 같은 일이 여러 번 돈다
+- **잊지 않는다**: 서버가 차례에 꺼져 있었으면 깨어나 처음 도는 tick이 그 줄을 집는다(전에는 다음 날로 넘어갔다)
+- **며칠 밀려도 한 번**: 끝나면 지금 이후 첫 차례로 건너뛴다. 지난 날을 하나씩 재연하지 않는다
+- **몇 대가 떠도 한 번**: 줄을 집는 것이 조건부 갱신 한 문장(임대 30분)이라, 서버가 둘 떠도, 서버 안 tick과 바깥 크론(`POST /internal/jobs/tick`)을 같이 켜도 작업마다 한 번만 돈다. 한 서버 안에서도 아직 도는 작업은 다시 집지 않는다
+- 집은 작업은 따로 돈다 — 한 작업이 길어도 다른 작업이 밀리지 않는다
+- 작업이 실패하면 로그를 남기고, 간격 작업은 간격 뒤에 다시, 날짜 작업은 30분 → 1시간 → 2시간 …으로 늦추되 다음 정해진 차례를 넘기지 않는다. 잇달아 5번 실패하면 경고 한 줄. 실패 이유는 예약표 `last_error`에 가려 남는다
+- 서버를 끌 때 돌던 작업은 취소하고 임대를 푼다 — 다음 서버가 바로 다시 집는다
+- 예약표 상태는 `select * from job_schedule`로 본다(다음 차례·마지막으로 끝난 시각·마지막 실패)
 
 ## 13. 에러 코드
 
