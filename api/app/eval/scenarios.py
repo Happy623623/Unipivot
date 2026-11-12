@@ -3,12 +3,12 @@
 시나리오는 세계를 만들고(사용자·공고) 실제 엔드포인트를 부르며, `world.check`로 기대 결과에 닿았는지
 본다. 다르면 그 자리에서 멈추고 실패로 남는다 — 뒤 단계가 앞 단계의 결과를 쓰기 때문이다.
 
-판정·요건이 S01–S08, 포스터·준비하기·캘린더·알림이 S11–S14, 계획서가 S15, LMS 과제가 S16–S18이다.
-PRD 8장의 P0는 S01–S18 열여덟 개이고, 여기 있는 것은 그중 **열여섯 개**다(P1인 S22·S23도 F-53과
-함께 넣었다). 없는 것과 이유:
+판정·요건이 S01–S08, 학교 공지 가져오기(첨부 읽기·공지 수정)가 S09·S10, 포스터·준비하기·캘린더·알림이
+S11–S14, 계획서가 S15, LMS 과제가 S16–S18이다. PRD 8장의 P0 열여덟 개(S01–S18)가 모두 있고, P1인
+S22·S23도 F-53과 함께 넣었다(모두 스무 개).
 
-- S09(요건이 첨부에만 있는 공고)·S10(공지 수정 재수집): 입력이 실제 HWP·PDF 파일과 저장한 공지
-  폴더다. 그 파일을 레포에 둔 뒤에 붙인다
+S09·S10의 공지와 첨부는 실제 학교 글 대신 지은 글이다(app/eval/notice.py). 학교가 쓴 글은 레포에 두지
+않는다. 가져오기·첨부 글자 뽑기·요건 추출·근거 대조·저장은 운영 코드 그대로 돈다.
 """
 
 from __future__ import annotations
@@ -31,6 +31,19 @@ from app.eval.fakes import (
     tool_reply,
     youth_policy,
 )
+from app.eval.notice import (
+    ATTACHED_ONLY_BODY,
+    EXTENDED_GRADE_LINE,
+    FORM_FILE,
+    GUIDE_CREDIT_LINE,
+    GUIDE_FILE,
+    GUIDE_GRADE_LINE,
+    extended_body,
+    form_pdf,
+    guide_lines,
+    hwpx,
+    notice,
+)
 from app.eval.syllabus import (
     FINAL_LINE,
     FINAL_WEEK,
@@ -43,6 +56,7 @@ from app.eval.syllabus import (
     syllabus_pdf,
 )
 from app.eval.world import EvalWorld, Reply, Rule, Scenario
+from app.extraction.prompt import READ_TEXT
 from app.extraction.prompt import SUBMIT as EXTRACTION_TOOL
 from app.extraction.validate import LOW_CONFIDENCE as LOW_CONFIDENCE_REASON
 from app.lms.classify import SUBMIT as CLASSIFY_TOOL
@@ -363,6 +377,288 @@ async def s08(world: EvalWorld) -> None:
         expected="needs_review",
         actual=card and card["eligibility"]["display_status"],
     )
+
+
+# ── S09–S10: 학교 공지(실제 가져오기 코드 + 녹화한 모델 답) ─────────────────────
+# 공지는 app/eval/notice.py가 지은 글이다. 가져오기(A안)·첨부 글자 뽑기·요건 추출 에이전트·근거 대조·저장은
+# 운영 코드 그대로 돌고, 모델 답만 녹화했다(world.notice)
+
+FORM_NAME = "장학금 신청서"  # 신청서 양식 첨부(FORM_FILE)를 양식 링크로 다는 서류
+# 녹화한 에이전트가 선발요강을 고른 이유. 처리 과정(F-42)에 그대로 보인다
+GUIDE_REASON = "본문에 지원 자격이 없고 선발요강을 보라고 해서 선발요강을 읽음"
+
+
+async def s09(world: EvalWorld) -> None:
+    """요건이 첨부(HWP·PDF)에만 있는 공고 → 에이전트가 첨부를 골라 읽고 요건 추출, 처리 과정에 표시.
+
+    본문은 "첨부한 선발요강을 확인하세요"뿐이고, 지원 자격은 선발요강(HWPX)에만 있다. 첨부는 둘이다 —
+    선발요강과 신청서 양식(PDF). 녹화한 에이전트는 첨부 목록을 보고 **선발요강만** 읽은 뒤 요건을 낸다.
+    신청서는 읽지 않고 서류의 양식 링크로만 단다.
+
+    근거 문장이 읽은 첨부에만 있으므로, 첨부를 읽지 않았거나 읽은 글자가 근거 대조에 들어가지 않으면
+    제출이 거절되고(다시 내라는 답이 간다) 녹화한 답이 모자라 실패한다(app/extraction/validate.py).
+    """
+    student = await world.user(
+        grade=3, enrollment_status="enrolled", gpa_last_semester=3.4, credits_last_semester=15
+    )
+    deadline = world.today + timedelta(days=12)
+    content = notice(
+        _notice_no(world),
+        "2026-2학기 미래인재 장학생 선발 안내",
+        body=[ATTACHED_ONLY_BODY],
+        posted_on=world.today - timedelta(days=1),
+        files=[(GUIDE_FILE, hwpx(guide_lines(deadline))), (FORM_FILE, form_pdf())],
+    )
+    world.records(
+        tool_reply(READ_TEXT, attachment_no=1, reason=GUIDE_REASON),
+        tool_reply(
+            EXTRACTION_TOOL,
+            requirements=[
+                {
+                    "clause_no": 1,
+                    "field": "gpa_last_semester",
+                    "operator": "gte",
+                    "value_json": "3.0",
+                    "evidence_text": GUIDE_GRADE_LINE,
+                    "is_ambiguous": False,
+                },
+                {
+                    "clause_no": 2,
+                    "field": "credits_last_semester",
+                    "operator": "gte",
+                    "value_json": "12",
+                    "evidence_text": GUIDE_CREDIT_LINE,
+                    "is_ambiguous": False,
+                },
+            ],
+            documents=[{"name": FORM_NAME, "form_attachment_no": 2}, {"name": "성적증명서"}],
+            deadline=f"{deadline.isoformat()}T17:00",
+            easy_summary=(
+                "직전 학기 평점 3.0 이상, 12학점 이상 들은 재학생이 신청할 수 있는 장학이에요."
+                " 신청서와 성적증명서를 학생지원팀에 내요."
+            ),
+            confidence=0.9,
+            needs_review=False,
+        ),
+    )
+    opportunity, imported = await world.notice(content)
+    await world.check("가져오기", expected="new", actual=imported.status)
+    runs = await world.rows("select scenario_code from agent_runs where id = %s", imported.run_id)
+    # 추출 비용이 이 시나리오에 들어간다(scenario_code로 묶은 llm_calls)
+    await world.check(
+        "추출 실행에 시나리오 번호",
+        expected=[world.scenario_code],
+        actual=[row["scenario_code"] for row in runs],
+    )
+    client = world.client(student)
+
+    detail = await _detail(world, client, opportunity)
+    await world.judged("판정", expected="eligible", actual=detail["eligibility"]["status"])
+    conditions = detail["eligibility"]["conditions"]
+    await world.check(
+        "근거는 선발요강 문장",
+        expected=[GUIDE_GRADE_LINE, GUIDE_CREDIT_LINE],
+        actual=[row["evidence_text"] for row in conditions],
+    )
+    await world.check(
+        "근거를 찾은 조건(모호 아님)",
+        expected=[False, False],
+        actual=[row["is_ambiguous"] for row in conditions],
+    )
+    steps = detail["process"]["extraction"]
+    await world.check(
+        "처리 과정",
+        expected=[f"첨부 '{GUIDE_FILE}' 읽기", "지원 자격 정리"],
+        actual=[step["label"] for step in steps],
+    )
+    await world.check(
+        "에이전트가 고른 단계",
+        expected=["agent", "agent"],
+        actual=[step["chosen_by"] for step in steps],
+    )
+    await world.check("고른 이유", expected=GUIDE_REASON, actual=steps[0]["note"])
+    # 고른 첨부만 읽었다. 읽지 않은 첨부는 "읽지 않음"으로 보인다
+    await world.check(
+        "첨부 상태",
+        expected={GUIDE_FILE: "succeeded", FORM_FILE: "skipped"},
+        actual={item["file_name"]: item["extract_status"] for item in detail["attachments"]},
+    )
+    form_url = next(
+        (item["source_url"] for item in detail["attachments"] if item["file_name"] == FORM_FILE),
+        None,
+    )
+    await world.check(
+        "신청서 양식 링크",
+        expected={FORM_NAME: form_url, "성적증명서": None},
+        actual={document["name"]: document["form_url"] for document in detail["documents"]},
+    )
+    await world.check("원문 확인 필요 아님", expected=False, actual=detail["needs_review"])
+    await world.check("마감일", expected=deadline.isoformat(), actual=_day(detail["deadline_at"]))
+
+    card = await world.feed_card(client, opportunity)
+    await world.check("피드 카드", expected=True, actual=card is not None)
+    await world.check(
+        "피드 라벨", expected="eligible", actual=card and card["eligibility"]["display_status"]
+    )
+
+
+async def s10(world: EvalWorld) -> None:
+    """공지 수정(마감 연장) → 다시 추출 → 판정·알림 예약 갱신.
+
+    공지를 수정 전/후 두 벌로 지어(PRD 8장 테스트 환경) 같은 글 번호로 가져온다. 고친 글은 내용이 바뀌었으니
+    다시 추출하고 요건 버전이 오른다. 같은 글을 또 가져오면 모델을 부르지 않는다(녹화한 답이 없어 부르면
+    실패한다).
+
+    판정과 알림은 예약 작업(하루 한 번)이 갱신한다. 예약하기 전에 낡은 판정(요건 버전이 바뀐 공고)을 다시
+    계산하고, 아직 보내지 않은 마감 알림(D-3·D-1)은 행을 새로 만들지 않고 시각만 새 마감으로 옮긴다
+    (app/jobs.py, app/repositories/notifications.py). 그래서 옛 D-3 아침에는 보낼 것이 없고, 새 D-3
+    아침에 한 번 간다. 시계는 S14처럼 옮긴다(`world.travel`).
+    """
+    student = await world.user(grade=3, gpa_last_semester=3.5)
+    first_deadline = world.today + timedelta(days=6)
+    extended = first_deadline + timedelta(days=7)
+    number, posted = _notice_no(world), world.today - timedelta(days=1)
+    title = "2026-2학기 ERICA 근로장학생 모집"
+    client, jobs = world.client(student), world.internal()
+
+    world.records(_work_study_reply(first_deadline))
+    opportunity, imported = await world.notice(
+        notice(number, title, body=extended_body(first_deadline, extended=False), posted_on=posted)
+    )
+    await world.check("처음 가져오기", expected="new", actual=imported.status)
+    await world.check("요건 버전", expected=1, actual=imported.version)
+
+    before = await _detail(world, client, opportunity)
+    await world.judged("판정", expected="eligible", actual=before["eligibility"]["status"])
+    # 판정 기준일은 마감일이다(판정엔진_규칙 8장). 마감이 바뀌면 기준일도 바뀐다
+    await world.check(
+        "판정 기준일",
+        expected=first_deadline.isoformat(),
+        actual=before["eligibility"]["basis_date"],
+    )
+    first = await jobs.post(world.path("/internal/jobs/schedule-notifications"))
+    await world.check("예약", expected=200, actual=first.status_code)
+    await world.check(
+        "D-3·D-1 예약", expected=_alert_days(first_deadline), actual=await _alerts(world, student)
+    )
+
+    # 학교가 글을 고쳤다: 신청 기간을 일주일 늘렸다(같은 글 번호. 본문만 바뀌었다)
+    edited = notice(number, title, body=extended_body(extended, extended=True), posted_on=posted)
+    world.records(_work_study_reply(extended))
+    again, updated = await world.notice(edited)
+    await world.check("같은 공고", expected=opportunity, actual=again)
+    await world.check("다시 추출", expected="updated", actual=updated.status)
+    await world.check("요건 버전이 오름", expected=2, actual=updated.version)
+
+    moved = (await jobs.post(world.path("/internal/jobs/schedule-notifications"))).json()
+    await world.check("새로 만든 알림 없음", expected=0, actual=moved["created"])
+    await world.check("시각을 옮긴 알림", expected=2, actual=moved["rescheduled"])
+    await world.check(
+        "새 마감으로 옮김", expected=_alert_days(extended), actual=await _alerts(world, student)
+    )
+    # 학생이 앱을 열기 전에 예약 작업이 판정을 새 요건으로 다시 계산해 두었다
+    stored = await world.rows(
+        "select requirements_version, status from eligibility_results"
+        " where user_id = %s and opportunity_id = %s",
+        student,
+        opportunity,
+    )
+    await world.check(
+        "저장된 판정",
+        expected=[{"requirements_version": 2, "status": "eligible"}],
+        actual=[dict(row) for row in stored],
+    )
+
+    after = await _detail(world, client, opportunity)
+    await world.check("새 마감일", expected=extended.isoformat(), actual=_day(after["deadline_at"]))
+    await world.check(
+        "새 판정 기준일", expected=extended.isoformat(), actual=after["eligibility"]["basis_date"]
+    )
+    await world.check(
+        "판정한 요건 버전", expected=2, actual=after["eligibility"]["requirements_version"]
+    )
+    await world.judged("다시 판정", expected="eligible", actual=after["eligibility"]["status"])
+
+    # 같은 글을 또 가져온다: 내용이 같아 다시 추출하지 않는다(녹화한 답이 없다)
+    _, unchanged = await world.notice(edited)
+    await world.check("같은 내용", expected="unchanged", actual=unchanged.status)
+
+    # 옛 D-3 아침이 지났다. 옮긴 알림이라 보낼 것이 없다
+    _travel_to(world, _notify_time(first_deadline - timedelta(days=3)) + timedelta(hours=1))
+    early = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
+    await world.check("옛 D-3에는 보낼 것 없음", expected=0, actual=early["due"])
+    await world.check(
+        "알림함에 마감 알림 없음", expected=[], actual=await _deadlines(world, client)
+    )
+
+    # 새 D-3 아침이 지났다. 한 번 간다
+    _travel_to(world, _notify_time(extended - timedelta(days=3)) + timedelta(hours=1))
+    sent = (await jobs.post(world.path("/internal/jobs/send-notifications"))).json()
+    await world.check("새 D-3 발송", expected=1, actual=sent["sent"])
+    await world.check("알림함에 D-3 하나", expected=["D-3"], actual=await _deadlines(world, client))
+
+
+def _notice_no(world: EvalWorld) -> str:
+    """시나리오 공지의 글 번호. 실행마다 달라서 지난 실행이 남긴 공고와 겹치지 않는다(실제 글 번호는 숫자다)."""
+    return f"eval-{world.scenario_code}-{world.run.id[:8]}"
+
+
+def _work_study_reply(deadline: date) -> Reply:
+    """S10 녹화 답: 본문만 읽고 바로 낸다. 고친 글도 자격은 같고 마감만 다르다."""
+    return tool_reply(
+        EXTRACTION_TOOL,
+        requirements=[
+            {
+                "clause_no": 1,
+                "field": "gpa_last_semester",
+                "operator": "gte",
+                "value_json": "3.0",
+                "evidence_text": EXTENDED_GRADE_LINE,
+                "is_ambiguous": False,
+            }
+        ],
+        documents=[{"name": "근로장학 신청서"}],
+        deadline=f"{deadline.isoformat()}T17:00",
+        easy_summary=(
+            f"직전 학기 평점 3.0 이상인 재학생이 {deadline.month}월 {deadline.day}일 17시까지"
+            " 근로장학을 신청할 수 있어요."
+        ),
+        confidence=0.9,
+        needs_review=False,
+    )
+
+
+def _notify_time(day: date) -> datetime:
+    """그날 알림을 보내는 시각(KST 09:00, app/repositories/notifications.py)."""
+    return datetime.combine(day, time(9), tzinfo=KST)
+
+
+def _alert_days(deadline: date) -> dict[str, str]:
+    """마감 임박 알림을 보낼 시각(D-day → KST 시각)."""
+    return {
+        f"D-{days}": _notify_time(deadline - timedelta(days=days)).isoformat() for days in (3, 1)
+    }
+
+
+async def _alerts(world: EvalWorld, user_id: str) -> dict[str, str]:
+    """그 학생의 마감 임박 알림 예약(D-day → 보낼 시각). 아직 보낼 때가 아니면 알림함에 보이지 않아 행을 본다."""
+    rows = await world.rows(
+        "select dedupe_key, scheduled_at from notifications"
+        " where user_id = %s and type = 'deadline_soon'",
+        user_id,
+    )
+    return {
+        row["dedupe_key"].rsplit(":", 1)[-1]: row["scheduled_at"].astimezone(KST).isoformat()
+        for row in rows
+    }
+
+
+def _travel_to(world: EvalWorld, moment: datetime) -> None:
+    """시계를 그 시각으로 옮긴다(앞으로만)."""
+    ahead = moment - world.now
+    if ahead <= timedelta(0):
+        raise AssertionError(f"시계는 앞으로만 옮긴다: {world.now} → {moment}")
+    world.travel(seconds=ahead.total_seconds())
 
 
 # ── S11–S12: 포스터 ────────────────────────────────────────────────────────
@@ -1532,6 +1828,10 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("S06", "온통청년 정책, 거주지역 불일치 → 지원 어려움 + 지역 사유", "P0", s06),
     Scenario("S07", "온통청년 정책, 판정 기준일에 만 34세 마지막 날", "P0", s07),
     Scenario("S08", '요건이 모호한 공고("성적 우수자") → 원문 확인 필요 배지', "P0", s08),
+    Scenario(
+        "S09", "요건이 첨부에만 있는 공고 → 첨부를 골라 읽고 추출, 처리 과정에 표시", "P0", s09
+    ),
+    Scenario("S10", "공지 수정(마감 연장) → 다시 추출 → 판정·알림 예약 갱신", "P0", s10),
     Scenario("S11", "공모전 포스터 업로드 → 추출·확인 → 본인 피드에만", "P0", s11),
     Scenario("S12", "흐릿한 포스터 → 저신뢰도 배지, 수정 가능", "P0", s12),
     Scenario("S13", "준비하기 → 캘린더 연결 → 등록 → 다시 눌러도 하나", "P0", s13),

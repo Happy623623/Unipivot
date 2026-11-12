@@ -44,6 +44,8 @@ async def test_every_scenario_reaches_its_expected_result() -> None:
     # 포스터·준비하기는 모델을 부른다 → 비용이 0이 아니다(토큰 × 단가, PRD 8장 호출비용)
     costs = {result.code: result.cost_usd for result in report.results}
     assert costs["S01"] > 0 and costs["S11"] > 0 and costs["S12"] > 0
+    # 학교 공지 요건 추출(사용자 없는 뿌리 실행)도 그 시나리오 비용에 들어간다(world.notice)
+    assert costs["S09"] > 0 and costs["S10"] > 0
     assert costs["S02"] == 0  # 판정만 하는 시나리오는 모델을 부르지 않는다
 
 
@@ -328,7 +330,8 @@ async def test_the_feed_scenarios_survive_a_database_full_of_other_opportunities
             assert row is not None
             made.append(row["id"])
         report = await run_scenarios(
-            DATABASE_URL, [scenario for scenario in SCENARIOS if scenario.code in ("S08", "S11")]
+            DATABASE_URL,
+            [scenario for scenario in SCENARIOS if scenario.code in ("S08", "S09", "S11")],
         )
         assert {r.code: r.error for r in report.results if not r.ok} == {}
     finally:
