@@ -295,6 +295,7 @@ class FakeMetricsRepository:
                 lms_connect=empty,
                 weekly_return=empty,
             ),
+            engines=[],
         )
 
 
