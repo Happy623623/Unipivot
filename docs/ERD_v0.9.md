@@ -721,7 +721,7 @@ erDiagram
 ### 알림함 · 설정 · 조회 기록
 
 - **알림함**: 알림 행 하나가 푸시 발송(`status`)과 알림함 표시(`read_at`)를 함께 담는다. `scheduled_at`이 지난 행만 알림함에 보이고, 푸시를 끈 사용자도 행은 만들되 발송 배치가 푸시만 건너뛴다. 설정에서 끈 종류는 행을 만들지 않는다.
-- **프로필 정보 필요 알림**: 사용자당 같은 `dedupe_key` 1행이 공고당 1회를 보장한다. 하루 1건 제한은 발송 배치가 건다. 한도를 넘은 행은 다음 날 KST 09:00으로 미룬다 — pending으로 남겨 두면 발송 묶음을 채워 다른 알림이 나가지 못한다. 알림함에도 미룬 시각에 나온다(11/06).
+- **프로필 정보 필요 알림**: 사용자당 같은 `dedupe_key` 1행이 물어볼 항목당 1회를 보장한다(11/19 — 전에는 공고당 1회라 같은 항목을 공고 수만큼 되물었다. 11/11 대기 490건이 묶으면 학생 × 항목 6건). 묶인 공고 수가 바뀌면 아직 보내지 않은 행의 `opportunity_id`(대표 공고)·`body`만 고친다. 하루 1건 제한은 발송 배치가 건다. 한도를 넘은 행은 다음 날 KST 09:00으로 미룬다 — pending으로 남겨 두면 발송 묶음을 채워 다른 알림이 나가지 못한다. 알림함에도 미룬 시각에 나온다(11/06).
 - **새 공고**: 등록 7일 이내, 판정 eligible, `opportunity_views`에 행이 없는 공고다. 상세 조회 API가 upsert하며 `first_viewed_at`은 유지한다.
 - opportunity_views는 공고 상세를 열 때 upsert한다. first_viewed_at은 처음 연 시각 그대로이고 last_viewed_at은 늦은 쪽을 남긴다. 피드의 새 공고 표시와 홈 요약의 new_eligible은 행이 있는지만 본다.
 - **서류 체크**: 상세의 서류 체크는 `planner_tasks`(prep_plan_id, document_id) 행의 `is_done`을 그대로 쓴다. 준비하기 전에는 행이 없어 체크할 수 없고, 부분 유니크 인덱스가 서류당 할 일 1개를 보장한다.
@@ -741,7 +741,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | new_eligible | `new_eligible:opp:{opportunity_id}` | |
 | deadline_soon (공고) | `deadline_soon:opp:{opportunity_id}:D-3`, `…:D-1` | 공고당 2행 |
 | deadline_soon (LMS 과제) | `deadline_soon:asg:{lms_assignment_id}:D-3`, `…:D-1` | 제출하면 pending 행 삭제 |
-| profile_needed | `profile_needed:opp:{opportunity_id}` | 공고당 1회 (하루 1건 제한은 발송 배치) |
+| profile_needed | `profile_needed:field:{물어볼 항목}` | 항목당 1회 — 같은 항목을 묻는 공고는 한 행으로 묶고 마감이 가장 가까운 공고를 잇는다(11/19, 전에는 `profile_needed:opp:{opportunity_id}` 공고당 1회). 하루 1건 제한은 발송 배치 |
 | new_assignment | `new_assignment:asg:{lms_assignment_id}` | |
 | new_material | `new_material:mod:{lms_module_item_id}` | |
 | schedule_change | `schedule_change:ann:{lms_announcement_id}` | P1 |
@@ -921,6 +921,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-19): 정보 필요 알림 키를 항목 단위로(`profile_needed:field:{항목}`, 대표 공고는 마감이 가장 가까운 것), 옛 키의 pending 행은 다음 예약이 지운다. 스키마 변경 없음
 - v0.9 보강 (2026-11-18): job_schedule — 정기 작업 예약표(작업마다 한 줄, 다음 차례·임대 30분·실패하면 늦춤). 서버가 꺼져 있던 차례를 깨어나 한 번 따라잡고, 몇 대가 떠도 작업마다 한 번만 돈다
 - v0.9 보강 (2026-11-17): agent_runs.parent_run_id·root_run_id — 실행 트리(O1). LMS 기회성 공지·학교 공지 링크의 요건 추출이 자식 실행이 되고, 시나리오 지표는 뿌리만 센다
 - v0.9 보강 (2026-11-14): lms_announcements.retry_at·attempts — 과목 공지 큐 임대(집을 때 2시간, 실패하면 30분×2^(시도−1)로 늦추고 5번이면 줄에서 뺀다)

@@ -8,7 +8,13 @@
 | --- | --- | --- |
 | new_eligible | `new_eligible:opp:{id}` | 등록 7일 이내 + 적격 + 아직 상세를 열지 않음 |
 | deadline_soon | `deadline_soon:opp:{id}:D-3`·`:D-1` | 적격이거나 준비한 공고. 마감일이 있어야 한다 |
-| profile_needed | `profile_needed:opp:{id}` | 판정 불가 + 물어볼 항목이 있음 |
+| profile_needed | `profile_needed:field:{항목}` | 판정 불가 + 물어볼 항목이 있음. **학생 × 물어볼 첫 항목마다 한 행** |
+
+정보 필요 알림은 **항목 단위로 묶는다**(11/19). 같은 항목(예: 거주지역)을 묻는 공고가 여럿이면 알림은 하나이고,
+마감이 가장 가까운 공고(없으면 새 공고)를 대표로 잇는다 — 누르면 그 공고 상세의 즉석 입력으로 가고, 한 번 넣으면
+묶인 공고가 함께 판정된다. 공고 수가 바뀌면 아직 보내지 않은 행의 대표·문구만 고친다. 보낸 항목은 다시 묻지
+않는다(항목당 1회). 전에는 공고마다 한 행이라 같은 항목을 공고 수만큼 하루 1건씩 되물었다(11/11: 한 학생에게
+"거주지역" 187건).
 
 예약은 저장된 판정(`eligibility_results`)을 본다. 판정은 학생이 피드·상세를 열 때 계산되므로, 예약
 작업(`app/jobs.py`)이 예약하기 전에 `alert_users`(동의를 마친 사용자)의 낡은 판정을 사용자마다 다시
@@ -62,6 +68,7 @@ LIST_LIMIT = 50
 NEW_TITLE = "지원할 수 있는 공고가 있어요"
 DEADLINE_TITLE = "마감이 가까워요"
 PROFILE_TITLE = "프로필 정보가 필요해요"
+PROFILE_KEY = "profile_needed:field:"  # 정보 필요 알림 키의 앞부분. 뒤에 물어볼 항목 이름이 붙는다
 ASSIGNMENT_TYPE = "new_assignment"  # notifications.type·user_settings.muted_notification_types
 MATERIAL_TYPE = "new_material"  # 새 주차 항목(F-52). 과목 수강생 모두에게 간다
 SCHEDULE_TYPE = "schedule_change"  # 일정 변경 공지(F-53 2부). 과목 수강생 모두에게 간다
@@ -182,7 +189,11 @@ class NotificationRepository:
         for kind, query, params in (
             ("new_eligible", _NEW_ELIGIBLE, {}),
             ("deadline_soon", _DEADLINE_SOON, {"days": list(DEADLINE_DAYS)}),
-            ("profile_needed", _PROFILE_NEEDED, {"needed": Jsonb(needed_phrases())}),
+            (
+                "profile_needed",
+                _PROFILE_NEEDED,
+                {"needed": Jsonb(needed_phrases()), "profile_key": PROFILE_KEY},
+            ),
         ):
             rows = await self._rows(query, {**common, **params, "type": kind})
             created = sum(1 for row in rows if row["inserted"])
@@ -194,7 +205,9 @@ class NotificationRepository:
 
     async def _removed(self, now: datetime) -> int:
         """보낼 이유가 없어진 pending 행을 지운다. 보낸 행은 알림함에 남으므로 건드리지 않는다."""
-        cursor = await self.conn.execute(_STALE, {"now": now, "types": list(_KINDS)})
+        cursor = await self.conn.execute(
+            _STALE, {"now": now, "types": list(_KINDS), "profile_key": PROFILE_KEY}
+        )
         return cursor.rowcount
 
     # ── LMS 과제 알림 (F-51) ────────────────────────────────────────────────
@@ -562,16 +575,27 @@ _DEADLINE_SOON = (
     " and notifications.scheduled_at <> excluded.scheduled_at" + _INSERTED
 )
 
-# 정보 필요: 판정 불가 + 물어볼 항목이 있음. 문구의 항목 이름은 조사까지 붙여 넘긴다
+# 정보 필요: 판정 불가 + 물어볼 항목이 있음. **학생 × 물어볼 첫 항목마다 한 행**으로 묶는다. 대표 공고는
+# 마감이 가장 가까운 것(없으면 새 공고)이고, 문구는 "대표 제목 외 N개 · 항목을 입력하면 판정할 수 있어요"다
+# (항목 이름은 조사까지 붙여 넘긴다). 공고 수가 바뀌면 아직 보내지 않은 행의 대표·문구만 고친다
 _PROFILE_NEEDED = (
-    f"{_COLUMNS} select p.id, %(type)s, o.id, '{PROFILE_TITLE}',"
-    f" o.title || ' · ' || (%(needed)s::jsonb ->> e.missing_fields[1]) || '{_NEEDED}',"
-    f" {_AT_HOUR % _NEXT_DAY}, 'profile_needed:opp:' || o.id"
+    f"{_COLUMNS} select g.user_id, %(type)s, g.opportunity_id, '{PROFILE_TITLE}',"
+    " g.title || case when g.waiting > 1 then ' 외 ' || (g.waiting - 1) || '개' else '' end"
+    f" || ' · ' || (%(needed)s::jsonb ->> g.field) || '{_NEEDED}',"
+    f" {_AT_HOUR % _NEXT_DAY}, %(profile_key)s || g.field"
+    " from (select p.id as user_id, e.missing_fields[1] as field, o.id as opportunity_id,"
+    " o.title, count(*) over (partition by p.id, e.missing_fields[1]) as waiting,"
+    " row_number() over (partition by p.id, e.missing_fields[1]"
+    " order by o.deadline_at nulls last, o.created_at desc, o.id) as pick"
     f"{_JOINS} where{_ACTIVE} and{_UNEXPIRED} and{_NOT_DISMISSED} and{_VISIBLE} and{_NOT_MUTED}"
     " and e.status = 'undetermined' and coalesce(array_length(e.missing_fields, 1), 0) > 0"
-    " and %(needed)s::jsonb ? e.missing_fields[1]"
-    f" and {_AT_HOUR % _NEXT_DAY} > %(now)s"
-    " on conflict (user_id, dedupe_key) do nothing" + _INSERTED
+    " and %(needed)s::jsonb ? e.missing_fields[1]) g"
+    f" where g.pick = 1 and {_AT_HOUR % _NEXT_DAY} > %(now)s"
+    " on conflict (user_id, dedupe_key) do update"
+    " set opportunity_id = excluded.opportunity_id, body = excluded.body"
+    " where notifications.status = 'pending'"
+    " and (notifications.body is distinct from excluded.body"
+    " or notifications.opportunity_id is distinct from excluded.opportunity_id)" + _INSERTED
 )
 
 # 보낼 이유가 없어진 pending 행: 숨김·준비 취소·마감 지남·숨겨진 공고·이미 본 새 공고
@@ -599,10 +623,12 @@ _STALE = (
     # 판정이 바뀌어 적격이 아니게 되면 "지원할 수 있는 공고"가 아니다
     "      or not exists (select 1 from eligibility_results e where e.user_id = n.user_id"
     "        and e.opportunity_id = o.id and e.status = 'eligible')))"
+    # 정보 필요는 대표 공고가 아직 그 항목(키 끝)을 먼저 묻는지 본다(예약이 방금 대표를 고쳤다). 공고마다 한
+    # 행이던 옛 키(profile_needed:opp:…)는 끝이 항목 이름이 아니라 여기서 함께 지워진다(11/19)
     "   or (n.type = 'profile_needed' and not exists ("
     "        select 1 from eligibility_results e where e.user_id = n.user_id"
     "        and e.opportunity_id = o.id and e.status = 'undetermined'"
-    "        and coalesce(array_length(e.missing_fields, 1), 0) > 0))"
+    "        and e.missing_fields[1] = substr(n.dedupe_key, length(%(profile_key)s) + 1)))"
     " )"
 )
 
