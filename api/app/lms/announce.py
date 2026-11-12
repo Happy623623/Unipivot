@@ -6,7 +6,9 @@
    2시간 동안 다른 동기화가 집지 못하고(임대), 실패하면 더 늦춰 다시 집는다(5번까지)
 2. 공지마다 모델을 **한 번** 불러 네 갈래와 한 줄 요약을 받는다(`app/lms/classify.py`)
 3. 기회성이면 공지 글을 공고 원문으로 삼아 **요건 추출 에이전트**를 돌리고, 공고 행과 요건·서류를
-   한 트랜잭션에 쓴다. 공고는 그 과목 수강생만 본다(`visible_canvas_course_id`)
+   한 트랜잭션에 쓴다. 공고는 그 과목 수강생만 본다(`visible_canvas_course_id`). 요건 추출은 동기화 실행의
+   **자식 실행**이고(실행 트리 O1) 공고의 `extraction_run_id`가 그 자식이다 — 동기화에는 `extract_announcement`
+   한 줄만 남는다
 4. 공고가 생기면 판정·알림은 **이미 있는 길**이 처리한다 — 피드·상세가 판정하고(S1-5), 적격이면
    예약 작업이 "새 공고" 알림을 만든다(F-33). 여기서 따로 부르지 않는다
 5. 일정 변경이고 **바뀌는 날을 읽었으면** 그 과목 수강생 모두의 플래너에 할 일을 넣고 일정 변경
@@ -44,6 +46,7 @@ from app.repositories.announcements import (
     PendingAnnouncement,
 )
 from app.repositories.notifications import NotificationRepository, ScheduleNotice
+from app.schemas.lms import EXTRACT_TOOL
 from app.schemas.opportunities import Category
 
 logger = logging.getLogger(__name__)
@@ -271,19 +274,29 @@ class AnnouncementService:
             # (명세 8장) — 에이전트가 fetch_original을 부를 수 있으면 그때마다 실패한다
             original_url=None,
         )
-        extraction = await agent.run(notice, run)
-        async with self.transaction() as conn:
-            opportunity_id = await self.repo_for(conn).create_opportunity(
-                announcement,
-                category=_kind(category_hint),
-                original_url=TOPIC_PATH.format(
-                    base=self.lms_base,
-                    course=announcement.canvas_course_id,
-                    topic=announcement.canvas_topic_id,
-                ),
-                extraction=extraction,
-                run_id=run.id,
-            )
+        async with run.tool(EXTRACT_TOOL, {"announcement_id": announcement.id}) as call:
+            # 요건 추출은 동기화 실행의 자식 실행이다(실행 트리 O1). 공고의 extraction_run_id가 이 자식이라
+            # 공고 상세의 처리 과정(F-42)에 동기화의 다른 단계(과목 받기·다른 공지의 분류)가 섞이지 않는다.
+            # 공고는 수강생 모두가 보므로 자식에는 user_id를 남기지 않는다(동기화한 학생은 부모에만 있다)
+            async with run.child() as child:
+                extraction = await agent.run(notice, child)
+            async with self.transaction() as conn:
+                opportunity_id = await self.repo_for(conn).create_opportunity(
+                    announcement,
+                    category=_kind(category_hint),
+                    original_url=TOPIC_PATH.format(
+                        base=self.lms_base,
+                        course=announcement.canvas_course_id,
+                        topic=announcement.canvas_topic_id,
+                    ),
+                    extraction=extraction,
+                    run_id=child.id,
+                )
+            call.output = {
+                "extraction_run_id": child.id,
+                "opportunity_id": opportunity_id,  # 다른 수강생의 동기화가 먼저 이었으면 null
+                "requirements": len(extraction.requirements),
+            }
         if opportunity_id is None:
             return False
         logger.info(

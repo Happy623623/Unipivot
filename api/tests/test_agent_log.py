@@ -10,6 +10,7 @@ from app import pricing
 from app.agent_log import AgentRun, abandon_run, agent_run, error_text, scrub, using
 from app.errors import ApiError
 from app.pricing import Price, cost_usd
+from tests.fakes import CHILD_RUN_ID, FakeLogConnection
 
 TEST_PRICES = {
     ("test", "model-a"): (
@@ -152,3 +153,65 @@ async def test_abandon_run_closes_a_run_that_never_started() -> None:
     query, params = conn.calls[0]
     assert "status = 'failed'" in query and "status = 'running'" in query
     assert params == ("INTERNAL_ERROR: 이미 준비하고 있어요.", "run-8")
+
+
+# ── 실행 트리(O1): 자식 실행 ─────────────────────────────────────────────────
+
+
+def _closed(log: FakeLogConnection, run_id: str) -> list[Any]:
+    """그 실행을 닫은 문장의 값들(status, latency, input, output, cost, error, id)."""
+    return [
+        params
+        for query, params in log.statements
+        if query.startswith("update agent_runs set status") and params[-1] == run_id
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_child_run_hangs_under_its_parent_and_adds_its_cost() -> None:
+    """자식은 부모 행을 가리키고(trigger·시나리오는 DB가 부모에서 옮긴다), 끝나면 토큰·비용이 부모에 더해진다."""
+    log = FakeLogConnection()
+    parent = AgentRun(connect=using(log), id=log.run_id)  # type: ignore[arg-type]
+    async with parent.child() as child:
+        await child.record_llm(
+            provider="test",
+            model="model-a",
+            input_tokens=100,
+            output_tokens=20,
+            latency_ms=5,
+            cost_usd=0.002,
+        )
+
+    assert child.id == CHILD_RUN_ID
+    assert log.children() == [{"user": None, "scenario": None, "parent": log.run_id}]
+    assert (parent.input_tokens, parent.output_tokens, parent.cost_usd) == (
+        100,
+        20,
+        Decimal("0.002"),
+    )
+    (closed,) = _closed(log, CHILD_RUN_ID)
+    assert (closed[0], closed[2], closed[3], closed[4]) == ("succeeded", 100, 20, Decimal("0.002"))
+    assert _closed(log, log.run_id) == []  # 부모를 닫는 것은 부모를 연 쪽이다
+
+
+@pytest.mark.anyio
+async def test_a_failed_child_is_closed_as_failed_and_still_charges_its_parent() -> None:
+    """블록이 터지면 자식을 실패로 닫고 예외를 그대로 올린다. 이미 쓴 비용은 부모에 더한다."""
+    log = FakeLogConnection()
+    parent = AgentRun(connect=using(log), id=log.run_id)  # type: ignore[arg-type]
+    with pytest.raises(ApiError):
+        async with parent.child(user_id="u-1", scenario_code="T-1") as child:
+            await child.record_llm(
+                provider="test",
+                model="model-a",
+                input_tokens=10,
+                output_tokens=0,
+                latency_ms=5,
+                cost_usd=0.001,
+            )
+            raise ApiError(502, "LLM_TIMEOUT", "늦었어요.")
+
+    assert log.children() == [{"user": "u-1", "scenario": "T-1", "parent": log.run_id}]
+    (closed,) = _closed(log, CHILD_RUN_ID)
+    assert (closed[0], closed[5]) == ("failed", "LLM_TIMEOUT: 늦었어요.")
+    assert parent.cost_usd == Decimal("0.001")

@@ -16,6 +16,18 @@ cost_usd를 빼면 단가표(app/pricing.py)로 비용을 계산한다.
 202와 run_id를 먼저 돌려주는 작업(준비하기)은 start_run으로 실행 행만 만들고, 뒤에서
 agent_run(run_id=...)으로 이어서 기록한다. 실패 이유가 ApiError면 "코드: 문구"로 남겨
 GET /runs/{id}가 학생에게 그대로 보여 준다. 그 밖의 예외는 내부 기록이라 보여 주지 않는다.
+
+**실행 트리**(오케스트레이션 명세 v1 3.6, O1). 흐름 하나가 뿌리 실행이고, 그 안에서 엔진을 한 번 부르는 일은
+`run.child()`로 자식 실행을 연다. 자식은 parent_run_id·root_run_id로 부모와 뿌리를 가리키고, 부모의
+trigger_type·scenario_code를 그대로 받는다. 자식의 토큰·비용은 끝날 때 부모에 더해져 뿌리의 cost_usd가 흐름
+전체 비용이 된다. 그래서 성공률·응답시간은 뿌리(parent_run_id is null)만 세고, 비용은 llm_calls를 더하거나
+뿌리의 cost_usd만 더한다 — 두 층의 cost_usd를 함께 더하면 두 번 센다.
+
+async with agent_run(connect, trigger="lms_sync", user_id=user.id) as run:   # 뿌리(흐름)
+    async with run.tool("extract_announcement", {...}) as call:               # 부모에 남는 한 줄
+        async with run.child() as child:                                      # 자식(엔진)
+            result = await agent.run(notice, child)                           # 도구·모델 기록은 자식에
+        call.output = {"extraction_run_id": child.id}
 """
 
 import time
@@ -36,6 +48,13 @@ from app.schemas.me import PROFILE_FIELDS
 # autocommit 연결을 주는 공급자. 풀이면 pool.connection, 풀이 없으면 using(conn)이다
 LogConnect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 
+# 자식 실행 행. 부모 행에서 trigger_type·scenario_code를 받고(scenario를 주면 그 값), 뿌리는 부모의 뿌리다
+# (부모가 뿌리면 부모 자신). 부모 행이 없으면 아무 행도 만들지 않는다
+_CHILD = (
+    "insert into agent_runs (user_id, trigger_type, scenario_code, parent_run_id, root_run_id)"
+    " select %(user)s, p.trigger_type, coalesce(%(scenario)s, p.scenario_code), p.id,"
+    " coalesce(p.root_run_id, p.id) from agent_runs p where p.id = %(parent)s returning id"
+)
 SECRET_HINTS = ("token", "secret", "password", "authorization", "api_key")
 # 프로필 값은 LLM에도 로그에도 넣지 않는다(PRD 6장). 실수로 들어와도 여기서 지운다
 PROFILE_KEYS = frozenset(PROFILE_FIELDS)
@@ -150,6 +169,39 @@ class AgentRun:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         self.cost_usd += cost
+
+    @asynccontextmanager
+    async def child(
+        self, *, user_id: str | None = None, scenario_code: str | None = None
+    ) -> AsyncIterator["AgentRun"]:
+        """이 실행 아래에 자식 실행 하나를 연다(엔진 한 번 — 실행 트리, 명세 v1 3.6).
+
+        user_id는 기본으로 비운다. 지금 자식은 모두 결과를 여러 학생이 보는 요건 추출이라 누가 불렀는지
+        자식에 남기지 않는다 — 부모(학생의 실행)에만 남는다(명세 v1 6장 5번). scenario_code를 주면 부모의 값
+        대신 그것을 붙인다(시험이 자기 실행을 찾는 표시).
+
+        블록 안의 도구·모델 기록은 자식에 남는다. 끝나면 성공이든 실패든 자식의 토큰·비용을 부모에 더한다.
+        블록이 터지면 자식을 실패로 닫고 그 예외를 그대로 올린다(부모를 닫는 것은 부모를 연 쪽이다).
+        """
+        started = time.perf_counter()
+        async with self.connect() as conn:
+            cursor = await conn.execute(
+                _CHILD, {"user": user_id, "scenario": scenario_code, "parent": self.id}
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError(f"자식 실행을 열 부모 실행이 없어요: {self.id}")
+        child = AgentRun(connect=self.connect, id=str(row["id"]))
+        try:
+            yield child
+        except Exception as exc:
+            await _finish(child, started, "failed", error_text(exc))
+            raise
+        finally:
+            self.input_tokens += child.input_tokens
+            self.output_tokens += child.output_tokens
+            self.cost_usd += child.cost_usd
+        await _finish(child, started, "succeeded", None)
 
 
 async def start_run(

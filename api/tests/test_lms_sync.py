@@ -74,7 +74,7 @@ from app.schemas.lms import (
     SyncCounts,
 )
 from tests.conftest import USER_ID, make_token
-from tests.fakes import FakeLogConnection
+from tests.fakes import CHILD_RUN_ID, FakeLogConnection
 from tests.llm_fakes import ScriptedLlm
 from tests.llm_fakes import call as model_call
 from tests.lms_samples import (
@@ -519,6 +519,7 @@ class FakeAnnouncements:
         run_id: str | None,
     ) -> str | None:
         self.extractions.append(extraction)
+        self.run_ids.append(run_id)
         if announcement.id in self.linked:
             return None  # 다른 수강생의 동기화가 먼저 만들었다
         self.linked.add(announcement.id)
@@ -528,6 +529,7 @@ class FakeAnnouncements:
 
     urls: list[str | None] = field(default_factory=list)
     extractions: list[Any] = field(default_factory=list)
+    run_ids: list[str | None] = field(default_factory=list)  # 공고에 붙인 요건 추출 실행
     schedule_tasks: list[tuple[str, int, str, Any]] = field(default_factory=list)
 
     async def add_schedule_task(
@@ -1995,6 +1997,66 @@ def test_an_opportunity_announcement_becomes_an_opportunity(
     extraction = announcements_repo.extractions[0]
     assert extraction.succeeded and len(extraction.requirements) == 1
     assert log.outputs()["save_lms_sync"]["announcement_opportunities"] == 1
+
+
+def test_the_extraction_of_an_opportunity_announcement_is_a_child_run(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    llm: ScriptedLlm,
+    log: FakeLogConnection,
+) -> None:
+    """요건 추출은 동기화 실행의 자식 실행이다(실행 트리 O1). 공고는 자식을 가리키고 동기화에는 한 줄만 남는다.
+
+    그래서 공고 상세의 처리 과정(F-42, `tool_calls where run_id = extraction_run_id`)에 과목 받기·공지 분류 같은
+    동기화 단계가 섞이지 않는다(10/28 계획 PR 7). 공고는 수강생 모두가 보므로 자식에 user_id를 남기지 않는다.
+    """
+    announcements_repo.pending_rows = [pending()]
+    llm.replies = [
+        classify_reply("opportunity", "연구 참여 학생을 모집한다", opportunity_category="research"),
+        submit_requirements(),
+    ]
+
+    client.post(SYNC)
+
+    assert log.children() == [{"user": None, "scenario": None, "parent": log.run_id}]
+    assert announcements_repo.run_ids == [CHILD_RUN_ID]
+    tools = {
+        params[2]: params[0]
+        for query, params in log.statements
+        if "insert into tool_calls" in query and isinstance(params, tuple)
+    }
+    assert tools["submit_requirements"] == CHILD_RUN_ID  # 추출 단계는 자식에
+    assert tools["classify_announcement"] == tools["extract_announcement"] == log.run_id
+    models = [
+        (params[0], params[3])
+        for query, params in log.statements
+        if "insert into llm_calls" in query and isinstance(params, tuple)
+    ]
+    assert models == [(log.run_id, CLASSIFY_MODEL), (CHILD_RUN_ID, EXTRACTION_MODEL)]
+    assert log.outputs()["extract_announcement"] == {
+        "extraction_run_id": CHILD_RUN_ID,
+        "opportunity_id": f"opportunity-{RESEARCH_TOPIC_ID}",
+        "requirements": 1,
+    }
+
+
+def test_a_failed_extraction_closes_its_child_run_as_failed(
+    client: TestClient, announcements_repo: FakeAnnouncements, log: FakeLogConnection
+) -> None:
+    """추출이 터지면 자식 실행을 실패로 닫고, 동기화는 성공한 채 그 공지를 늦춘다(임대 PR)."""
+    announcements_repo.pending_rows = [pending(category="opportunity")]  # 추출 답이 없다
+
+    response = client.post(SYNC)
+
+    assert response.status_code == 202
+    closed = [
+        params
+        for query, params in log.statements
+        if query.startswith("update agent_runs set status") and params[-1] == CHILD_RUN_ID
+    ]
+    assert [row[0] for row in closed] == ["failed"]
+    assert announcements_repo.created == []
+    assert announcements_repo.retried == [(f"n-{RESEARCH_TOPIC_ID}", NOW)]
 
 
 def test_the_classify_call_uses_the_cheap_model_and_the_announcement_text(

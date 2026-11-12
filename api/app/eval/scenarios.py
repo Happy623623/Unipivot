@@ -1348,6 +1348,13 @@ async def s23(world: EvalWorld) -> None:
     )
     await world.check("원문 확인 필요 아님", expected=False, actual=detail["needs_review"])
     await world.judged("상세 판정", expected="eligible", actual=detail["eligibility"]["status"])
+    # 처리 과정(F-42)은 요건 추출 실행의 단계만이다. 그 실행은 동기화 실행의 자식이라(실행 트리 O1)
+    # 과목·과제 받기나 공지 분류 같은 동기화 단계가 섞이지 않는다
+    await world.check(
+        "처리 과정은 요건 추출 단계만",
+        expected=["지원 자격 정리"],
+        actual=[step["label"] for step in detail["process"]["extraction"]],
+    )
 
     # 다시 동기화해도 공고는 하나다(모델을 다시 부르지 않는다)
     world.travel(minutes=6)

@@ -298,6 +298,9 @@ class FakeMetricsRepository:
         )
 
 
+CHILD_RUN_ID = "00000000-0000-4000-8000-0000000000a3"  # FakeLogConnection이 자식 실행에 주는 번호
+
+
 class FakeLogCursor:
     """agent_log가 쓰는 커서 흉내. `returning id`면 행을 하나 준다."""
 
@@ -324,9 +327,19 @@ class FakeLogConnection:
         self.statements.append((query, params))
         if "returning id" not in query:
             return FakeLogCursor(None)
+        if "parent_run_id" in query:  # 자식 실행(run.child, 실행 트리 O1)
+            return FakeLogCursor({"id": CHILD_RUN_ID})
         if "agent_runs" in query:
             return FakeLogCursor({"id": self.run_id})
         return FakeLogCursor({"id": "00000000-0000-4000-8000-0000000000a2"})
+
+    def children(self) -> list[dict[str, Any]]:
+        """연 자식 실행의 값(부모 id·user_id·scenario_code). 연 순서대로."""
+        return [
+            params
+            for query, params in self.statements
+            if "parent_run_id" in query and isinstance(params, dict)
+        ]
 
     def wrote(self, needle: str) -> bool:
         return any(needle in query for query, _ in self.statements)

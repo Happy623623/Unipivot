@@ -2,9 +2,10 @@
 
 202와 run_id를 먼저 주고 뒤에서 돈다(포스터 추출과 같은 방식). 학생의 실행(trigger notice_link)에는 단계가
 셋 남는다: 공지 페이지 읽기 → 첨부 파일 받기 → AI로 지원 자격 정리. 요건 추출은 A안 가져오기와 같은 함수
-(import_content)가 **따로 실행(batch_crawl, 사용자 없음)**으로 돌린다. 공고는 모든 학생이 보는 학교 공지라 누가
-가져왔는지와 잇지 않는다 — 공고 상세의 처리 과정도 그 실행을 보여 준다. 누가 어느 공지를 붙였는지는 학생의
-실행에만 남는다(하루 한도를 세고 오류를 찾는 데 쓴다).
+(import_content)가 마지막 단계 안에서 **학생 실행의 자식 실행**(trigger notice_link, 사용자 없음)으로 돌린다(실행
+트리 O1). 공고는 모든 학생이 보는 학교 공지라 공고에서는 누가 가져왔는지와 잇지 않는다 — 공고 상세의 처리
+과정은 그 자식 실행만 보여 주고, 자식에서 부모로 거슬러 올라가지 않는다. 누가 어느 공지를 붙였는지는 학생의
+실행에만 남는다(하루 한도를 세고 오류를 찾는 데 쓴다). 자식의 비용은 학생의 실행에 더해진다.
 
 - 같은 공지는 한 번만 읽는다: 이미 가져온 공지면 학교 서버에 묻지 않는다(라우터가 먼저 본다). 여러 학생이 같은
   공지를 붙이면 한 실행씩 읽고(LinkDesk.reading), 뒤의 실행은 읽기 전에 다시 봐서 앞 실행이 넣은 공고를 준다
@@ -299,7 +300,7 @@ class NoticeLinkService:
 
     async def _store(self, run: AgentRun, page: NoticePage, notice: LinkedNotice) -> None:
         async with run.tool(IMPORT_TOOL, {"entry_id": page.entry_id}) as call:
-            result = await self._import(notice)
+            result = await self._import(run, notice)
             # 서울은 위에서 막았고 캠퍼스 표시 없음·못 받은 첨부는 OPTIONS로 받는다. 여기 오면 고칠 곳이 있다
             if result.opportunity_id is None:
                 raise RuntimeError(f"공지를 넣지 못했어요: {result.status} {result.message}")
@@ -308,7 +309,7 @@ class NoticeLinkService:
                 "extraction_run_id": result.run_id,
             }
 
-    async def _import(self, notice: LinkedNotice) -> ImportResult:
+    async def _import(self, run: AgentRun, notice: LinkedNotice) -> ImportResult:
         assert self.llm is not None
         async with self.transaction() as conn:
             departments = await load_departments(conn)
@@ -326,7 +327,13 @@ class NoticeLinkService:
         )
         try:
             result = await import_content(
-                self.transaction, self.log_connection, source_id, notice, agent, self.options
+                self.transaction,
+                self.log_connection,
+                source_id,
+                notice,
+                agent,
+                self.options,
+                parent=run,
             )
         except (TimeoutError, httpx.TimeoutException) as exc:
             # 기다린 시간(MODEL_SECONDS)을 넘었거나 모델 서버가 답하지 않았다(google-genai는 httpx 오류를 낸다)

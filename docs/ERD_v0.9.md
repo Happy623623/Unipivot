@@ -516,6 +516,8 @@ erDiagram
         int output_tokens
         numeric cost_usd
         text error_message
+        uuid parent_run_id FK "실행 트리: 부모, 뿌리는 null"
+        uuid root_run_id FK "실행 트리: 뿌리, 뿌리 자신은 null"
     }
     tool_calls {
         uuid id PK
@@ -642,7 +644,7 @@ erDiagram
 - opportunities: 학교 공지는 external_id가 게시판 글 번호(entryId), original_url이 고유 주소(https://www.hanyang.ac.kr/notice/url/…), raw_text가 게시판 정보 몇 줄 + 본문 글자(모델이 본 그대로)다. category는 공지분류로 정한다
 - opportunity_attachments: 학교 공지는 source_url이 학교 다운로드 주소다. 본문 이미지도 첨부 행으로 두고(source_url 없음) 첨부 번호를 이어서 쓴다. storage_path는 비운다(파일을 복제하지 않는다). 가져오지 못한 첨부는 extract_error를 남긴다
 - status: 학교 공지의 hidden은 가져오기가 쓴다(서울캠퍼스로 바뀌면 숨기고 돌아오면 푼다). expired는 내용이 바뀌었고 마감이 지나지 않았을 때 가져오기가 푼다
-- B안(학생이 붙인 공지 링크): 같은 출처 행·같은 규칙으로 넣는다(같은 글 번호면 같은 공고). 요건 추출 실행은 A안처럼 user_id가 없는 batch_crawl이고 opportunities.extraction_run_id가 그 실행이다. 붙인 학생의 실행은 따로 agent_runs(trigger_type notice_link, user_id = 그 학생)에 남는다 — tool_calls는 fetch_notice_page(입력: 글 번호·읽은 주소) → fetch_notice_files → import_notice(출력: opportunity_id·status·title)다. `GET /runs/{id}`의 결과와 하루 한도(사용자당 KST 하루 10건)를 이 실행으로 센다. 탈퇴하면 이 실행의 user_id는 null이 되고 공고는 남는다(모든 학생이 보는 학교 공지)
+- B안(학생이 붙인 공지 링크): 같은 출처 행·같은 규칙으로 넣는다(같은 글 번호면 같은 공고). 요건 추출 실행은 붙인 학생 실행(notice_link)의 자식 실행이다 — trigger_type은 부모와 같은 notice_link, user_id는 비우고(누가 붙였는지는 부모에만 남는다) opportunities.extraction_run_id가 그 자식이다(실행 트리, 11/17). 붙인 학생의 실행은 따로 agent_runs(trigger_type notice_link, user_id = 그 학생)에 남는다 — tool_calls는 fetch_notice_page(입력: 글 번호·읽은 주소) → fetch_notice_files → import_notice(출력: opportunity_id·status·title)다. `GET /runs/{id}`의 결과와 하루 한도(사용자당 KST 하루 10건)를 이 실행으로 센다. 탈퇴하면 이 실행의 user_id는 null이 되고 공고는 남는다(모든 학생이 보는 학교 공지)
 
 ### 청년정책 (온통청년)
 
@@ -679,7 +681,7 @@ erDiagram
 - **LMS 과제 할 일(F-51·F-43)**: `planner_tasks`에는 **마감이 있는 미제출 과제**만 넣는다(`due_date`가 not null이고, 연결 첫 동기화에 들어오는 지난 과제로 할 일을 만들지 않는다). 마감이 바뀌면 아직 끝내지 않은 할 일의 날짜만 고치고, 마감이 없다가 생긴 과제는 그때 할 일을 만든다. 값에서 값으로 바뀐 마감은 할 일을 새로 만들지 않는다 — 학생이 지운 할 일을 되살리지 않으려는 것이다. 제출하면 할 일을 완료로 바꾸고 아직 보내지 않은 알림(`notifications.status = pending`)을 지운다.
 - **새 자료 감지**: 동기화 때 `canvas_item_id`가 처음 보이면 `lms_module_items`에 넣고, 그 과목 수강생에게 `new_material` 알림을 만든다(**연결을 끊은 사람과 수강을 뺀 과목은 뺀다** — 해제하면 동기화를 멈춘다). 그 과목의 첫 수집에는 만들지 않는다. 같은 제목의 항목이 여러 개인 과목이 있어서(영상·슬라이드 추정) 비교 기준은 제목이 아니라 ID다
 - **제출 연동**: `submission_state`가 submitted·graded로 바뀌면 연결된 `planner_tasks.is_done = true`로 바꾸고, 아직 안 보낸 마감 임박 알림을 취소한다
-- **공지 → 공고**: 기회성 공지는 `opportunities`에 `source_type = 'lms_announcement'`, `visible_canvas_course_id = 과목 ID`로 넣는다. 이 공고는 해당 과목 수강생에게만 보이고, 배치 판정도 수강생에게만 돌린다
+- **공지 → 공고**: 기회성 공지는 `opportunities`에 `source_type = 'lms_announcement'`, `visible_canvas_course_id = 과목 ID`로 넣는다. 이 공고는 해당 과목 수강생에게만 보이고, 배치 판정도 수강생에게만 돌린다. 요건 추출은 동기화 실행의 자식 실행이고(user_id 없음) 공고의 `extraction_run_id`가 그 자식이다 — 처리 과정(F-42)에 동기화 단계가 섞이지 않는다(11/17)
 - **LMS 응답 규칙(10/16 녹화)**: `lms_assignments.due_at`은 Canvas `due_at ?? lock_at`이다(녹화 17건 중 5건이 `due_at` null). `submission_state`는 Canvas `submission.workflow_state`를 그대로 쓰고(`unsubmitted`·`submitted`·`graded` 관측, `pending_review`는 아직 못 봤지만 제출로 센다), 과목 전체 기준인 `has_submitted_submissions`는 쓰지 않는다. `lms_module_items.canvas_item_id`가 유일 키다 — 한 모듈에 제목이 같은 항목이 둘씩 있다(87건 중 15쌍). `item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`가 관측됐고 `File`은 0건이다. `module_name`은 `1주차`·`Week 3 : …` 꼴이 섞이고 Canvas `position`은 연속이 아니라 저장하지 않는다. `lms_courses.term`은 과목명에서 만든 `2026-2`이고, 과목명 꼴이 다르면 LearningX가 준 학기 이름(`2026년 2학기`)을 넣는다
 - **강의계획서**: LMS 계획서는 포털 iframe이고 포털은 robots.txt로 자동 접근을 막아서 서버가 수집하지 않는다. 과목명 `202620HY23525_선형대수`를 파싱해 `portal_year = 2026`, `portal_term = 20`, `portal_course_no = '23525'`를 저장하고, 이 값으로 사용자 브라우저에서 열 포털 계획서 링크를 만든다. 사용자가 PDF로 저장해 올리면 `syllabi.lms_course_id`로 과목에 연결한다 (과목당 1개)
 - **강의자료 저작권**: 공지 첨부를 자동 수집할 때도 사용자별로 `files`에 따로 저장한다(`origin = 'lms_attachment'`, `external_ref = Canvas 첨부 ID`). 같은 첨부를 두 번 받지 않도록 `(user_id, external_ref)` 유니크를 건다
@@ -712,6 +714,7 @@ erDiagram
 - 강의자료 요약·번역은 `files.sha256`으로 **본인 파일끼리만** 재사용한다. 다른 사용자의 결과는 저작권 문제로 재사용하지 않는다
 - 강의자료 분량 상한은 쪽수가 아니라 `materials.text_tokens`(추출 텍스트 토큰)로 판정한다. 요약은 구간별로 쪼개 전체를 처리하고, 번역은 `material_sections` 단위로 사용자가 요청한 구간만 한다. `over_limit`과 `translation_requested_at`은 유료화 수요를 보여주는 근거 데이터다
 - `agent_runs`에 토큰·비용 합계를 두고 `llm_calls`에 호출별 상세를 둔다. 지표 집계는 `agent_runs`만 보면 된다
+- **실행 트리(11/17)**: 흐름 하나가 뿌리 실행이고, 그 안에서 엔진을 한 번 부르는 일(지금은 요건 추출 — LMS 기회성 공지, 학교 공지 링크)이 자식 실행이다(`parent_run_id`·`root_run_id`, 뿌리는 둘 다 null). 자식은 부모의 trigger_type·scenario_code를 받고 user_id는 비운다. 자식의 토큰·비용은 끝날 때 부모에 더해져 뿌리의 cost_usd가 흐름 전체 비용이다 — 성공률·응답시간은 뿌리(`parent_run_id is null`)만 세고, 비용은 `llm_calls`를 더한다(두 층의 cost_usd를 함께 더하면 두 번 센다)
 - 요건 추출 제출(submit_requirements)의 output은 {accepted, problems}이고, 읽기·토큰 상한에 닿아 코드가 시킨 제출이면 forced: true가 더해진다.
 
 ### 알림함 · 설정 · 조회 기록
@@ -821,6 +824,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 13 | `supabase/migrations/20261019120000_lms_announcement_attachments.sql` | lms_announcements.attachments(첨부 목록 jsonb, 주소 없음, F-54) |
 | 14 | `supabase/migrations/20261104000000_notice_link_trigger.sql` | agent_runs.trigger_type 제약에 notice_link(학교 공지 링크, B안) 추가. 여러 번 돌려도 같다 |
 | 15 | `supabase/migrations/20261114000000_lms_announcement_lease.sql` | lms_announcements.retry_at·attempts(과목 공지 큐 임대, 실패하면 늦추고 5번이면 뺌). 여러 번 돌려도 같다 |
+| 16 | `supabase/migrations/20261117000000_agent_run_tree.sql` | agent_runs.parent_run_id·root_run_id(실행 트리, 부분 인덱스 둘). 여러 번 돌려도 같다 |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -907,6 +911,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-17): agent_runs.parent_run_id·root_run_id — 실행 트리(O1). LMS 기회성 공지·학교 공지 링크의 요건 추출이 자식 실행이 되고, 시나리오 지표는 뿌리만 센다
 - v0.9 보강 (2026-11-14): lms_announcements.retry_at·attempts — 과목 공지 큐 임대(집을 때 2시간, 실패하면 30분×2^(시도−1)로 늦추고 5번이면 줄에서 뺀다)
 - v0.9 보강 (2026-11-06): 알림 예약 앞에서 낡은 판정을 다시 계산(F-33), 하루 한도를 넘은 정보 필요 알림은 다음 날 09:00으로 미룸, 스키마 변경 없음
 - v0.9 보강 (2026-11-04): agent_runs.trigger_type에 notice_link(학교 공지 링크, B안), 학교 공지 절에 B안
