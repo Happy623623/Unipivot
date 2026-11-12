@@ -4,7 +4,7 @@
 트랜잭션을 되돌려 지운다. DATABASE_URL이 있을 때만 돈다.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -2315,7 +2315,7 @@ async def test_it_saves_an_announcement_once_and_updates_the_text(world: dict[st
     assert [(row["title"], row["canvas_topic_id"]) for row in rows] == [("휴강(고침)", 1)]
 
 
-async def test_pending_takes_recent_unclassified_announcements_of_my_courses(
+async def test_claim_takes_recent_unclassified_announcements_of_my_courses(
     world: dict[str, Any],
 ) -> None:
     repo, now, conn = world["announcements"], world["now"], world["conn"]
@@ -2337,8 +2337,8 @@ async def test_pending_takes_recent_unclassified_announcements_of_my_courses(
     )
     await repo.save(DATABASE["id"], [_announcement(6, title="또 최근", posted_at=now)], now=now)
 
-    found = await repo.pending(
-        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    found = await repo.claim(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), now=now, limit=5
     )
 
     assert [one.title for one in found] == [
@@ -2346,7 +2346,7 @@ async def test_pending_takes_recent_unclassified_announcements_of_my_courses(
     ]  # 분류한 것·오래된 것·예약·분반·남의 과목은 빠진다
 
 
-async def test_pending_retries_an_opportunity_without_an_opportunity_first(
+async def test_claim_takes_an_opportunity_without_an_opportunity_first(
     world: dict[str, Any],
 ) -> None:
     repo, now, conn = world["announcements"], world["now"], world["conn"]
@@ -2362,17 +2362,18 @@ async def test_pending_retries_an_opportunity_without_an_opportunity_first(
         "update lms_announcements set category = 'opportunity' where canvas_topic_id = 2"
     )
 
-    found = await repo.pending(
-        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    first = await repo.claim(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), now=now, limit=1
+    )
+    rest = await repo.claim(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), now=now, limit=5
     )
 
-    # 분류가 끝난 공지를 먼저 집는다(모델을 다시 부르지 않는다). 게시일이 오래돼도 다시 집는다
-    assert [one.title for one in found] == ["공고를 못 만든 기회성", "분류 전"]
-    assert [one.classified for one in found] == [True, False]
-    one_only = await repo.pending(
-        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=1
-    )
-    assert len(one_only) == 1
+    # 분류가 끝난 공지를 먼저 집는다(모델을 다시 부르지 않는다). 게시일이 오래돼도 다시 집는다.
+    # 먼저 집은 공지는 임대 중이라 두 번째에는 남은 것만 나온다
+    assert [one.title for one in first] == ["공고를 못 만든 기회성"]
+    assert [one.classified for one in first] == [True]
+    assert [one.title for one in rest] == ["분류 전"]
 
 
 async def test_a_classification_does_not_overwrite_an_earlier_one(world: dict[str, Any]) -> None:
@@ -2380,13 +2381,14 @@ async def test_a_classification_does_not_overwrite_an_earlier_one(world: dict[st
     saved = await repo.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
     run_id = await _run_id(world)
 
-    await repo.save_classification(
+    first = await repo.save_classification(
         saved[0].id, category="schedule_change", summary="휴강한다", run_id=run_id
     )
-    await repo.save_classification(
+    late = await repo.save_classification(
         saved[0].id, category="opportunity", summary="모집한다", run_id=run_id
     )
 
+    assert (first, late) == (True, False)  # 늦은 쪽은 자기 답으로 다음 일을 하지 않게 안다
     row = await (
         await conn.execute(
             "select category::text as category, summary, classified_run_id::text as run"
@@ -2414,8 +2416,8 @@ async def test_an_opportunity_announcement_becomes_a_course_only_opportunity(
         now=now,
     )
     run_id = await _run_id(world)
-    found = await repo.pending(
-        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    found = await repo.claim(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), now=now, limit=5
     )
 
     opportunity_id = await repo.create_opportunity(
@@ -2454,8 +2456,8 @@ async def test_a_failed_extraction_leaves_the_opportunity_out_of_judging(
 ) -> None:
     repo, now, conn = world["announcements"], world["now"], world["conn"]
     await repo.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
-    found = await repo.pending(
-        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    found = await repo.claim(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), now=now, limit=5
     )
 
     opportunity_id = await repo.create_opportunity(
@@ -2479,8 +2481,8 @@ async def test_a_failed_extraction_leaves_the_opportunity_out_of_judging(
 async def test_a_second_create_makes_no_second_opportunity(world: dict[str, Any]) -> None:
     repo, now = world["announcements"], world["now"]
     await repo.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
-    found = await repo.pending(
-        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    found = await repo.claim(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), now=now, limit=5
     )
     run_id = await _run_id(world)
     first = await repo.create_opportunity(
@@ -2492,6 +2494,122 @@ async def test_a_second_create_makes_no_second_opportunity(world: dict[str, Any]
     )
 
     assert first is not None and again is None
+
+
+# ── 과목 공지 큐 임대 (2단계 4장 1·2번) ─────────────────────────────────────
+
+
+def _claim(repo: AnnouncementRepository, now: datetime, limit: int = 5) -> Any:
+    return repo.claim(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), now=now, limit=limit
+    )
+
+
+async def _lease(conn: Any, topic_id: int) -> tuple[int, Any]:
+    row = await (
+        await conn.execute(
+            "select attempts, retry_at from lms_announcements where canvas_topic_id = %s",
+            (topic_id,),
+        )
+    ).fetchone()
+    return row["attempts"], row["retry_at"]
+
+
+async def test_a_claimed_announcement_waits_for_the_lease_to_end(world: dict[str, Any]) -> None:
+    """집은 공지는 2시간 동안 다른 동기화가 못 집는다. 처리하다 서버가 꺼져도 그 뒤에 다시 집히고, 횟수가 오른다."""
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+    await repo.save(DATABASE["id"], [_announcement(1, title="휴강", posted_at=now)], now=now)
+
+    first = await _claim(repo, now)
+    assert [one.title for one in first] == ["휴강"]
+    assert await _lease(conn, 1) == (1, now + timedelta(hours=2))
+
+    assert await _claim(repo, now + timedelta(hours=1, minutes=59)) == []
+    again = await _claim(repo, now + timedelta(hours=2))
+    assert [one.title for one in again] == ["휴강"]
+    assert (await _lease(conn, 1))[0] == 2
+
+
+async def test_a_failed_announcement_waits_longer_each_time_and_leaves_after_five(
+    world: dict[str, Any],
+) -> None:
+    """실패하면 30분·1시간·2시간·4시간 뒤에 다시 집히고, 다섯 번 집혔으면 더는 집히지 않는다."""
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+    saved = await repo.save(DATABASE["id"], [_announcement(1, posted_at=now)], now=now)
+    at = now
+    waits = []
+    for _ in range(5):
+        assert len(await _claim(repo, at)) == 1
+        attempts = await repo.retry_later(saved[0].id, now=at)
+        _, retry_at = await _lease(conn, 1)
+        waits.append(retry_at - at)
+        assert await _claim(repo, retry_at - timedelta(seconds=1)) == []  # 그 전에는 안 나온다
+        at = retry_at
+
+    assert waits == [timedelta(minutes=minutes) for minutes in (30, 60, 120, 240, 480)]
+    assert attempts == 5
+    assert await _claim(repo, at + timedelta(days=1)) == []  # 다섯 번이면 줄에서 빠진다
+
+
+async def test_new_announcements_are_claimed_while_failed_ones_wait(
+    world: dict[str, Any],
+) -> None:
+    """늦춘 재시도 공지가 다섯 개여도 새 공지가 자리를 얻는다(main에서는 재시도 다섯이 늘 앞자리를 차지했다)."""
+    repo, now, conn = world["announcements"], world["now"], world["conn"]
+    stuck = [_announcement(topic, posted_at=now - timedelta(days=1)) for topic in range(1, 6)]
+    saved = await repo.save(DATABASE["id"], stuck, now=now)
+    await conn.execute(
+        "update lms_announcements set category = 'opportunity' where canvas_topic_id = any(%s)",
+        (list(range(1, 6)),),
+    )
+    assert len(await _claim(repo, now)) == 5  # 다섯 모두 추출에 실패했다고 치자
+    for one in saved:
+        await repo.retry_later(one.id, now=now)
+    await repo.save(DATABASE["id"], [_announcement(6, title="새 공지", posted_at=now)], now=now)
+
+    found = await _claim(repo, now + timedelta(minutes=5))
+
+    assert [one.title for one in found] == ["새 공지"]
+
+
+async def test_the_retry_wait_of_a_vanished_announcement_is_zero(world: dict[str, Any]) -> None:
+    repo, now = world["announcements"], world["now"]
+    assert await repo.retry_later(str(uuid4()), now=now) == 0
+
+
+async def test_two_syncs_claiming_at_once_get_different_announcements() -> None:
+    """두 동기화가 같은 순간 집어도 겹치지 않는다(2단계 4장 2번). 앞쪽이 확정하기 전에도(skip locked) 뒤에도(임대)."""
+    topics = [990_001, 990_002, 990_003]
+    setup = await connect(autocommit=True)
+    early, late = await connect(), await connect()
+    try:
+        now = (await (await setup.execute("select now() as now")).fetchone())["now"]
+        await AnnouncementRepository(setup).save(
+            DATABASE["id"],
+            [
+                _announcement(topic, posted_at=now - timedelta(minutes=topic % 10))
+                for topic in topics
+            ],
+            now=now,
+        )
+        first = await _claim(AnnouncementRepository(early), now, limit=2)  # 아직 확정 전
+        second = await _claim(AnnouncementRepository(late), now)
+        await early.commit()
+        await late.commit()
+        third = await _claim(AnnouncementRepository(late), now)
+        await late.commit()
+
+        assert [one.canvas_topic_id for one in first] == [990_001, 990_002]
+        assert [one.canvas_topic_id for one in second] == [990_003]
+        assert third == []
+    finally:
+        for conn in (early, late):
+            await conn.rollback()
+            await conn.close()
+        await setup.execute(
+            "delete from lms_announcements where canvas_topic_id = any(%s)", (topics,)
+        )
+        await setup.close()
 
 
 async def test_the_feed_shows_announcements_and_hides_section_specific_ones(
@@ -2513,8 +2631,8 @@ async def test_the_feed_shows_announcements_and_hides_section_specific_ones(
     await notices.save_classification(
         saved[0].id, category="opportunity", summary="모집한다", run_id=run_id
     )
-    found = await notices.pending(
-        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), limit=5
+    found = await notices.claim(
+        courses=[DATABASE["id"]], recent_from=now - timedelta(days=30), now=now, limit=5
     )
     opportunity_id = await notices.create_opportunity(
         found[0], category="research", original_url=None, extraction=_extraction(), run_id=run_id

@@ -262,6 +262,8 @@ erDiagram
         enum category "schedule_change, material, opportunity, general"
         uuid opportunity_id FK "기회성 공지면 연결"
         uuid classified_run_id FK
+        timestamptz retry_at "큐: 다시 집을 시각(임대·늦춤)"
+        smallint attempts "큐: 집힌 횟수, 5면 빠짐"
     }
     lms_courses ||--o{ lms_assignments : "has"
     lms_courses }o--o{ lms_module_items : "canvas_course_id"
@@ -706,6 +708,7 @@ erDiagram
 ### 캐싱과 비용
 
 - 공고 요건 추출은 공고당 1회, 과목 공지 분류는 공지당 1회
+- 과목 공지 큐는 집을 때 임대한다(`retry_at` = 집은 시각 + 2시간, `attempts` + 1). 분류·공고 만들기가 실패하면 `retry_at`을 30분 × 2^(attempts − 1) 뒤로 늦추고, `attempts`가 5면 줄에서 뺀다. 늘 실패하는 공지가 큐 앞자리를 차지하거나 두 동기화가 같은 공지를 함께 분류·추출하지 않게 한다(11/14). 공지는 과목 공통이라 횟수만 세지 않고 시각으로 늦춘다 — 일시 장애 몇 분 사이에 수강생 몇 명의 동기화가 횟수를 다 써 버리지 않게
 - 강의자료 요약·번역은 `files.sha256`으로 **본인 파일끼리만** 재사용한다. 다른 사용자의 결과는 저작권 문제로 재사용하지 않는다
 - 강의자료 분량 상한은 쪽수가 아니라 `materials.text_tokens`(추출 텍스트 토큰)로 판정한다. 요약은 구간별로 쪼개 전체를 처리하고, 번역은 `material_sections` 단위로 사용자가 요청한 구간만 한다. `over_limit`과 `translation_requested_at`은 유료화 수요를 보여주는 근거 데이터다
 - `agent_runs`에 토큰·비용 합계를 두고 `llm_calls`에 호출별 상세를 둔다. 지표 집계는 `agent_runs`만 보면 된다
@@ -817,6 +820,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 12 | `supabase/migrations/20261017120000_annual_income_and_job_status.sql` | profiles.annual_income(만 원)·job_status, 소득 선택 동의 제약에 annual_income 추가, 요건 항목 2개 (F-21) |
 | 13 | `supabase/migrations/20261019120000_lms_announcement_attachments.sql` | lms_announcements.attachments(첨부 목록 jsonb, 주소 없음, F-54) |
 | 14 | `supabase/migrations/20261104000000_notice_link_trigger.sql` | agent_runs.trigger_type 제약에 notice_link(학교 공지 링크, B안) 추가. 여러 번 돌려도 같다 |
+| 15 | `supabase/migrations/20261114000000_lms_announcement_lease.sql` | lms_announcements.retry_at·attempts(과목 공지 큐 임대, 실패하면 늦추고 5번이면 뺌). 여러 번 돌려도 같다 |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -903,6 +907,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-14): lms_announcements.retry_at·attempts — 과목 공지 큐 임대(집을 때 2시간, 실패하면 30분×2^(시도−1)로 늦추고 5번이면 줄에서 뺀다)
 - v0.9 보강 (2026-11-06): 알림 예약 앞에서 낡은 판정을 다시 계산(F-33), 하루 한도를 넘은 정보 필요 알림은 다음 날 09:00으로 미룸, 스키마 변경 없음
 - v0.9 보강 (2026-11-04): agent_runs.trigger_type에 notice_link(학교 공지 링크, B안), 학교 공지 절에 B안
 - v0.9 보강 (2026-10-19): lms_announcements.attachments(공지 첨부 목록, F-54). 7장 표에 빠져 있던 12번(F-21 연 소득·취업 상태)도 적었다
