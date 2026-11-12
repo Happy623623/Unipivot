@@ -183,6 +183,9 @@ async def _tag_children(
 
     치우기 전에 불러야 한다. 사용자를 지우면 agent_runs.user_id가 null이 되어 더는 찾을 수 없다.
     실패해도 올리지 않는다(치우기를 막지 않게). 그 실행의 비용은 0으로 보인다.
+
+    사용자의 실행 아래 자식 실행(실행 트리 O1 — 동기화 안의 요건 추출처럼 user_id가 없다)도 뿌리로 찾아 붙인다.
+    빠뜨리면 그 요건 추출 비용이 시나리오 비용에서 빠진다.
     """
     if not users:
         return []
@@ -190,9 +193,12 @@ async def _tag_children(
         rows = await (
             await conn.execute(
                 # 시나리오 실행 자신은 user_id가 없어 걸리지 않지만 분명히 해 둔다
-                "update agent_runs set scenario_code = %s where id <> %s and scenario_code is null"
-                " and user_id = any(%s::uuid[]) returning id::text as id",
-                (code, run_id, list(users)),
+                "update agent_runs set scenario_code = %(code)s"
+                " where id <> %(run)s and scenario_code is null"
+                " and (user_id = any(%(users)s::uuid[]) or root_run_id in"
+                " (select r.id from agent_runs r where r.user_id = any(%(users)s::uuid[])))"
+                " returning id::text as id",
+                {"code": code, "run": run_id, "users": list(users)},
             )
         ).fetchall()
     except Exception:
@@ -202,14 +208,18 @@ async def _tag_children(
 
 
 async def _usage(conn: psycopg.AsyncConnection, run_ids: Sequence[str]) -> tuple[Decimal, int]:
-    """시나리오 1회의 LLM 비용과 호출 수(실행 로그의 토큰 × 단가로 이미 계산된 값)."""
+    """시나리오 1회의 LLM 비용과 호출 수(실행 로그의 토큰 × 단가로 이미 계산된 값).
+
+    준 실행과 그 아래 자식 실행(실행 트리 O1, root_run_id)의 호출을 한 번씩 더한다.
+    """
     if not run_ids:
         return Decimal(0), 0
     row = await (
         await conn.execute(
-            "select coalesce(sum(cost_usd), 0) as cost, count(*) as calls from llm_calls"
-            " where run_id = any(%s::uuid[])",
-            (list(run_ids),),
+            "select coalesce(sum(l.cost_usd), 0) as cost, count(*) as calls from llm_calls l"
+            " join agent_runs r on r.id = l.run_id"
+            " where r.id = any(%(ids)s::uuid[]) or r.root_run_id = any(%(ids)s::uuid[])",
+            {"ids": list(run_ids)},
         )
     ).fetchone()
     assert row is not None

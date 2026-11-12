@@ -42,6 +42,11 @@ _EVAL = "eval"
 # KST 날짜로 바꿔 기간과 비교한다. 기간은 양 끝을 포함한다
 _IN_PERIOD = "(%s at time zone 'Asia/Seoul')::date between %%(from)s and %%(to)s"
 _RUN_PERIOD = _IN_PERIOD % "r.started_at"
+# 시나리오 실행은 뿌리만 센다(실행 트리 O1). 자식 실행은 부모의 trigger·scenario_code를 그대로 받아, 조건이
+# 없으면 같은 시나리오를 두 번 센다. 비용은 llm_calls를 scenario_code로 묶어 더하므로 자식도 한 번씩 들어간다
+_EVAL_ROOT = (
+    f"r.trigger_type = '{_EVAL}' and r.scenario_code is not null and r.parent_run_id is null"
+)
 
 
 def rate(numerator: int, denominator: int) -> Ratio:
@@ -80,7 +85,7 @@ class MetricsRepository:
             " count(*) filter (where r.status = 'succeeded') as passed,"
             " percentile_disc(0.5) within group (order by coalesce(r.latency_ms, 0)) as p50,"
             " percentile_disc(0.95) within group (order by coalesce(r.latency_ms, 0)) as p95"
-            f" from agent_runs r where r.trigger_type = '{_EVAL}' and r.scenario_code is not null"
+            f" from agent_runs r where {_EVAL_ROOT}"
             f" and {_RUN_PERIOD} group by 1 order by 1",
             window,
         )
@@ -98,7 +103,7 @@ class MetricsRepository:
             "select count(*) as runs, count(*) filter (where r.status = 'succeeded') as passed,"
             " percentile_disc(0.5) within group (order by coalesce(r.latency_ms, 0)) as p50,"
             " percentile_disc(0.95) within group (order by coalesce(r.latency_ms, 0)) as p95"
-            f" from agent_runs r where r.trigger_type = '{_EVAL}' and r.scenario_code is not null"
+            f" from agent_runs r where {_EVAL_ROOT}"
             f" and {_RUN_PERIOD}",
             window,
         )
@@ -136,7 +141,7 @@ class MetricsRepository:
         """
         latest = (
             "select distinct on (r.scenario_code) r.id, r.started_at from agent_runs r"
-            f" where r.trigger_type = '{_EVAL}' and r.scenario_code is not null and {_RUN_PERIOD}"
+            f" where {_EVAL_ROOT} and {_RUN_PERIOD}"
             " order by r.scenario_code, r.started_at desc"
         )
         rows = await self._rows(

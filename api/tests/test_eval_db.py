@@ -100,6 +100,39 @@ async def test_the_run_is_recorded_so_the_metrics_can_be_counted() -> None:
     assert steps == []  # 수집 실행에는 도구 기록이 없다 → 처리 과정이 비어 있다
 
 
+async def test_an_announcement_extraction_is_a_child_run_of_the_sync() -> None:
+    """S23: 기회성 공지의 요건 추출은 동기화 실행의 자식 실행이다(실행 트리 O1).
+
+    자식에는 사용자가 없지만 뿌리(학생의 동기화)로 찾아 시나리오 번호가 붙고, 그 모델 호출이 시나리오 비용에
+    들어간다(분류 둘 + 요건 추출 하나 = 세 번). 빠뜨리면 요건 추출 비용이 시나리오에서 사라진다.
+    """
+    s23 = next(one for one in SCENARIOS if one.code == "S23")
+    report = await run_scenarios(DATABASE_URL, [s23], now=DEFAULT_NOW)
+    (result,) = report.results
+    assert result.ok, result.error
+
+    found = await rows(
+        "select c.trigger_type, c.scenario_code, c.user_id, p.trigger_type as parent_trigger,"
+        " c.root_run_id = c.parent_run_id as under_root,"
+        " (select count(*) from llm_calls l where l.run_id = c.id) as calls"
+        " from agent_runs c join agent_runs p on p.id = c.parent_run_id"
+        " where c.id = any(%s::uuid[])",
+        result.child_run_ids,
+    )
+    assert [
+        (
+            row["trigger_type"],
+            row["parent_trigger"],
+            row["scenario_code"],
+            row["user_id"],
+            row["under_root"],
+            row["calls"],
+        )
+        for row in found
+    ] == [("lms_sync", "lms_sync", "S23", None, True, 1)]
+    assert result.llm_calls == 3
+
+
 async def test_a_failing_scenario_is_recorded_and_does_not_stop_the_rest() -> None:
     async def fails(world: EvalWorld) -> None:
         await world.user()

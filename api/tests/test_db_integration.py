@@ -12,7 +12,7 @@ import pytest
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from app.agent_log import abandon_run, agent_run, start_run, using
+from app.agent_log import AgentRun, abandon_run, agent_run, start_run, using
 from app.errors import ApiError
 from app.repositories.meta import MetaRepository
 from app.repositories.profiles import ProfileRepository
@@ -324,3 +324,93 @@ async def test_start_run_and_finish_share_no_connection() -> None:
         async with pool.connection() as conn:
             await conn.execute("delete from agent_runs where id = %s", (run_id,))
         await pool.close()
+
+
+async def test_child_runs_make_a_tree_and_roll_their_cost_up() -> None:
+    """실행 트리(O1): 자식은 부모의 trigger·시나리오 번호를 받고 부모·뿌리를 가리킨다. 손자의 뿌리도 맨 위다.
+
+    자식·손자의 토큰·비용은 끝날 때 위로 더해져 뿌리의 cost_usd가 흐름 전체 비용이 된다. llm_calls를 더하면
+    호출마다 한 번씩만 센다(실행 행의 cost_usd를 두 층에서 더하면 두 번 센다).
+    """
+    conn = await connect(autocommit=True)
+    ids: list[str] = []
+    try:
+        async with agent_run(using(conn), trigger="eval", scenario_code="TEST-TREE") as root:
+            ids.append(root.id)
+            async with root.child() as child:
+                ids.append(child.id)
+                await child.record_llm(
+                    provider="gemini",
+                    model="test-model",
+                    input_tokens=100,
+                    output_tokens=10,
+                    cost_usd=0.002,
+                    latency_ms=5,
+                )
+                async with child.child() as grandchild:
+                    ids.append(grandchild.id)
+                    await grandchild.record_llm(
+                        provider="gemini",
+                        model="test-model",
+                        input_tokens=50,
+                        output_tokens=5,
+                        cost_usd=0.001,
+                        latency_ms=5,
+                    )
+            with pytest.raises(ValueError):
+                async with root.child(scenario_code="TEST-TREE-OTHER") as failed:
+                    ids.append(failed.id)
+                    raise ValueError("모델 오류")
+
+        found = {
+            str(row["id"]): row
+            for row in await (
+                await conn.execute(
+                    "select id, trigger_type, scenario_code, user_id, status::text as status,"
+                    " parent_run_id::text as parent, root_run_id::text as root, input_tokens,"
+                    " cost_usd, error_message from agent_runs where id = any(%s::uuid[])",
+                    (ids,),
+                )
+            ).fetchall()
+        }
+        top, middle, bottom, failed = (found[one] for one in ids)
+        assert (top["parent"], top["root"]) == (None, None)
+        assert (middle["parent"], middle["root"]) == (ids[0], ids[0])
+        assert (bottom["parent"], bottom["root"]) == (ids[1], ids[0])
+        assert (failed["parent"], failed["root"]) == (ids[0], ids[0])
+        assert {row["trigger_type"] for row in found.values()} == {"eval"}
+        assert [row["scenario_code"] for row in (top, middle, bottom, failed)] == [
+            "TEST-TREE",
+            "TEST-TREE",
+            "TEST-TREE",
+            "TEST-TREE-OTHER",
+        ]
+        assert all(row["user_id"] is None for row in found.values())
+        assert [row["status"] for row in (top, middle, bottom, failed)] == [
+            "succeeded",
+            "succeeded",
+            "succeeded",
+            "failed",
+        ]
+        assert "모델 오류" in failed["error_message"]
+        # 비용·토큰은 아래에서 위로 더한다: 손자 0.001 → 자식 0.003 → 뿌리 0.003
+        assert [float(row["cost_usd"]) for row in (top, middle, bottom)] == pytest.approx(
+            [0.003, 0.003, 0.001]
+        )
+        assert [row["input_tokens"] for row in (top, middle, bottom)] == [150, 150, 50]
+        total = await (
+            await conn.execute(
+                "select sum(cost_usd) as cost from llm_calls where run_id = any(%s::uuid[])",
+                (ids,),
+            )
+        ).fetchone()
+        assert total is not None and float(total["cost"]) == pytest.approx(0.003)
+
+        # 부모 행이 없으면 자식을 만들지 않는다
+        lost = AgentRun(connect=using(conn), id=str(uuid.uuid4()))
+        with pytest.raises(RuntimeError):
+            async with lost.child():
+                pass
+    finally:
+        await conn.execute("delete from agent_runs where id = any(%s::uuid[])", (ids,))
+        await conn.close()

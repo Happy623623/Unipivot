@@ -284,7 +284,9 @@ async def rows(sql: str, *params: object) -> list[dict[str, Any]]:
 
 async def notice_row(entry: int) -> dict[str, Any] | None:
     found = await rows(
-        "select o.*, r.trigger_type as run_trigger, r.user_id as run_user from opportunities o"
+        "select o.*, r.trigger_type as run_trigger, r.user_id as run_user,"
+        " r.parent_run_id::text as run_parent, r.root_run_id::text as run_root,"
+        " r.cost_usd as run_cost from opportunities o"
         " left join agent_runs r on r.id = o.extraction_run_id"
         " where o.source_type = 'school_notice' and o.external_id = %s",
         str(entry),
@@ -337,15 +339,20 @@ async def test_a_linked_notice_becomes_a_school_notice_everyone_sees(settings: S
             "학생지원팀",
             permalink(entry),
         )
-        # 요건 추출은 사용자 없는 실행(batch_crawl)이다. 누가 붙였는지는 학생의 실행에만 있다
-        assert (row["run_trigger"], row["run_user"]) == ("batch_crawl", None)
+        # 요건 추출은 학생 실행의 자식 실행이다(실행 트리 O1). 자식에는 사용자가 없고 trigger는 부모와 같다.
+        # 누가 붙였는지는 학생의 실행(부모)에만 있다
+        assert (row["run_trigger"], row["run_user"]) == ("notice_link", None)
+        assert (row["run_parent"], row["run_root"]) == (body["run_id"], body["run_id"])
         (user_run,) = await rows(
-            "select r.user_id::text as user_id,"
+            "select r.user_id::text as user_id, r.cost_usd, r.parent_run_id,"
             " (select count(*) from llm_calls l where l.run_id = r.id) as llm"
             " from agent_runs r where r.id = %s",
             body["run_id"],
         )
         assert (user_run["user_id"], user_run["llm"]) == (world.user, 0)
+        assert user_run["parent_run_id"] is None  # 학생의 실행이 뿌리다
+        # 모델 호출은 자식에 남고, 그 비용은 끝날 때 부모(학생의 실행)에 더해진다
+        assert user_run["cost_usd"] == row["run_cost"] and row["run_cost"] > 0
         inputs = await rows(
             "select tool_name, input from tool_calls where run_id = %s order by seq", body["run_id"]
         )
@@ -732,10 +739,14 @@ async def test_a_notice_the_model_could_not_sort_is_not_kept(settings: Settings)
         assert [s["status"] for s in run["steps"]] == ["succeeded", "succeeded", "failed"]
         assert await notice_row(entry) is None
         extraction = await rows(
-            "select status from agent_runs where scenario_code = %s and trigger_type = 'batch_crawl'",
-            TAG,
+            "select status::text as status, trigger_type, scenario_code from agent_runs"
+            " where parent_run_id = %s",
+            started.json()["run_id"],
         )
-        assert len(extraction) == 1  # 요건 추출 실행 기록은 남는다(비용·원인을 본다)
+        # 요건 추출 실행 기록은 학생 실행의 자식으로 남는다(비용·원인을 본다)
+        assert [(one["trigger_type"], one["scenario_code"]) for one in extraction] == [
+            ("notice_link", TAG)
+        ]
 
 
 async def test_without_a_model_nothing_starts(settings: Settings) -> None:

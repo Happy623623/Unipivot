@@ -22,6 +22,8 @@ AssignmentState = Literal["open", "submitted", "all"]
 # 동기화 결과를 남기는 도구 이름. app/lms/sync.py가 쓰고 GET /runs/{id}가 읽는다
 SAVE_TOOL = "save_lms_sync"
 ATTACHMENT_TOOL = "save_lms_attachments"  # 공지 첨부를 학생 문서함에 받는 단계(F-54)
+# 기회성 공지 → 공고(F-53 1부). 이 한 줄 아래 요건 추출이 자식 실행으로 돈다(실행 트리 O1)
+EXTRACT_TOOL = "extract_announcement"
 
 
 class ConnectRequest(BaseModel):

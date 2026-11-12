@@ -7,7 +7,8 @@
    맞추고 끝낸다. 지난 추출이 실패해 판정에서 빠진 공고면 알려 준다(force로 다시 추출)
 3. 파일: 가져오지 못한 첨부·본문 이미지가 있으면 allow_missing일 때만 가져오고, 그 첨부는 extract_error를
    남겨 원문 확인 필요로 둔다
-4. 요건 추출: 에이전트를 돌린다(agent_runs.trigger_type = batch_crawl). model_timeout초를 넘으면 TimeoutError다
+4. 요건 추출: 에이전트를 돌린다(agent_runs.trigger_type = batch_crawl. B안은 학생 실행의 자식 실행, 실행 트리 O1).
+   model_timeout초를 넘으면 TimeoutError다
 5. 저장: 한 트랜잭션으로 공고 행을 넣거나 고치고, 첨부 행을 다시 만들고, 추출 결과를 저장한다
 LLM 호출 오류로 실행이 실패하면 공고에는 아무것도 쓰지 않는다. 다음에 가져올 때 다시 돈다. 요건을 정리하지
 못한 공고(판정 불가)는 넣고 알려 준다. keep_unjudged가 꺼져 있으면(B안) 넣지 않고 "error"다.
@@ -32,7 +33,7 @@ from typing import Any, Literal
 
 from psycopg import AsyncConnection
 
-from app.agent_log import LogConnect, agent_run
+from app.agent_log import AgentRun, LogConnect, agent_run
 from app.crawl.hanyang import BOARD_URL, SOURCE_NAME
 from app.crawl.saved import NoticeContent
 from app.extraction.agent import ExtractionAgent
@@ -118,8 +119,14 @@ async def import_content(
     content: NoticeContent,
     agent: ExtractionAgent,
     options: ImportOptions | None = None,
+    parent: AgentRun | None = None,
 ) -> ImportResult:
-    """import_notice와 같은 일을 짧은 연결 둘(확인, 저장)로 한다. 모델은 그 사이 연결 없이 부른다."""
+    """import_notice와 같은 일을 짧은 연결 둘(확인, 저장)로 한다. 모델은 그 사이 연결 없이 부른다.
+
+    parent를 주면(B안 — 학생의 notice_link 실행) 요건 추출을 그 실행의 **자식 실행**으로 돌린다(실행 트리 O1).
+    자식은 부모의 trigger(notice_link)를 받고 user_id는 비운다 — 공고는 모든 학생이 보는 학교 공지다.
+    주지 않으면(A안 명령) 전처럼 뿌리 실행(batch_crawl, 사용자 없음)이다.
+    """
     options = options or ImportOptions()
     page = content.page
     notice = content.notice_input()
@@ -160,10 +167,12 @@ async def import_content(
             f"가져오지 못한 파일: {names}. 고치고 다시 실행하거나, 없이 가져오려면 --allow-missing",
         )
 
-    async with (
-        agent_run(log_connect, trigger="batch_crawl", scenario_code=options.scenario) as run,
-        asyncio.timeout(options.model_timeout),
-    ):
+    extraction_run = (
+        agent_run(log_connect, trigger="batch_crawl", scenario_code=options.scenario)
+        if parent is None
+        else parent.child(scenario_code=options.scenario)
+    )
+    async with extraction_run as run, asyncio.timeout(options.model_timeout):
         extraction = await agent.run(notice, run)
     if not extraction.succeeded and not options.keep_unjudged:
         return ImportResult(

@@ -119,6 +119,45 @@ async def test_only_the_latest_run_of_each_scenario_is_in_the_matrix() -> None:
     assert again.accuracy == 1.0
 
 
+async def test_a_child_run_is_not_another_scenario_run() -> None:
+    """자식 실행(실행 트리 O1)은 부모의 trigger·시나리오 번호를 그대로 받는다. 실행 수·성공률·응답시간은 뿌리만
+    세고, 비용·호출 수는 두 실행의 모델 호출을 한 번씩 더한다(러너가 낸 값과 같다)."""
+    await clear_runs()
+
+    async def nested(world: EvalWorld) -> None:
+        await world.run.record_llm(
+            provider="gemini",
+            model="test-model",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            cost_usd=0.001,
+        )
+        async with world.run.child() as child:
+            await child.record_llm(
+                provider="gemini",
+                model="test-model",
+                input_tokens=1,
+                output_tokens=1,
+                latency_ms=1,
+                cost_usd=0.002,
+            )
+        # 판정 확인은 뿌리(시나리오 실행)에 남는다. 혼동행렬이 늦게 시작한 자식을 "최근 실행"으로 고르면 빈다
+        await world.judged("판정 한 줄", expected="eligible", actual="eligible")
+
+    try:
+        report = await run_scenarios(DATABASE_URL, [Scenario("S01", "자식 실행", "P0", nested)])
+        found = await aggregate()
+        assert (found.scenarios.runs, found.scenarios.passed) == (1, 1)
+        assert found.scenarios.llm_calls == report.llm_calls == 2
+        assert found.scenarios.cost_usd == float(report.cost_usd) == 0.003
+        (only,) = found.scenarios.by_scenario
+        assert (only.code, only.runs, only.llm_calls) == ("S01", 1, 2)
+        assert (found.eligibility.checks, found.eligibility.correct) == (1, 1)
+    finally:
+        await clear_runs()
+
+
 async def test_a_scenario_run_twice_keeps_a_measured_latency() -> None:
     """백분위수는 평균이 아니다. 같은 번호를 두 번 돌리면 실제로 잰 값 중 하나를 고른다."""
     await clear_runs()
