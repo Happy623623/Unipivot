@@ -51,7 +51,7 @@ from app.uploads.storage import StorageError, StorageMissing
 
 pytestmark = pytest.mark.anyio
 
-# PRD 8장 표에서 지금까지 만든 시나리오. S09·S10은 실제 HWP·PDF 파일이 먼저다.
+# PRD 8장 표에서 지금까지 만든 시나리오. P0(S01–S18)는 모두 있다.
 # S22·S23은 P1이지만 F-53과 함께 만들었다(기회성 공지 → 공고 → 판정)
 EXPECTED_CODES = (
     "S01",
@@ -62,6 +62,8 @@ EXPECTED_CODES = (
     "S06",
     "S07",
     "S08",
+    "S09",
+    "S10",
     "S11",
     "S12",
     "S13",
@@ -169,7 +171,7 @@ async def test_an_unknown_scenario_is_named(capsys: pytest.CaptureFixture[str]) 
 async def test_an_empty_scenario_list_is_not_everything(
     raw: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """--scenarios를 비워 적으면 전부 돌지 않는다(전부 돌면 DB에 열여섯 개를 만들고 지운다)."""
+    """--scenarios를 비워 적으면 전부 돌지 않는다(전부 돌면 DB에 스무 개를 만들고 지운다)."""
     assert await main(["--scenarios", raw]) == 1
     assert "번호를 적어" in capsys.readouterr().out
 

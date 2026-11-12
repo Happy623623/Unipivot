@@ -37,11 +37,14 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from app.agent_log import AgentRun, LogConnect
+from app.agent_log import AgentRun, LogConnect, using
 from app.background import TaskRunner, get_runner
 from app.calendar.service import CalendarService, get_calendar_service
 from app.clock import current_time
 from app.config import Settings, get_settings
+from app.crawl.importer import ImportOptions, ImportResult, import_notice
+from app.crawl.importer import ensure_source as ensure_notice_source
+from app.crawl.saved import NoticeContent
 from app.db import create_pools, get_conn, get_log_connect
 from app.eligibility import KST
 from app.eval.fakes import (
@@ -53,6 +56,9 @@ from app.eval.fakes import (
     Reply,
 )
 from app.eval.models import Check, CheckFailed, plain
+from app.extraction.agent import ExtractionAgent
+from app.extraction.models import Limits
+from app.extraction.store import load_departments
 from app.llm.deps import get_llm
 from app.lms.announce import AnnouncementService
 from app.lms.service import LmsService, get_lms_service
@@ -453,6 +459,40 @@ class EvalWorld:
         assert row is not None
         self.opportunities.append(row["id"])
         return str(row["id"])
+
+    async def notice(self, content: NoticeContent) -> tuple[str, ImportResult]:
+        """학교 공지 한 건을 실제 가져오기 코드(A안, app/crawl/importer.py)로 넣는다(S09·S10).
+
+        요건 추출 에이전트는 이 세계의 녹화 모델로 돈다 — 답은 `records`로 먼저 넣는다. 같은 글 번호로 다시
+        부르면 내용이 바뀌었을 때만 다시 추출한다(같으면 모델을 부르지 않는다). 추출 실행(사용자 없는 뿌리
+        실행, batch_crawl)에는 시나리오 번호를 붙이고 extra_runs에 넣는다 — 그래야 그 모델 호출이 시나리오
+        비용에 들어간다(러너는 사용자의 실행과 extra_runs만 센다). 공고 번호와 가져오기 결과를 돌려준다.
+        """
+        agent = ExtractionAgent(
+            self.llm,
+            model=self.settings.extraction_model,
+            vision_model=self.settings.vision_model,
+            departments=await load_departments(self.conn),
+            limits=Limits(
+                max_reads=self.settings.extraction_max_reads,
+                max_tokens=self.settings.extraction_max_tokens,
+            ),
+        )
+        result = await import_notice(
+            self.conn,
+            using(self.conn),
+            await ensure_notice_source(self.conn),
+            content,
+            agent,
+            ImportOptions(scenario=self.scenario_code),
+        )
+        if result.run_id is not None:
+            self.extra_runs.append(result.run_id)
+        if result.opportunity_id is None:
+            raise AssertionError(f"공지를 넣지 못했어요: {result.status} {result.message}")
+        if result.opportunity_id not in self.opportunities:
+            self.opportunities.append(result.opportunity_id)
+        return result.opportunity_id, result
 
     async def rows(self, query: str, *params: Any) -> list[dict[str, Any]]:
         """확인용 조회. 시나리오가 화면으로 볼 수 없는 것(캘린더 행 수 등)을 셀 때만 쓴다."""
