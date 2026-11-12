@@ -4,8 +4,8 @@
 본다. 다르면 그 자리에서 멈추고 실패로 남는다 — 뒤 단계가 앞 단계의 결과를 쓰기 때문이다.
 
 판정·요건이 S01–S08, 학교 공지 가져오기(첨부 읽기·공지 수정)가 S09·S10, 포스터·준비하기·캘린더·알림이
-S11–S14, 계획서가 S15, LMS 과제가 S16–S18이다. PRD 8장의 P0 열여덟 개(S01–S18)가 모두 있고, P1인
-S22·S23도 F-53과 함께 넣었다(모두 스무 개).
+S11–S14, 계획서가 S15, LMS 과제가 S16–S18, 강의자료 요약이 S19다. PRD 8장의 P0 열여덟 개(S01–S18)가 모두
+있고, P1은 기능이 있는 S19·S22·S23을 넣었다(모두 스물한 개). 보류한 기능의 S20·S21은 없다.
 
 S09·S10의 공지와 첨부는 실제 학교 글 대신 지은 글이다(app/eval/notice.py). 학교가 쓴 글은 레포에 두지
 않는다. 가져오기·첨부 글자 뽑기·요건 추출·근거 대조·저장은 운영 코드 그대로 돈다.
@@ -30,6 +30,14 @@ from app.eval.fakes import (
     sido_codes,
     tool_reply,
     youth_policy,
+)
+from app.eval.lecture import (
+    FIRST_LINE,
+    LAST_LINE,
+    LONG_PAGE_COUNT,
+    SHORT_PAGES,
+    long_notes,
+    short_notes,
 )
 from app.eval.notice import (
     ATTACHED_ONLY_BODY,
@@ -60,6 +68,7 @@ from app.extraction.prompt import READ_TEXT
 from app.extraction.prompt import SUBMIT as EXTRACTION_TOOL
 from app.extraction.validate import LOW_CONFIDENCE as LOW_CONFIDENCE_REASON
 from app.lms.classify import SUBMIT as CLASSIFY_TOOL
+from app.materials.service import TOO_LONG as MATERIAL_TOO_LONG
 from app.prepare.guide import TOOL_NAME as GUIDE_TOOL
 from app.schemas.syllabi import EXTRACT_TOOL as SYLLABUS_TOOL
 from app.uploads import MAX_BYTES
@@ -1408,6 +1417,140 @@ async def _deadlines(world: EvalWorld, client: httpx.AsyncClient) -> list[str]:
     ]
 
 
+# ── S19: 강의자료 요약 (F-15 축소판) ──────────────────────────────────────────
+# 강의자료는 app/eval/lecture.py가 코드로 만든 영어 노트 PDF다. 모델 답(요약 Markdown)만 녹화했다
+
+MATERIAL_SUMMARY = """## 전체 요약
+9주차는 트랜잭션(transaction)과 동시성 제어(concurrency control)를 다룬다. 트랜잭션은 한 덩어리로 커밋되거나
+취소되는 읽기·쓰기의 묶음이고, ACID 성질을 지켜야 한다. 여러 트랜잭션이 섞여 돌 때는 충돌 직렬 가능성
+(conflict serializability)과 2단계 잠금(2PL)으로 결과가 어긋나지 않게 하고, 교착 상태(deadlock)는 막거나 찾아서 푼다.
+## 핵심 개념
+- 트랜잭션: 모두 반영되거나 하나도 반영되지 않는 작업 단위
+- 직렬 가능 스케줄: 선행 그래프(precedence graph)에 사이클이 없는 스케줄
+- 2단계 잠금(2PL): 잠금을 얻는 단계와 푸는 단계를 나눈다. 엄격한 2PL은 커밋까지 배타 잠금을 쥔다
+- 교착 상태: 대기 그래프(waits-for graph)의 사이클. wait-die·wound-wait로 막는다
+- 고립 수준: READ UNCOMMITTED부터 SERIALIZABLE까지
+## 시험 대비 포인트
+- ACID 네 성질의 정의
+- 충돌하는 연산의 조건(같은 항목, 하나 이상이 쓰기)
+- 2PL과 엄격한 2PL의 차이(연쇄 취소)
+- 고립 수준마다 허용되는 이상 현상(dirty read·non-repeatable read·phantom)"""
+SHORT_MATERIAL = "week9-transactions.pdf"
+LONG_MATERIAL = "database-notes-full.pdf"
+
+
+async def s19(world: EvalWorld) -> None:
+    """강의자료 PDF 업로드 → 상한 이내면 전체 요약, 넘으면 안내(F-15 축소판).
+
+    짧은 노트(3쪽)는 202로 시작해 뒤에서 모델을 한 번 부른다. 문서 **전체**(첫 줄부터 마지막 줄까지)가 모델에
+    가고, 요약이 저장된다. 다시 누르면 저장한 요약을 그대로 준다(200, 모델을 부르지 않는다 — 녹화한 답이 하나라
+    부르면 실패한다).
+
+    긴 노트(48쪽)는 올릴 수는 있지만(300쪽 안) 글자가 상한(설정 MATERIAL_MAX_TOKENS, 3만 토큰 어림)을 넘는다.
+    모델을 부르지 않고 실행도 만들지 않으며, 413으로 나눠 올리라고 안내하고 상한을 넘은 자료로 남긴다(유료화
+    수요 근거, app/materials/service.py).
+    """
+    student = await world.user()
+    client = world.client(student)
+
+    world.records(MATERIAL_SUMMARY)
+    short = await _upload_material(world, client, SHORT_MATERIAL, short_notes())
+    started = await client.post(world.path("/materials"), json={"file_id": short})
+    await world.check("요약 시작", expected=202, actual=started.status_code)
+    run = await world.wait_run(client, started.json()["run_id"])
+    await world.check("요약 실행", expected="succeeded", actual=run["status"])
+    await world.check(
+        "처리 과정",
+        expected=["강의자료 글자 읽기", "전체 요약"],
+        actual=[step["label"] for step in run["steps"]],
+    )
+    await world.check(
+        "실행 결과",
+        expected={
+            "kind": "material_summary",
+            "file_id": short,
+            "overall_summary": MATERIAL_SUMMARY,
+        },
+        actual=run["result"],
+    )
+    sent = world.llm.asks[-1].turns[0].text if world.llm.asks else ""
+    await world.check(
+        "문서 전체를 보냄(첫 줄·마지막 줄)",
+        expected=[True, True],
+        actual=[FIRST_LINE in sent, LAST_LINE in sent],
+    )
+
+    detail = (await client.get(world.path(f"/materials/{short}"))).json()
+    await world.check("요약 저장", expected="succeeded", actual=detail["status"])
+    await world.check("저장한 요약", expected=MATERIAL_SUMMARY, actual=detail["overall_summary"])
+    await world.check(
+        "전체를 요약함",
+        expected={
+            "total_pages": len(SHORT_PAGES),
+            "processed_range": {"start": 1, "end": len(SHORT_PAGES)},
+            "over_limit": False,
+        },
+        actual={key: detail[key] for key in ("total_pages", "processed_range", "over_limit")},
+    )
+    again = await client.post(world.path("/materials"), json={"file_id": short})
+    await world.check("다시 누르면 저장한 요약", expected=200, actual=again.status_code)
+    await world.check(
+        "같은 요약", expected=MATERIAL_SUMMARY, actual=again.json()["overall_summary"]
+    )
+
+    # 상한을 넘는 자료: 올리기는 되고(쪽 수 안), 요약을 누르면 나눠 올리라고 안내한다
+    long = await _upload_material(world, client, LONG_MATERIAL, long_notes())
+    refused = await client.post(world.path("/materials"), json={"file_id": long})
+    await world.check("긴 자료는 요약하지 않음", expected=413, actual=refused.status_code)
+    error = refused.json()["error"]
+    await world.check(
+        "나눠 올리라는 안내",
+        expected=["MATERIAL_TOO_LONG", MATERIAL_TOO_LONG],
+        actual=[error["code"], error["message"]],
+    )
+    limit = world.settings.material_max_tokens
+    await world.check(
+        "쪽 수와 상한",
+        expected={"total_pages": LONG_PAGE_COUNT, "limit_tokens": limit, "over_limit": True},
+        actual={
+            "total_pages": error["details"]["total_pages"],
+            "limit_tokens": error["details"]["limit_tokens"],
+            "over_limit": error["details"]["text_tokens"] > limit,
+        },
+    )
+    left = (await client.get(world.path(f"/materials/{long}"))).json()
+    await world.check(
+        "상한을 넘은 자료로 남음",
+        expected={"status": "failed", "over_limit": True, "overall_summary": None, "run_id": None},
+        actual={key: left[key] for key in ("status", "over_limit", "overall_summary", "run_id")},
+    )
+    runs = await world.rows(
+        "select count(*) as count from agent_runs"
+        " where user_id = %s and trigger_type = 'material_upload'",
+        student,
+    )
+    await world.check("요약 실행은 짧은 자료 하나뿐", expected=1, actual=runs[0]["count"])
+    listing = (await client.get(world.path("/materials"))).json()
+    await world.check(
+        "내 강의자료",
+        expected={LONG_MATERIAL: "failed", SHORT_MATERIAL: "succeeded"},
+        actual={item["file_name"]: item["status"] for item in listing["items"]},
+    )
+
+
+async def _upload_material(
+    world: EvalWorld, client: httpx.AsyncClient, name: str, data: bytes
+) -> str:
+    """강의자료 PDF를 문서함에 올린다(`POST /files`, kind=lecture_material). 파일 번호를 돌려준다."""
+    uploaded = await client.post(
+        world.path("/files"),
+        files={"file": (name, data, "application/pdf")},
+        data={"kind": "lecture_material"},
+    )
+    await world.check(f"강의자료 올리기({name})", expected=201, actual=uploaded.status_code)
+    return str(uploaded.json()["file_id"])
+
+
 # ── S23: 과목 공지 → 기회성 공지 → 공고 (F-53) ──────────────────────────────
 
 RESEARCH_TOPIC_ID = 520_964
@@ -1840,6 +1983,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario("S16", "LMS 새 과제(녹화 응답) → 캘린더·플래너 1건 + 알림", "P0", s16),
     Scenario("S17", "LMS 과제 마감 변경 → 기존 캘린더 일정 수정, 새 이벤트 없음", "P0", s17),
     Scenario("S18", "LMS 과제 제출 → 플래너 자동 완료, 보내지 않은 알림 취소", "P0", s18),
+    Scenario("S19", "강의자료 PDF → 상한 안이면 전체 요약, 넘으면 나눠 올리라는 안내", "P1", s19),
     Scenario("S22", '과목 공지 "휴강 안내" → 일정 변경 분류 → 플래너 반영 + 알림', "P1", s22),
     Scenario(
         "S23", '과목 공지 "연구 참여 모집" → 기회성 분류 → 수강생 피드 공고 → 판정', "P1", s23

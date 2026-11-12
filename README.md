@@ -108,7 +108,7 @@
 | web | `npm run typecheck && npm run build` |
 
 `@pytest.mark.db` 테스트는 `DATABASE_URL`이 있을 때만 돈다. CI는 Postgres 컨테이너에 마이그레이션을 적용해서
-돌리고, 실제 Supabase DB로는 돌리지 않는다. 테스트 시나리오(지금 20개)는 `python -m app.eval.cli`로 돌리며
+돌리고, 실제 Supabase DB로는 돌리지 않는다. 테스트 시나리오(지금 21개)는 `python -m app.eval.cli`로 돌리며
 모델·Google·파일 저장소·LMS는 녹화한 응답을 쓴다. 측정 결과는 `docs/베이스라인.md`에 절을 더해 비교한다.
 
 ## 데모

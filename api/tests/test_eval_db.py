@@ -46,6 +46,7 @@ async def test_every_scenario_reaches_its_expected_result() -> None:
     assert costs["S01"] > 0 and costs["S11"] > 0 and costs["S12"] > 0
     # 학교 공지 요건 추출(사용자 없는 뿌리 실행)도 그 시나리오 비용에 들어간다(world.notice)
     assert costs["S09"] > 0 and costs["S10"] > 0
+    assert costs["S19"] > 0  # 강의자료 요약은 짧은 자료에서 한 번 부른다(긴 자료는 부르지 않는다)
     assert costs["S02"] == 0  # 판정만 하는 시나리오는 모델을 부르지 않는다
 
 

@@ -52,7 +52,7 @@ from app.uploads.storage import StorageError, StorageMissing
 pytestmark = pytest.mark.anyio
 
 # PRD 8장 표에서 지금까지 만든 시나리오. P0(S01–S18)는 모두 있다.
-# S22·S23은 P1이지만 F-53과 함께 만들었다(기회성 공지 → 공고 → 판정)
+# P1은 기능이 있는 S19(강의자료 요약)·S22·S23(F-53)이다. S20·S21은 보류한 기능이라 없다
 EXPECTED_CODES = (
     "S01",
     "S02",
@@ -72,6 +72,7 @@ EXPECTED_CODES = (
     "S16",
     "S17",
     "S18",
+    "S19",
     "S22",
     "S23",
 )
@@ -88,8 +89,9 @@ def _keep_log_levels() -> Iterator[None]:
 
 def test_the_scenario_list_matches_the_prd_table() -> None:
     assert tuple(scenario.code for scenario in SCENARIOS) == EXPECTED_CODES
-    # 우선순위는 PRD 표 그대로다(S23만 P1)
+    # 우선순위는 PRD 표 그대로다(S19·S22·S23이 P1)
     assert {scenario.code for scenario in SCENARIOS if scenario.priority != "P0"} == {
+        "S19",
         "S22",
         "S23",
     }
@@ -171,7 +173,7 @@ async def test_an_unknown_scenario_is_named(capsys: pytest.CaptureFixture[str]) 
 async def test_an_empty_scenario_list_is_not_everything(
     raw: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """--scenarios를 비워 적으면 전부 돌지 않는다(전부 돌면 DB에 스무 개를 만들고 지운다)."""
+    """--scenarios를 비워 적으면 전부 돌지 않는다(전부 돌면 DB에 스물한 개를 만들고 지운다)."""
     assert await main(["--scenarios", raw]) == 1
     assert "번호를 적어" in capsys.readouterr().out
 
