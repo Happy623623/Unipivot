@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from app.agent_log import agent_run, start_run, using
 from app.clock import current_time
 from app.eligibility import to_kst_date
 from app.eval.models import percentile
@@ -331,6 +332,97 @@ async def test_the_product_metrics_count_what_the_prd_asks_for() -> None:
     finally:
         await conn.execute("delete from opportunities where title = '지표 공고'")
         await conn.execute("delete from auth.users where id = any(%s::uuid[])", (users,))
+        await conn.close()
+
+
+# 엔진 지표 시험이 실행을 옮겨 두는 날. 다른 시험이 쓰지 않는 날이라 이 시험의 실행만 센다
+ENGINE_DAY = date(2020, 3, 3)
+
+
+async def _engine_run(run: Any, *, model: str, cost: float, tokens: int, latency: int) -> None:
+    """엔진 실행 하나가 모델을 한 번 부른 것으로 적는다. 응답시간은 직접 넣는다(백분위수를 맞히려고)."""
+    await run.record_llm(
+        provider="google",
+        model=model,
+        input_tokens=tokens,
+        output_tokens=tokens // 10,
+        latency_ms=1,
+        cost_usd=cost,
+    )
+    run.latency_ms = latency
+
+
+async def test_engine_metrics_count_each_engine_run_of_real_traffic() -> None:
+    """엔진별 지표(O3): 엔진 도장이 있는 운영 실행을 엔진·버전·모델마다 센다.
+
+    뿌리 흐름(엔진 없음)·아직 도는 실행·시나리오 실행 안의 엔진은 빼고, 실패한 실행도 센다. 이유 코드는 실행마다
+    한 번, 비용·토큰은 그 실행의 모델 호출을 더한다.
+    """
+    conn = await connect(DATABASE_URL)
+    ids: list[str] = []
+    try:
+        log = using(conn)
+        async with agent_run(log, trigger="lms_sync") as sync:  # 엔진이 여럿인 흐름의 뿌리
+            ids.append(sync.id)
+            for latency, codes in ((100, ()), (300, ("NO_SUBMISSION",))):
+                async with sync.child(engine="classify.announcement") as classify:
+                    ids.append(classify.id)
+                    await _engine_run(
+                        classify, model="test-lite", cost=0.001, tokens=100, latency=latency
+                    )
+                    classify.review_codes = codes
+            with pytest.raises(RuntimeError):
+                async with sync.child(engine="extract.requirements") as extract:
+                    ids.append(extract.id)
+                    await _engine_run(
+                        extract, model="test-standard", cost=0.004, tokens=1000, latency=900
+                    )
+                    extract.review_codes = ("AMBIGUOUS", "LOW_CONFIDENCE")
+                    raise RuntimeError("모델 오류")
+        poster = await start_run(log, trigger="poster_upload", engine="extract.poster")
+        ids.append(poster)
+        async with agent_run(log, trigger="poster_upload", run_id=poster) as run:
+            await _engine_run(run, model="test-vision", cost=0.002, tokens=500, latency=500)
+            run.review_codes = ("LOW_CONFIDENCE",)
+        # 세지 않는 것: 아직 도는 엔진 실행, 시나리오 실행 안의 엔진(녹화 응답)
+        ids.append(await start_run(log, trigger="poster_upload", engine="extract.poster"))
+        async with agent_run(log, trigger="eval", scenario_code="TEST-ENGINE-METRICS") as scenario:
+            ids.append(scenario.id)
+            async with scenario.child(engine="classify.announcement") as recorded:
+                ids.append(recorded.id)
+                await _engine_run(recorded, model="test-lite", cost=0.5, tokens=9, latency=9)
+                recorded.review_codes = ("NO_SUBMISSION",)
+        await conn.execute(
+            "update agent_runs set started_at = %s where id = any(%s::uuid[])",
+            (f"{ENGINE_DAY} 12:00+09", ids),
+        )
+
+        engines = (await aggregate((ENGINE_DAY, ENGINE_DAY))).engines
+        assert [
+            (one.engine, one.version, one.model, one.runs, one.succeeded, one.success_rate)
+            for one in engines
+        ] == [
+            ("classify.announcement", 1, "test-lite", 2, 2, 1.0),
+            ("extract.poster", 1, "test-vision", 1, 1, 1.0),
+            ("extract.requirements", 1, "test-standard", 1, 0, 0.0),
+        ]
+        classify_line, poster_line, extract_line = engines
+        assert (classify_line.needs_review_rate, classify_line.review_codes) == (
+            0.5,
+            {"NO_SUBMISSION": 1},
+        )
+        assert (classify_line.latency.p50_ms, classify_line.latency.p95_ms) == (100, 300)
+        assert (classify_line.tokens_per_run.input, classify_line.tokens_per_run.output) == (
+            100.0,
+            10.0,
+        )
+        assert (classify_line.cost_usd, classify_line.cost_usd_per_run) == (0.002, 0.001)
+        assert poster_line.review_codes == {"LOW_CONFIDENCE": 1}
+        assert extract_line.review_codes == {"AMBIGUOUS": 1, "LOW_CONFIDENCE": 1}
+        assert (extract_line.needs_review_rate, extract_line.cost_usd_per_run) == (1.0, 0.004)
+        assert (await aggregate((ENGINE_DAY - timedelta(days=1),) * 2)).engines == []
+    finally:
+        await conn.execute("delete from agent_runs where id = any(%s::uuid[])", (ids,))
         await conn.close()
 
 

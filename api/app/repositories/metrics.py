@@ -9,6 +9,10 @@
 
 응답시간 백분위수는 `percentile_disc`(실제로 잰 값 중 하나를 고른다)다. 시나리오 러너의
 `app/eval/models.percentile`과 같은 방법이어야 한다 — DB 테스트가 두 값이 같은지 본다.
+
+**두 번 세지 않는 규칙**(오케스트레이션 명세 v1 3.6). 시나리오 지표는 흐름 단위라 뿌리 실행(`parent_run_id is
+null`)만 세고, 엔진 지표는 엔진 단위라 엔진 도장이 있는 실행(`engine is not null`)만 센다. 엔진 하나뿐인 흐름의
+뿌리는 두 쪽에 다 들지만 서로 다른 질문이다. 비용은 어느 쪽이든 `llm_calls`를 더한다.
 """
 
 from collections.abc import Sequence
@@ -25,6 +29,7 @@ from app.schemas.metrics import (
     ELIGIBILITY_CHECK,
     STATUSES,
     EligibilityMatrix,
+    EngineMetric,
     Latency,
     MatrixRow,
     Metrics,
@@ -33,6 +38,7 @@ from app.schemas.metrics import (
     Ratio,
     ScenarioMetric,
     ScenarioMetrics,
+    TokensPerRun,
     UndeterminedRate,
 )
 
@@ -47,6 +53,10 @@ _RUN_PERIOD = _IN_PERIOD % "r.started_at"
 _EVAL_ROOT = (
     f"r.trigger_type = '{_EVAL}' and r.scenario_code is not null and r.parent_run_id is null"
 )
+# 엔진 지표(명세 v1 7.2, O3)는 엔진 도장이 있는 **운영** 실행만, 끝난 것만 센다. 시나리오 실행 안에서 돈 엔진은
+# 녹화 응답이라 모델·비용이 진짜가 아니다(scenario_code가 붙는다). 아직 도는 실행은 응답시간이 없다
+_ENGINE_RUN = "r.engine is not null and r.scenario_code is null and r.status <> 'running'"
+_ENGINE_KEY = "r.engine, r.engine_version, r.model"
 
 
 def rate(numerator: int, denominator: int) -> Ratio:
@@ -74,6 +84,7 @@ class MetricsRepository:
             scenarios=await self.scenarios(window),
             eligibility=await self.eligibility(window),
             product=await self.product(window),
+            engines=await self.engines(window),
         )
 
     # ── 시나리오 실행: 성공률·응답시간·호출비용 ──────────────────────────────
@@ -173,6 +184,50 @@ class MetricsRepository:
             ineligible_to_eligible=counts["ineligible"].get("eligible", 0),
         )
 
+    # ── 엔진별 지표 ─────────────────────────────────────────────────────────
+
+    async def engines(self, window: dict[str, date]) -> list[EngineMetric]:
+        """엔진·버전·모델마다 실행 수·성공률·원문 확인 비율·이유 코드·응답시간·토큰·비용(명세 v1 7.2).
+
+        모델이 바뀌면(설정을 바꿔 비교) 같은 엔진·버전이라도 줄이 갈린다. 이유 코드는 실행마다 한 번씩 센다
+        (agent_runs.review_codes는 같은 코드를 한 번만 담는다).
+        """
+        rows = await self._rows(
+            "with runs as ("
+            "  select r.id, r.engine, r.engine_version, r.model, r.status, r.latency_ms,"
+            "  r.review_codes from agent_runs r"
+            f"  where {_ENGINE_RUN} and {_RUN_PERIOD}"
+            "), spent as ("
+            "  select l.run_id, sum(l.cost_usd) as cost, sum(l.input_tokens) as input_tokens,"
+            "  sum(l.output_tokens) as output_tokens from llm_calls l"
+            "  join runs on runs.id = l.run_id group by l.run_id"
+            ")"
+            " select r.engine, r.engine_version, r.model, count(*) as runs,"
+            " count(*) filter (where r.status = 'succeeded') as succeeded,"
+            " count(*) filter (where cardinality(r.review_codes) > 0) as flagged,"
+            " percentile_disc(0.5) within group (order by coalesce(r.latency_ms, 0)) as p50,"
+            " percentile_disc(0.95) within group (order by coalesce(r.latency_ms, 0)) as p95,"
+            " coalesce(sum(s.cost), 0) as cost, coalesce(sum(s.input_tokens), 0) as input_tokens,"
+            " coalesce(sum(s.output_tokens), 0) as output_tokens"
+            " from runs r left join spent s on s.run_id = r.id"
+            f" group by {_ENGINE_KEY} order by {_ENGINE_KEY}",
+            window,
+        )
+        codes: dict[tuple[str, int, str | None], dict[str, int]] = {}
+        for row in await self._rows(
+            f"select {_ENGINE_KEY}, code, count(*) as runs from agent_runs r"
+            " cross join unnest(r.review_codes) as code"
+            f" where {_ENGINE_RUN} and {_RUN_PERIOD}"
+            f" group by {_ENGINE_KEY}, code order by count(*) desc, code",
+            window,
+        ):
+            key = (row["engine"], row["engine_version"], row["model"])
+            codes.setdefault(key, {})[row["code"]] = int(row["runs"])
+        return [
+            _engine(row, codes.get((row["engine"], row["engine_version"], row["model"]), {}))
+            for row in rows
+        ]
+
     # ── 제품 지표 5개 ───────────────────────────────────────────────────────
 
     async def product(self, window: dict[str, date]) -> ProductMetrics:
@@ -264,6 +319,28 @@ class MetricsRepository:
 
     async def _row(self, query: str, params: dict[str, Any]) -> dict[str, Any] | None:
         return await (await self.conn.execute(query, params)).fetchone()
+
+
+def _engine(row: dict[str, Any], codes: dict[str, int]) -> EngineMetric:
+    runs = int(row["runs"])
+    cost = float(row["cost"])
+    return EngineMetric(
+        engine=row["engine"],
+        version=int(row["engine_version"]),
+        model=row["model"],
+        runs=runs,
+        succeeded=int(row["succeeded"]),
+        success_rate=rate(int(row["succeeded"]), runs).rate or 0.0,
+        needs_review_rate=rate(int(row["flagged"]), runs).rate or 0.0,
+        review_codes=codes,
+        latency=_latency(row),
+        tokens_per_run=TokensPerRun(
+            input=round(int(row["input_tokens"]) / runs, 1),
+            output=round(int(row["output_tokens"]) / runs, 1),
+        ),
+        cost_usd=round(cost, 6),
+        cost_usd_per_run=round(cost / runs, 6),
+    )
 
 
 def get_metrics_repo(conn: Annotated[AsyncConnection, Depends(get_conn)]) -> MetricsRepository:

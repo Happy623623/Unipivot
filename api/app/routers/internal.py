@@ -1,6 +1,7 @@
 """내부·운영 API (API 명세 12장). 사용자 토큰이 아니라 서비스 키(`X-Internal-Key`)로만 부른다.
 
 - `GET /internal/metrics` 기간별 성공률·응답시간·호출비용 + 판정 혼동행렬 + 제품 지표 5개(PRD 8장)
+  + 엔진별 지표(오케스트레이션 명세 v1 7.2, O3)
 - `POST /internal/eval/run` 테스트 시나리오를 돌린다(CLI `python -m app.eval.cli`와 같은 함수)
 - `POST /internal/jobs/lms-sync` LMS 연결된 사용자 동기화(30분마다)
 - `POST /internal/jobs/schedule-notifications` 공고 알림 예약(하루 한 번)

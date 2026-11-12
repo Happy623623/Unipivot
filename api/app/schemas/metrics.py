@@ -1,9 +1,11 @@
 """내부 지표 집계 (API 명세 v0.4 12장 `GET /internal/metrics`, PRD 8장 성공 지표).
 
-세 묶음을 돌려준다.
+네 묶음을 돌려준다.
 - scenarios: 기간 안의 시나리오 실행(agent_runs.trigger_type = 'eval') 성공률·응답시간·호출비용
 - eligibility: 가장 최근 시나리오 실행 묶음의 판정 3×3 혼동행렬
 - product: 제품 지표 5개
+- engines: 엔진별 지표(오케스트레이션 명세 v1 7.2, O3) — 엔진 도장(agent_runs.engine)이 있는 **운영** 실행을
+  엔진·버전·모델마다. 시나리오 실행 안에서 돈 엔진(녹화 응답)은 모델·비용이 진짜가 아니라 뺀다
 
 비용은 scenario_code로 묶은 `llm_calls`를 더한다. 시나리오 실행 행의 cost_usd는 0이다(제 손으로
 모델을 부르지 않는다). agent_runs.cost_usd를 또 더하면 같은 비용을 두 번 센다.
@@ -98,6 +100,31 @@ class ProductMetrics(BaseModel):
     weekly_return: Ratio  # 주간 재방문율: 가입 다음 주에 1회 이상 접속
 
 
+class TokensPerRun(BaseModel):
+    input: float
+    output: float
+
+
+class EngineMetric(BaseModel):
+    """엔진·버전·모델 한 줄(명세 v1 7.2). 끝난 실행만 센다(아직 도는 실행은 뺀다).
+
+    비용·토큰은 그 실행의 llm_calls를 더한다 — 엔진 실행 행의 합계를 쓰지 않는다(뿌리가 엔진인 실행도 같은 셈이다).
+    """
+
+    engine: str
+    version: int
+    model: str | None  # 모델을 부르지 않은 실행(사전으로 다 푼 서류 안내)은 null
+    runs: int
+    succeeded: int
+    success_rate: float
+    needs_review_rate: float  # 원문 확인 이유 코드가 하나라도 있는 실행의 비율
+    review_codes: dict[str, int]  # 코드 → 그 코드가 나온 실행 수(app.engines.ReviewCode)
+    latency: Latency
+    tokens_per_run: TokensPerRun
+    cost_usd: float
+    cost_usd_per_run: float
+
+
 class Metrics(BaseModel):
     """응답 키는 from·to다(파이선에서 from은 예약어라 필드 이름만 다르다)."""
 
@@ -108,6 +135,7 @@ class Metrics(BaseModel):
     scenarios: ScenarioMetrics
     eligibility: EligibilityMatrix
     product: ProductMetrics
+    engines: list[EngineMetric]  # 엔진 → 버전 → 모델 순
 
 
 # POST /internal/eval/run

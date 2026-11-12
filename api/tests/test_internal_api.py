@@ -14,6 +14,7 @@ from app.eligibility import KST
 from app.main import create_app
 from app.repositories.metrics import get_metrics_repo, rate
 from app.routers.internal import DEFAULT_DAYS
+from app.schemas.metrics import EngineMetric, Latency, TokensPerRun
 from tests.fakes import FakeMetricsRepository
 
 KEY = "internal-test-key-not-used-anywhere-else"
@@ -145,7 +146,8 @@ def test_a_bad_period_says_which_field(
 
 def test_the_response_keys_match_the_spec(internal: TestClient) -> None:
     found = body(internal.get(METRICS, headers={"X-Internal-Key": KEY}))
-    assert set(found) == {"from", "to", "scenarios", "eligibility", "product"}
+    assert set(found) == {"from", "to", "scenarios", "eligibility", "product", "engines"}
+    assert found["engines"] == []  # 엔진 도장이 있는 운영 실행이 없으면 빈 목록
     assert set(found["scenarios"]) == {
         "runs",
         "passed",
@@ -241,3 +243,37 @@ def test_without_a_database_url_the_run_stops(metrics_repo: FakeMetricsRepositor
         )
     assert response.status_code == 503
     assert body(response)["error"]["code"] == "DB_UNAVAILABLE"
+
+
+def test_an_engine_line_has_the_fields_of_the_spec() -> None:
+    """엔진별 지표 한 줄(오케스트레이션 명세 v1 7.2, O3). 캐스케이드 칸(escalation_rate)은 O4에서 더한다."""
+    line = EngineMetric(
+        engine="extract.requirements",
+        version=1,
+        model="gemini-3.8-flash",
+        runs=4,
+        succeeded=3,
+        success_rate=0.75,
+        needs_review_rate=0.5,
+        review_codes={"AMBIGUOUS": 2},
+        latency=Latency(p50_ms=8400, p95_ms=21000),
+        tokens_per_run=TokensPerRun(input=18200.0, output=2100.0),
+        cost_usd=0.00924,
+        cost_usd_per_run=0.00231,
+    ).model_dump(mode="json")
+    assert set(line) == {
+        "engine",
+        "version",
+        "model",
+        "runs",
+        "succeeded",
+        "success_rate",
+        "needs_review_rate",
+        "review_codes",
+        "latency",
+        "tokens_per_run",
+        "cost_usd",
+        "cost_usd_per_run",
+    }
+    assert line["latency"] == {"p50_ms": 8400, "p95_ms": 21000}
+    assert line["tokens_per_run"] == {"input": 18200.0, "output": 2100.0}

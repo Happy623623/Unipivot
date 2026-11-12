@@ -20,9 +20,8 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from app.config import Settings
 
-Layer = Literal[
-    "collect", "understand", "validate", "judge", "act"
-]  # 수집 → 이해 → 검증 → 판정 → 실행
+# 계층: 수집 → 이해 → 검증 → 판정 → 실행(명세 v1 2장)
+Layer = Literal["collect", "understand", "validate", "judge", "act"]
 EngineKind = Literal["llm_loop", "llm_single", "code", "external"]
 Tier = Literal["none", "lite", "standard"]  # lite = Flash-Lite, standard = Flash(LLM_모델_선정.md)
 EvalSuite = Literal[
