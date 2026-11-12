@@ -15,6 +15,14 @@
 
 예약 공지(`posted_at is null`)와 분반 한정 공지(`is_section_specific`)는 집지 않는다. 앞은 아직 학생에게
 보이지 않은 글이고, 뒤는 내 분반 글인지 가릴 칸이 응답에 없어 공고로 올리면 분반 밖 학생에게 보인다.
+
+**집는 것이 곧 임대(lease)다**(`claim`). 공지는 과목 공통인데 큐는 수강생마다의 동기화가 꺼내서, 그냥 읽기만
+하면 (가) 늘 실패하는 공지가 맨 앞자리를 영영 차지하고 수강생마다 되풀이되며, (나) 두 동기화가 같은 공지를 함께
+분류·추출한다. 그래서 집는 한 문장 안에서 시도 횟수(`attempts`)를 올리고 다시 집을 시각(`retry_at`)을
+`LEASE`만큼 민다 — 사용자 큐의 `claim_sync`와 같은 수법이다. 실패하면 `retry_later`가 30분·1시간·2시간·4시간
+뒤로 늦추고, `MAX_ATTEMPTS`번 집혔는데도 끝내지 못한 공지는 줄에서 빠진다. 횟수가 아니라 시각으로 늦추는 것은
+큐가 과목 공통이라서다 — 횟수만 세면 일시 장애 몇 분 사이에 수강생 몇 명의 동기화가 횟수를 다 써 버린다.
+성공하면 따로 할 일이 없다. 분류를 적거나 공고를 이으면 줄의 조건에서 빠진다.
 """
 
 import logging
@@ -36,6 +44,10 @@ from app.schemas.opportunities import Category
 logger = logging.getLogger(__name__)
 
 TITLE_MAX = 200  # 공고 제목 길이(포스터 등록과 같다)
+# 집은 공지를 다른 동기화가 못 집는 시간. 분류 30초 + 추출 몇 분보다 넉넉히
+LEASE = timedelta(hours=2)
+RETRY_FIRST = timedelta(minutes=30)  # 첫 실패 뒤 다시 집을 때까지. 실패할 때마다 두 배
+MAX_ATTEMPTS = 5  # 이만큼 집혔는데도 끝내지 못한 공지는 줄에서 빠진다
 
 # 첨부 목록(F-54)은 번호·이름·크기·형식만 넣는다. 주소는 verifier가 든 열쇠라 넣지 않는다
 _UPSERT = (
@@ -50,19 +62,37 @@ _UPSERT = (
     " is_section_specific = excluded.is_section_specific"
     " returning id, (xmax = 0) as inserted"
 )
-# 공고를 못 만든 기회성 공지를 먼저 집고(분류는 끝났다), 그다음 분류 전 공지를 최신순으로 집는다
-_PENDING = (
-    "select id, canvas_course_id, canvas_topic_id, title, message, posted_at,"
-    " category::text as category, summary"
-    " from lms_announcements"
+# 공고를 못 만든 기회성 공지를 먼저 집고(분류는 끝났다), 그다음 분류 전 공지를 최신순으로 집는다.
+# 집으면서 그 자리에서 시도 횟수를 올리고 다시 집을 시각을 LEASE만큼 민다(한 문장). 남이 막 집고 있는
+# 행은 기다리지 않고 건너뛴다(skip locked)
+_CLAIM = (
+    "with picked as ("
+    " select id from lms_announcements"
     " where canvas_course_id = any(%(courses)s::bigint[])"
     "   and not is_section_specific and posted_at is not null"
     "   and ((category = 'opportunity' and opportunity_id is null)"
     "        or (category is null and posted_at >= %(recent)s))"
+    "   and (retry_at is null or retry_at <= %(now)s) and attempts < %(max)s"
     # 게시 시각이 같으면 Canvas 번호가 큰 쪽(나중 글)을 먼저. id(uuid)로 가르면 순서가 실행마다 바뀐다
     " order by (category is null), posted_at desc, canvas_topic_id desc"
     " limit %(limit)s"
+    " for update skip locked)"
+    " update lms_announcements a set attempts = a.attempts + 1, retry_at = %(now)s + %(lease)s"
+    " from picked where a.id = picked.id"
+    " returning a.id, a.canvas_course_id, a.canvas_topic_id, a.title, a.message, a.posted_at,"
+    " a.category::text as category, a.summary"
 )
+# 실패한 공지를 늦춘다: 30분 → 1시간 → 2시간 → 4시간. 횟수는 집을 때 이미 올렸다
+_RETRY_LATER = (
+    "update lms_announcements"
+    " set retry_at = %(now)s + %(first)s * power(2, greatest(attempts, 1) - 1)"
+    " where id = %(id)s returning attempts"
+)
+
+
+def _queue_order(row: dict[str, Any]) -> tuple[bool, float, int]:
+    """`_CLAIM`이 고른 순서. update … returning은 순서를 지키지 않아 돌려받은 행을 다시 세운다."""
+    return (row["category"] is None, -row["posted_at"].timestamp(), -row["canvas_topic_id"])
 
 
 _OLDEST = datetime(1970, 1, 1, tzinfo=UTC)  # 게시 시각이 없는 공지는 가장 먼저 넣는다
@@ -144,10 +174,14 @@ class AnnouncementRepository:
                 )
         return created
 
-    async def pending(
-        self, *, courses: list[int], recent_from: datetime, limit: int
+    async def claim(
+        self, *, courses: list[int], recent_from: datetime, now: datetime, limit: int
     ) -> list[PendingAnnouncement]:
-        """분류하거나 공고를 만들어야 하는 공지. 머리말의 두 가지를 합쳐 `limit`개까지다.
+        """분류하거나 공고를 만들 공지를 **집는다**. 머리말의 두 가지를 합쳐 `limit`개까지다.
+
+        집은 공지는 그 자리에서 시도 횟수가 오르고 `LEASE` 동안 다른 동기화가 집지 못한다. 처리하다
+        서버가 꺼져도 임대가 끝나면 다시 집히고, 그 시도도 한 번으로 센다. 부르는 쪽은 이 문장만 담은
+        트랜잭션을 바로 확정한다 — 그래야 임대가 다른 동기화에 보인다.
 
         `courses`는 **지금 동기화하는 사용자의 과목**이다. 공지는 과목 공통이라 조건을 빼면 남의
         과목 공지까지 이 사람의 동기화가 분류한다(일은 같지만 비용을 엉뚱한 실행에 적는다).
@@ -155,8 +189,17 @@ class AnnouncementRepository:
         if not courses:
             return []
         rows = await self._rows(
-            _PENDING, {"courses": courses, "recent": recent_from, "limit": limit}
+            _CLAIM,
+            {
+                "courses": courses,
+                "recent": recent_from,
+                "now": now,
+                "max": MAX_ATTEMPTS,
+                "lease": LEASE,
+                "limit": limit,
+            },
         )
+        rows.sort(key=_queue_order)
         return [
             PendingAnnouncement(
                 id=str(row["id"]),
@@ -178,13 +221,27 @@ class AnnouncementRepository:
         category: AnnouncementCategory,
         summary: str | None,
         run_id: str | None,
-    ) -> None:
-        """분류 결과를 적는다. **이미 분류된 공지는 건드리지 않는다**(다른 수강생이 먼저 했다)."""
-        await self.conn.execute(
+    ) -> bool:
+        """분류 결과를 적는다. **이미 분류된 공지는 건드리지 않는다**(다른 수강생이 먼저 했다).
+
+        적었으면 True다. False면 남의 분류가 이겼으니 부르는 쪽은 자기 모델 답으로 다음 일을 하지 않는다.
+        """
+        cursor = await self.conn.execute(
             "update lms_announcements set category = %s::announcement_category, summary = %s,"
             " classified_run_id = %s where id = %s and category is null",
             (category, summary, run_id, announcement_id),
         )
+        return cursor.rowcount == 1
+
+    async def retry_later(self, announcement_id: str, *, now: datetime) -> int:
+        """처리에 실패한 공지를 늦춘다(30분 × 2^(시도 − 1)). 지금까지 집힌 횟수를 돌려준다.
+
+        `MAX_ATTEMPTS`에 닿았으면 늦춘 시각과 상관없이 다시 집히지 않는다. 공지가 그새 사라졌으면 0이다.
+        """
+        row = await self._row(
+            _RETRY_LATER, {"now": now, "first": RETRY_FIRST, "id": announcement_id}
+        )
+        return int(row["attempts"]) if row else 0
 
     async def create_opportunity(
         self,
@@ -202,7 +259,8 @@ class AnnouncementRepository:
         쓴다(`extraction/store.save_extraction`) — 판정이 쓰는 모양이 한 곳에서만 만들어진다.
 
         요건을 못 뽑았으면 공고는 만들되 `extraction_run_id`가 비어 판정에서 빠진다(원문 확인
-        필요로 보인다). 그 공지는 다음 동기화가 다시 집어 공고 만들기만 되풀이한다.
+        필요로 보인다). 공고를 이었으므로 그 공지는 큐에서 빠진다 — 다시 집히는 것은 추출이 예외로
+        끝나 공고를 잇지 못한 공지뿐이다(`retry_later`로 늦춘다).
         """
         locked = await self._row(
             "select opportunity_id from lms_announcements where id = %s for update",

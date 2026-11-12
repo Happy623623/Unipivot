@@ -2,18 +2,21 @@
 
 동기화(`lms_sync`) 안에서 돈다. 공지를 받아 저장한 다음 이 순서다.
 
-1. 분류할 공지를 집는다(`AnnouncementRepository.pending` — 최근 공지와, 공고를 못 만든 기회성 공지)
+1. 분류할 공지를 집는다(`AnnouncementRepository.claim` — 최근 공지와, 공고를 못 만든 기회성 공지). 집은 공지는
+   2시간 동안 다른 동기화가 집지 못하고(임대), 실패하면 더 늦춰 다시 집는다(5번까지)
 2. 공지마다 모델을 **한 번** 불러 네 갈래와 한 줄 요약을 받는다(`app/lms/classify.py`)
 3. 기회성이면 공지 글을 공고 원문으로 삼아 **요건 추출 에이전트**를 돌리고, 공고 행과 요건·서류를
    한 트랜잭션에 쓴다. 공고는 그 과목 수강생만 본다(`visible_canvas_course_id`)
 4. 공고가 생기면 판정·알림은 **이미 있는 길**이 처리한다 — 피드·상세가 판정하고(S1-5), 적격이면
    예약 작업이 "새 공고" 알림을 만든다(F-33). 여기서 따로 부르지 않는다
 5. 일정 변경이고 **바뀌는 날을 읽었으면** 그 과목 수강생 모두의 플래너에 할 일을 넣고 일정 변경
-   알림을 만든다(F-53 2부). 날짜를 못 읽었거나 이미 지난 날이면 갈래만 적고 넘어간다
+   알림을 만든다(F-53 2부). 갈래를 적는 것과 **한 트랜잭션**이다 — 할 일·알림 쓰기가 터지면 갈래도
+   적히지 않아 공지가 다시 집힌다. 날짜를 못 읽었거나 이미 지난 날이면 갈래만 적고 넘어간다
 
 지키는 것:
 - **동기화는 실패하지 않는다.** 분류가 터져도 과제·주차 자료는 이미 저장했고, 그 공지는 분류 전으로
-  남아 다음 동기화에서 다시 집힌다. 모델 오류·시간 초과는 로그만 남기고 넘어간다
+  남아 늦춘 시각(30분 × 2^(시도 − 1)) 뒤의 동기화에서 다시 집힌다. 모델 오류·시간 초과는 로그만 남기고 넘어간다
+- 갈래는 먼저 적은 쪽만 남는다. 늦은 쪽은 자기 모델 답으로 다음 일(할 일·공고)을 하지 않는다
 - 모델을 기다리는 동안 DB 연결을 쥐지 않는다(준비하기·포스터와 같다)
 - 한 동기화에서 공지 `MAX_PER_SYNC`개까지만 본다. 연결 직후에는 한 학기 분량이 한꺼번에 들어온다
 - 공지 글은 자료일 뿐 지시가 아니다(프롬프트에 못 박았다). 공지로 만든 공고는 `needs_review`를
@@ -35,7 +38,11 @@ from app.extraction.models import NoticeInput
 from app.extraction.store import load_departments
 from app.llm import LlmClient
 from app.lms.classify import Classified, classify
-from app.repositories.announcements import AnnouncementRepository, PendingAnnouncement
+from app.repositories.announcements import (
+    MAX_ATTEMPTS,
+    AnnouncementRepository,
+    PendingAnnouncement,
+)
 from app.repositories.notifications import NotificationRepository, ScheduleNotice
 from app.schemas.opportunities import Category
 
@@ -103,10 +110,12 @@ class AnnouncementService:
         """
         if self.llm is None or not courses:
             return AnnouncementOutcome()
+        # 집는 문장만 담아 바로 확정한다 — 그래야 임대가 다른 동기화에 보인다
         async with self.transaction() as conn:
-            pending = await self.repo_for(conn).pending(
+            pending = await self.repo_for(conn).claim(
                 courses=list(courses),
                 recent_from=now - timedelta(days=self.recent_days),
+                now=now,
                 limit=self.limit,
             )
         if not pending:
@@ -124,14 +133,32 @@ class AnnouncementService:
         now: datetime,
         courses: Mapping[int, str],
     ) -> AnnouncementOutcome:
-        """공지 하나. 터지면 로그만 남기고 다음 공지로 간다(동기화는 성공이다)."""
+        """공지 하나. 터지면 그 공지를 늦추고 다음 공지로 간다(동기화는 성공이다)."""
         try:
             return await self._classify_one(run, announcement, now=now, courses=courses)
-        except Exception as exc:  # 모델 오류·시간 초과·DB 오류. 다음 동기화에서 다시 집는다
+        except Exception as exc:  # 모델 오류·시간 초과·DB 오류. 늦춘 시각 뒤에 다시 집는다
             logger.warning(
                 "공지를 분류하지 못해 다음으로 미뤄요: announcement %s, %r", announcement.id, exc
             )
+            await self._retry_later(announcement, now=now)
             return AnnouncementOutcome(failed=1)
+
+    async def _retry_later(self, announcement: PendingAnnouncement, *, now: datetime) -> None:
+        """실패한 공지를 늦춘다. 이것마저 실패하면 임대가 끝날 때(2시간 뒤) 다시 집힌다."""
+        try:
+            async with self.transaction() as conn:
+                attempts = await self.repo_for(conn).retry_later(announcement.id, now=now)
+        except Exception:
+            logger.exception(
+                "공지를 다시 볼 시각을 적지 못했어요: announcement %s", announcement.id
+            )
+            return
+        if attempts >= MAX_ATTEMPTS:
+            logger.warning(
+                "공지를 %d번 처리하지 못해 줄에서 뺐어요: announcement %s",
+                attempts,
+                announcement.id,
+            )
 
     async def _classify_one(
         self,
@@ -163,52 +190,61 @@ class AnnouncementService:
                 tool_call=call,
             )
             call.output = {"category": result.category, "summary": result.summary}
+        on = _schedule_day(result, now)
+        scheduled: AnnouncementOutcome | None = None
+        # 갈래와 일정 변경 할 일·알림을 한 트랜잭션에 쓴다. 할 일·알림 쓰기가 터지면 갈래도 되돌아가
+        # 공지가 분류 전으로 남고 다시 집힌다(갈래만 남아 할 일·알림이 영영 빠지는 일이 없다)
         async with self.transaction() as conn:
-            await self.repo_for(conn).save_classification(
+            written = await self.repo_for(conn).save_classification(
                 announcement.id,
                 category=result.category,
                 summary=result.summary,
                 run_id=run.id,
             )
-        if result.is_schedule_change:
-            return await self._schedule(announcement, result, now=now, courses=courses)
-        if not result.is_opportunity:
+            if written and on is not None:
+                scheduled = await self._schedule(
+                    conn, announcement, result, on=on, now=now, courses=courses
+                )
+        if not written:
+            # 그새 다른 동기화가 먼저 분류했다(임대가 끝난 뒤 겹친 경우). 다음 일은 그쪽 갈래로 한다
+            return AnnouncementOutcome()
+        if scheduled is not None:
+            return scheduled
+        if not result.is_opportunity:  # 일반·자료, 날짜를 못 읽었거나 지난 일정 변경
             return AnnouncementOutcome(classified=1)
         made = await self._opportunity(run, announcement, category_hint=result, now=now)
         return AnnouncementOutcome(classified=1, opportunities=1 if made else 0)
 
     async def _schedule(
         self,
+        conn: AsyncConnection,
         announcement: PendingAnnouncement,
         result: Classified,
         *,
+        on: date,
         now: datetime,
         courses: Mapping[int, str],
     ) -> AnnouncementOutcome:
         """일정 변경 공지 → 그 과목 수강생 모두의 플래너 할 일 + 일정 변경 알림(F-53 2부).
 
-        날짜를 못 읽었거나 **이미 지난 날**이면 갈래만 적고 끝낸다 — 지난 휴강은 할 일이 아니다.
+        갈래를 적은 트랜잭션(`conn`) 안에서 쓴다 — 확정은 부르는 쪽이 한다.
         """
-        on = result.change_date
-        if on is None or on < now.astimezone(KST).date():
-            return AnnouncementOutcome(classified=1)
         course = courses.get(announcement.canvas_course_id, "")
-        async with self.transaction() as conn:
-            tasks = await self.repo_for(conn).add_schedule_task(
-                announcement.id,
-                announcement.canvas_course_id,
-                title=result.change_title,
-                on=on,
-            )
-            notices = await self.notes_for(conn).add_schedule_notices(
-                announcement.canvas_course_id,
-                ScheduleNotice(
-                    announcement_id=announcement.id,
-                    title=SCHEDULE_TITLE.format(course=course).strip(),
-                    body=result.summary or result.change_title,
-                ),
-                now=now,
-            )
+        tasks = await self.repo_for(conn).add_schedule_task(
+            announcement.id,
+            announcement.canvas_course_id,
+            title=result.change_title,
+            on=on,
+        )
+        notices = await self.notes_for(conn).add_schedule_notices(
+            announcement.canvas_course_id,
+            ScheduleNotice(
+                announcement_id=announcement.id,
+                title=SCHEDULE_TITLE.format(course=course).strip(),
+                body=result.summary or result.change_title,
+            ),
+            now=now,
+        )
         return AnnouncementOutcome(classified=1, schedule_tasks=tasks, notices=notices)
 
     async def _opportunity(
@@ -266,6 +302,15 @@ def _add(left: AnnouncementOutcome, right: AnnouncementOutcome) -> AnnouncementO
         notices=left.notices + right.notices,
         failed=left.failed + right.failed,
     )
+
+
+def _schedule_day(result: Classified, now: datetime) -> date | None:
+    """플래너에 넣을 일정 변경 날. 일정 변경이 아니거나, 날짜를 못 읽었거나, **이미 지난 날**이면 None이다
+    — 지난 휴강은 할 일이 아니다."""
+    on = result.change_date
+    if not result.is_schedule_change or on is None or on < now.astimezone(KST).date():
+        return None
+    return on
 
 
 def _kind(hint: Classified | None) -> Category:

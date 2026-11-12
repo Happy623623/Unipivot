@@ -347,10 +347,21 @@ class FakeNotes:
         self, canvas_course_id: int, notice: ScheduleNotice, *, now: datetime
     ) -> int:
         assert canvas_course_id
+        if self.fail_schedules:
+            raise RuntimeError("DB 오류")
         self.schedules.append(notice)
+        self.writes.append(("add_schedule_notices", self.tx))
         return 1
 
+    def within(self, tx: Any) -> "FakeNotes":
+        """공지 분류가 `notes_for(conn)`으로 부를 때 그 트랜잭션 번호를 기억한다."""
+        self.tx = tx
+        return self
+
     schedules: list[ScheduleNotice] = field(default_factory=list)
+    fail_schedules: bool = False
+    tx: Any = None
+    writes: list[tuple[str, Any]] = field(default_factory=list)  # (무엇, 트랜잭션 번호)
 
 
 @pytest.fixture
@@ -453,6 +464,17 @@ class FakeAnnouncements:
     created: list[tuple[str, str]] = field(default_factory=list)  # (공지 id, 공고 종류)
     linked: set[str] = field(default_factory=set)  # 이미 공고가 붙은 공지
     asked: list[tuple[list[int], datetime, int]] = field(default_factory=list)
+    claimed_at: list[datetime] = field(default_factory=list)
+    taken: set[str] = field(default_factory=set)  # 다른 동기화가 먼저 분류한 공지
+    retried: list[tuple[str, datetime]] = field(default_factory=list)  # 늦춘 공지
+    attempts: dict[str, int] = field(default_factory=dict)  # 늦출 때 돌려줄 시도 횟수
+    tx: Any = None
+    writes: list[tuple[str, Any]] = field(default_factory=list)  # (무엇, 트랜잭션 번호)
+
+    def within(self, tx: Any) -> "FakeAnnouncements":
+        """공지 분류가 `repo_for(conn)`으로 부를 때 그 트랜잭션 번호를 기억한다."""
+        self.tx = tx
+        return self
 
     async def save(
         self, canvas_course_id: int, items: list[CanvasAnnouncement], *, now: datetime
@@ -467,16 +489,25 @@ class FakeAnnouncements:
             for one in chosen
         ]
 
-    async def pending(
-        self, *, courses: list[int], recent_from: datetime, limit: int
+    async def claim(
+        self, *, courses: list[int], recent_from: datetime, now: datetime, limit: int
     ) -> list[PendingAnnouncement]:
         self.asked.append((courses, recent_from, limit))
+        self.claimed_at.append(now)
         return [one for one in self.pending_rows if one.canvas_course_id in set(courses)][:limit]
 
     async def save_classification(
         self, announcement_id: str, *, category: str, summary: str | None, run_id: str | None
-    ) -> None:
+    ) -> bool:
+        if announcement_id in self.taken:
+            return False
         self.classified.append((announcement_id, category, summary))
+        self.writes.append(("save_classification", self.tx))
+        return True
+
+    async def retry_later(self, announcement_id: str, *, now: datetime) -> int:
+        self.retried.append((announcement_id, now))
+        return self.attempts.get(announcement_id, 1)
 
     async def create_opportunity(
         self,
@@ -503,6 +534,7 @@ class FakeAnnouncements:
         self, announcement_id: str, canvas_course_id: int, *, title: str, on: Any
     ) -> int:
         self.schedule_tasks.append((announcement_id, canvas_course_id, title, on))
+        self.writes.append(("add_schedule_task", self.tx))
         return 1
 
 
@@ -557,9 +589,12 @@ def client(
     settings = Settings(**{**settings.model_dump(), "internal_api_key": INTERNAL_KEY})
     app = create_app(settings)
 
+    opened = count(1)
+
     @asynccontextmanager
     async def transaction() -> AsyncIterator[Any]:
-        yield None  # 가짜 저장소는 연결을 쓰지 않는다
+        # 가짜 저장소는 연결을 쓰지 않는다. 대신 트랜잭션 번호를 넘겨, 시험이 같은 트랜잭션에 쓴 것인지 본다
+        yield next(opened)
 
     async def departments(conn: Any) -> list[Any]:
         return []  # 학과 목록은 요건 추출의 "목록에 없는 학과" 검사에만 쓴다
@@ -570,8 +605,8 @@ def client(
         classify_model=CLASSIFY_MODEL,
         agent_for=lambda names: ExtractionAgent(llm, model=EXTRACTION_MODEL, departments=names),
         lms_base=BASE,
-        repo_for=lambda conn: announcements_repo,  # type: ignore[arg-type,return-value]
-        notes_for=lambda conn: notes,  # type: ignore[arg-type,return-value]
+        repo_for=announcements_repo.within,  # type: ignore[arg-type]
+        notes_for=notes.within,  # type: ignore[arg-type]
         departments_for=departments,
     )
     service = LmsSyncService(
@@ -2102,6 +2137,115 @@ def test_a_schedule_change_in_the_past_is_only_classified(
 
     assert announcements_repo.schedule_tasks == []
     assert notes.schedules == []
+
+
+# ── 과목 공지 큐 임대와 실패 늦추기 (2단계 4장 1·2번) ────────────────────────
+
+
+def test_the_queue_is_claimed_at_the_sync_time(
+    client: TestClient, announcements_repo: FakeAnnouncements
+) -> None:
+    """임대 시각은 동기화 시각(주입 시계)으로 민다."""
+    client.post(SYNC)
+    assert announcements_repo.claimed_at == [NOW]
+
+
+def test_a_failed_announcement_is_put_off(
+    client: TestClient, announcements_repo: FakeAnnouncements
+) -> None:
+    """모델이 터진 공지는 늦춰 둔다 — 다음 동기화가 바로 맨 앞에서 다시 집지 않는다."""
+    announcements_repo.pending_rows = [pending()]  # 모델에 답을 담아 두지 않았다
+
+    response = client.post(SYNC)
+
+    assert response.status_code == 202
+    assert announcements_repo.retried == [(f"n-{RESEARCH_TOPIC_ID}", NOW)]
+
+
+def test_a_failed_extraction_puts_the_retry_off(
+    client: TestClient, announcements_repo: FakeAnnouncements
+) -> None:
+    """분류는 끝났고 공고만 못 만든 공지도 추출이 터지면 늦춘다."""
+    announcements_repo.pending_rows = [pending(category="opportunity")]  # 추출 답이 없다
+
+    client.post(SYNC)
+
+    assert announcements_repo.created == []
+    assert announcements_repo.retried == [(f"n-{RESEARCH_TOPIC_ID}", NOW)]
+
+
+def test_an_announcement_that_ran_out_of_tries_is_logged(
+    client: TestClient, announcements_repo: FakeAnnouncements, caplog: pytest.LogCaptureFixture
+) -> None:
+    announcements_repo.pending_rows = [pending()]
+    announcements_repo.attempts = {f"n-{RESEARCH_TOPIC_ID}": 5}
+
+    with caplog.at_level("WARNING", logger="app.lms.announce"):
+        client.post(SYNC)
+
+    assert "5번 처리하지 못해 줄에서 뺐어요" in caplog.text
+
+
+def test_the_schedule_change_is_written_with_its_classification(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    notes: FakeNotes,
+    llm: ScriptedLlm,
+) -> None:
+    """갈래·할 일·알림이 한 트랜잭션이다. 할 일·알림 쓰기가 터지면 갈래도 되돌아가 공지가 다시 집힌다."""
+    announcements_repo.pending_rows = [pending(title="휴강 안내", message="10월 20일 휴강합니다")]
+    llm.replies = [classify_reply("schedule_change", "10월 20일 휴강", change_date="2026-10-20")]
+
+    client.post(SYNC)
+
+    writes = announcements_repo.writes + notes.writes
+    assert [name for name, _ in writes] == [
+        "save_classification",
+        "add_schedule_task",
+        "add_schedule_notices",
+    ]
+    assert len({tx for _, tx in writes}) == 1
+
+
+def test_a_failed_schedule_write_puts_the_announcement_off(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    notes: FakeNotes,
+    llm: ScriptedLlm,
+) -> None:
+    announcements_repo.pending_rows = [pending(title="휴강 안내", message="10월 20일 휴강합니다")]
+    llm.replies = [classify_reply("schedule_change", "10월 20일 휴강", change_date="2026-10-20")]
+    notes.fail_schedules = True
+
+    response = client.post(SYNC)
+
+    assert response.status_code == 202  # 동기화는 성공이다
+    assert announcements_repo.retried == [(f"n-{RESEARCH_TOPIC_ID}", NOW)]
+
+
+def test_a_late_classifier_does_not_act_on_its_own_answer(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    notes: FakeNotes,
+    llm: ScriptedLlm,
+) -> None:
+    """그새 다른 동기화가 먼저 분류했으면(임대가 끝난 뒤 겹친 경우) 할 일·알림·공고를 만들지 않는다."""
+    announcements_repo.pending_rows = [
+        pending(title="휴강 안내", message="10월 20일 휴강합니다"),
+        pending(RESEARCH_TOPIC_ID + 1),
+    ]
+    announcements_repo.taken = {f"n-{RESEARCH_TOPIC_ID}", f"n-{RESEARCH_TOPIC_ID + 1}"}
+    llm.replies = [
+        classify_reply("schedule_change", "10월 20일 휴강", change_date="2026-10-20"),
+        classify_reply("opportunity", "연구 참여 학생을 모집한다", opportunity_category="research"),
+    ]
+
+    client.post(SYNC)
+
+    assert announcements_repo.schedule_tasks == []
+    assert notes.schedules == []
+    assert announcements_repo.created == []
+    assert announcements_repo.retried == []  # 실패가 아니다
 
 
 def test_a_made_up_change_date_is_dropped(
