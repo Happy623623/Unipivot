@@ -414,3 +414,75 @@ async def test_child_runs_make_a_tree_and_roll_their_cost_up() -> None:
     finally:
         await conn.execute("delete from agent_runs where id = any(%s::uuid[])", (ids,))
         await conn.close()
+
+
+async def test_engine_runs_carry_their_stamp_in_the_database() -> None:
+    """엔진 도장(O2): 엔진 이름·버전은 행을 만들 때, 모델·이유 코드는 닫을 때 남는다. 실패한 실행도 엔진이 남는다.
+
+    엔진 이름과 버전은 함께 있거나 함께 없다(검사 제약). 엔진이 여럿인 흐름의 뿌리는 두 칸이 빈다.
+    """
+    conn = await connect(autocommit=True)
+    ids: list[str] = []
+    try:
+        async with agent_run(using(conn), trigger="lms_sync", scenario_code="TEST-ENGINE") as root:
+            ids.append(root.id)
+            async with root.child(engine="classify.announcement") as classify:
+                ids.append(classify.id)
+                await classify.record_llm(
+                    provider="google",
+                    model="test-lite",
+                    input_tokens=10,
+                    output_tokens=1,
+                    cost_usd=0,
+                    latency_ms=5,
+                )
+            with pytest.raises(ApiError):
+                async with root.child(engine="extract.requirements") as extract:
+                    ids.append(extract.id)
+                    await extract.record_llm(
+                        provider="google",
+                        model="test-standard",
+                        input_tokens=10,
+                        output_tokens=1,
+                        cost_usd=0,
+                        latency_ms=5,
+                    )
+                    extract.review_codes = ("NO_SUBMISSION",)
+                    raise ApiError(502, "LLM_TIMEOUT", "늦었어요.")
+        poster = await start_run(
+            using(conn), trigger="eval", scenario_code="TEST-ENGINE", engine="extract.poster"
+        )
+        ids.append(poster)
+
+        found = {
+            str(row["id"]): row
+            for row in await (
+                await conn.execute(
+                    "select id, status::text as status, engine, engine_version, model, review_codes"
+                    " from agent_runs where id = any(%s::uuid[])",
+                    (ids,),
+                )
+            ).fetchall()
+        }
+        assert [
+            (
+                found[one]["status"],
+                found[one]["engine"],
+                found[one]["engine_version"],
+                found[one]["model"],
+                found[one]["review_codes"],
+            )
+            for one in ids
+        ] == [
+            ("succeeded", None, None, None, []),
+            ("succeeded", "classify.announcement", 1, "test-lite", []),
+            ("failed", "extract.requirements", 1, "test-standard", ["NO_SUBMISSION"]),
+            ("running", "extract.poster", 1, None, []),
+        ]
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                "insert into agent_runs (trigger_type, engine) values ('eval', 'extract.poster')"
+            )
+    finally:
+        await conn.execute("delete from agent_runs where id = any(%s::uuid[])", (ids,))
+        await conn.close()

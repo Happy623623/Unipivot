@@ -126,6 +126,8 @@
 >
 > v0.4 보강(11/19, 정보 필요 알림): `profile_needed`를 **물어볼 항목 단위로 묶는다**(키 `profile_needed:field:{항목}`). 같은 항목을 묻는 공고가 여럿이면 알림은 하나이고 마감이 가장 가까운 공고를 잇는다(문구 "대표 제목 외 N개 · 거주지역을 입력하면 판정할 수 있어요"). 보낸 항목은 다시 묻지 않는다. 응답 모양은 그대로다
 >
+> v0.4 보강(11/21, 엔진 등록부): 실행 기록에 **엔진 도장**이 생겼다. 엔진 한 번인 실행(`agent_runs`)에 엔진 이름·버전(`engine`·`engine_version`, 등록부 `api/app/engines/registry.py`), 마지막으로 부른 모델(`model`), 원문 확인 이유 코드(`review_codes`)가 남는다. LMS 동기화의 공지 분류도 동기화 실행의 **자식 실행**이 되었다(엔진 `classify.announcement`) — 동기화 실행에는 `classify_announcement` 한 줄이 그대로 남고 출력에 `classify_run_id`가 더해진다. 학생에게 보이는 원문 확인 이유(`review_reasons`)와 모든 응답 모양은 그대로다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1211,6 +1213,8 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
   분반 한정 공지와 예약 공지(게시 전)는 분류하지 않는다. **분류가 실패해도 동기화는 성공이다** — 그 공지는
   분류 전으로 남고, 30분·1시간·2시간·4시간 뒤의 동기화가 다시 집는다(다섯 번 집혀도 끝내지 못하면 줄에서 빠진다).
   한 동기화가 집은 공지는 2시간 동안 다른 동기화가 집지 않는다
+  공지 분류는 동기화 실행의 **자식 실행**이다(엔진 `classify.announcement`, 사용자 없음 — 갈래는 수강생 모두의 할 일·알림·공고가 된다).
+  동기화 실행에는 `classify_announcement` 한 줄(출력 `category`·`summary`·`classify_run_id`)이 남는다
 - 기회성(`opportunity`)으로 나온 공지는 그 글을 원문으로 삼아 **요건 추출을 한 번 더** 돌려 공고를 만든다.
   공고는 `source_type = lms_announcement`, `external_id`는 Canvas 공지 번호, `visible_canvas_course_id`가
   그 과목이라 **수강생만** 본다(5장). 요건을 못 뽑으면 공고는 만들되 판정에서 빠진다(원문 확인 필요)

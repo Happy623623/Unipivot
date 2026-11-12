@@ -104,6 +104,7 @@ async def test_the_draft_carries_what_the_confirm_screen_shows() -> None:
     # 조건 문장은 공고 상세와 같은 방법으로 만든다(app/eligibility/describe)
     assert requirement.condition_text == "재학·휴학"
     assert requirement.evidence_text == "국내 대학 재학생 및 휴학생"
+    assert extracted.review_codes == ()  # 고친 것·모호·낮은 신뢰도가 없다(엔진 도장 O2)
 
 
 async def test_known_documents_come_with_the_guide_from_the_dictionary() -> None:
@@ -149,6 +150,8 @@ async def test_evidence_is_checked_against_what_the_model_transcribed() -> None:
     (requirement,) = extracted.draft.requirements
     assert requirement.is_ambiguous  # 근거를 못 찾은 조건은 모호로 두어 판정에 쓰지 않는다
     assert "requirements" in extracted.draft.low_confidence_fields
+    # 실행 기록에는 요건 추출과 같은 코드로 남는다: 코드가 고쳐 받았고, 그래서 모호한 조건이 있다
+    assert extracted.review_codes == ("REPAIRED", "AMBIGUOUS")
 
 
 async def test_a_missing_deadline_is_flagged_for_the_student() -> None:
@@ -160,6 +163,7 @@ async def test_a_missing_deadline_is_flagged_for_the_student() -> None:
 async def test_low_confidence_flags_the_title_and_the_deadline() -> None:
     extracted, _ = await run(call(SUBMIT, **args(confidence=LOW_CONFIDENCE - 0.01)))
     assert set(extracted.draft.low_confidence_fields) >= {"title", "deadline_at"}
+    assert extracted.review_codes == ("LOW_CONFIDENCE",)
 
 
 async def test_what_the_model_flags_is_kept_and_unknown_names_are_dropped() -> None:
@@ -184,6 +188,7 @@ async def test_an_ambiguous_condition_flags_the_requirements() -> None:
     )
     extracted, _ = await run(call(SUBMIT, **vague))
     assert "requirements" in extracted.draft.low_confidence_fields
+    assert extracted.review_codes == ("AMBIGUOUS",)
 
 
 async def test_an_unknown_category_falls_back_to_other() -> None:

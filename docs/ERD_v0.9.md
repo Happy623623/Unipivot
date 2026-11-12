@@ -261,7 +261,7 @@ erDiagram
         boolean is_section_specific "분반 한정 공지"
         enum category "schedule_change, material, opportunity, general"
         uuid opportunity_id FK "기회성 공지면 연결"
-        uuid classified_run_id FK
+        uuid classified_run_id FK "갈래를 정한 분류 실행(동기화의 자식)"
         timestamptz retry_at "큐: 다시 집을 시각(임대·늦춤)"
         smallint attempts "큐: 집힌 횟수, 5면 빠짐"
     }
@@ -518,6 +518,10 @@ erDiagram
         text error_message
         uuid parent_run_id FK "실행 트리: 부모, 뿌리는 null"
         uuid root_run_id FK "실행 트리: 뿌리, 뿌리 자신은 null"
+        text engine "엔진 등록부 id, 엔진 한 번인 실행만"
+        int engine_version "엔진 버전, engine과 함께"
+        text model "이 실행이 마지막으로 부른 모델"
+        text_array review_codes "원문 확인 이유 코드"
     }
     tool_calls {
         uuid id PK
@@ -716,6 +720,7 @@ erDiagram
 - 강의자료 분량 상한은 쪽수가 아니라 `materials.text_tokens`(추출 텍스트 토큰)로 판정한다. 요약은 구간별로 쪼개 전체를 처리하고, 번역은 `material_sections` 단위로 사용자가 요청한 구간만 한다. `over_limit`과 `translation_requested_at`은 유료화 수요를 보여주는 근거 데이터다
 - `agent_runs`에 토큰·비용 합계를 두고 `llm_calls`에 호출별 상세를 둔다. 지표 집계는 `agent_runs`만 보면 된다
 - **실행 트리(11/17)**: 흐름 하나가 뿌리 실행이고, 그 안에서 엔진을 한 번 부르는 일(지금은 요건 추출 — LMS 기회성 공지, 학교 공지 링크)이 자식 실행이다(`parent_run_id`·`root_run_id`, 뿌리는 둘 다 null). 자식은 부모의 trigger_type·scenario_code를 받고 user_id는 비운다. 자식의 토큰·비용은 끝날 때 부모에 더해져 뿌리의 cost_usd가 흐름 전체 비용이다 — 성공률·응답시간은 뿌리(`parent_run_id is null`)만 세고, 비용은 `llm_calls`를 더한다(두 층의 cost_usd를 함께 더하면 두 번 센다)
+- **엔진 도장(11/21)**: 엔진 한 번인 실행에 등록부(`api/app/engines/registry.py`)의 엔진 이름·버전(`engine`·`engine_version`)을 행을 만들 때 남기고, 끝날 때 그 실행이 마지막으로 부른 모델(`model`)과 원문 확인 이유 코드(`review_codes`, 같은 코드는 한 번)를 남긴다. 엔진이 여럿인 흐름(LMS 동기화 — 공지 분류·기회성 공지 요건 추출, 학교 공지 링크)은 뿌리에 engine이 없고 자식마다 있다. 엔진 하나뿐인 흐름(포스터·계획서·강의자료·준비하기, A안 공지 추출)은 뿌리가 곧 엔진 한 번이라 뿌리에 있다. 엔진별 지표는 `engine is not null`인 실행과 그 실행의 `llm_calls`를 센다 — 흐름 지표(뿌리만)와 따로 세므로 두 번 세지 않는다. 화면 문구는 `opportunities.review_reasons` 그대로이고, 코드는 실행 기록에만 있다. 공지 분류가 자식이 되어 `lms_announcements.classified_run_id`는 그 분류 실행을 가리킨다
 - 요건 추출 제출(submit_requirements)의 output은 {accepted, problems}이고, 읽기·토큰 상한에 닿아 코드가 시킨 제출이면 forced: true가 더해진다.
 
 ### 알림함 · 설정 · 조회 기록
@@ -835,6 +840,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 15 | `supabase/migrations/20261114000000_lms_announcement_lease.sql` | lms_announcements.retry_at·attempts(과목 공지 큐 임대, 실패하면 늦추고 5번이면 뺌). 여러 번 돌려도 같다 |
 | 16 | `supabase/migrations/20261117000000_agent_run_tree.sql` | agent_runs.parent_run_id·root_run_id(실행 트리, 부분 인덱스 둘). 여러 번 돌려도 같다 |
 | 17 | `supabase/migrations/20261118000000_job_schedule.sql` | job_schedule(정기 작업 예약표 — 작업마다 한 줄, 다음 차례·임대·횟수·마지막 실패). RLS를 켜고 정책을 두지 않는다(백엔드만). 줄은 서버가 처음 tick할 때 넣는다. 여러 번 돌려도 같다 |
+| 18 | `supabase/migrations/20261121000000_agent_run_engine.sql` | agent_runs.engine·engine_version·model·review_codes(엔진 도장). 엔진 이름과 버전은 함께 있거나 함께 없다(검사 제약), 엔진별 부분 인덱스 하나. 여러 번 돌려도 같다 |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -921,6 +927,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-21): agent_runs.engine·engine_version·model·review_codes — 엔진 도장(O2). 공지 분류가 동기화 실행의 자식 실행이 되고 lms_announcements.classified_run_id가 그 자식을 가리킨다
 - v0.9 보강 (2026-11-19): 정보 필요 알림 키를 항목 단위로(`profile_needed:field:{항목}`, 대표 공고는 마감이 가장 가까운 것), 옛 키의 pending 행은 다음 예약이 지운다. 스키마 변경 없음
 - v0.9 보강 (2026-11-18): job_schedule — 정기 작업 예약표(작업마다 한 줄, 다음 차례·임대 30분·실패하면 늦춤). 서버가 꺼져 있던 차례를 깨어나 한 번 따라잡고, 몇 대가 떠도 작업마다 한 번만 돈다
 - v0.9 보강 (2026-11-17): agent_runs.parent_run_id·root_run_id — 실행 트리(O1). LMS 기회성 공지·학교 공지 링크의 요건 추출이 자식 실행이 되고, 시나리오 지표는 뿌리만 센다

@@ -262,8 +262,23 @@ async def test_the_model_and_its_cost_are_logged(settings: Settings) -> None:
             "select provider, model, input_tokens, output_tokens from llm_calls where run_id = %s",
             run["id"],
         )
+        (stamp,) = await rows(
+            "select engine, engine_version, model from agent_runs where id = %s", run["id"]
+        )
     assert len(calls) == 1 and calls[0]["provider"] == "google"
     assert calls[0]["input_tokens"] and calls[0]["output_tokens"]
+    # 엔진 도장(O2): 포스터 실행이 곧 포스터 추출 엔진 한 번이고, 부른 모델이 남는다
+    assert stamp == {"engine": "extract.poster", "engine_version": 1, "model": calls[0]["model"]}
+
+
+async def test_the_poster_run_keeps_its_review_codes(settings: Settings) -> None:
+    """확인 화면이 강조할 칸과 따로, 실행 기록에는 요건 추출과 같은 이유 코드가 남는다(엔진 도장 O2)."""
+    llm = ScriptedLlm(call(SUBMIT, **args(confidence=0.4)))
+    async with committed() as world:
+        run = await extract(world, settings, llm)
+        (stamp,) = await rows("select review_codes from agent_runs where id = %s", run["id"])
+    assert run["status"] == "succeeded"
+    assert stamp["review_codes"] == ["LOW_CONFIDENCE"]
 
 
 async def test_a_poster_with_no_text_fails_with_what_to_do(settings: Settings) -> None:

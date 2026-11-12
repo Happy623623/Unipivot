@@ -230,6 +230,21 @@ async def test_a_syllabus_becomes_items_the_confirm_screen_can_show(settings: Se
     # 실행 기록: PDF 읽기 → 저장(명세 11장의 처리 과정). 화면에는 한국어 이름으로 보인다
     assert [step["tool"] for step in run["steps"]] == ["read_syllabus_pdf", "save_syllabus"]
     assert [step["label"] for step in run["steps"]] == ["계획서 글자 읽기", "시험·발표 일정 저장"]
+    # 엔진 도장(O2): 이 실행이 곧 계획서 추출 엔진 한 번이다
+    conn = await connect()
+    try:
+        stamp = await (
+            await conn.execute(
+                "select engine, engine_version, model from agent_runs where id = %s", (run["id"],)
+            )
+        ).fetchone()
+    finally:
+        await conn.close()
+    assert stamp == {
+        "engine": "extract.syllabus",
+        "engine_version": 1,
+        "model": settings.extraction_model,
+    }
 
 
 async def test_the_model_sees_the_text_and_the_semester_of_that_course(

@@ -310,6 +310,21 @@ async def test_campus_and_missing_file_rules(tmp_path: Path) -> None:
         assert result.extraction.needs_review
         # 학생에게 보이는 이유라 번호 대신 파일 이름으로 쓴다(S1-6b)
         assert "가져오지 못해 읽지 않은 첨부: 2. 신청서.hwp" in result.extraction.review_reasons
+        assert result.extraction.review_codes[-1] == "MISSING_FILE"
+        # 엔진 도장(O2): A안 실행은 뿌리가 곧 요건 추출 엔진 한 번이다. 이유 코드도 실행에 남는다
+        (run,) = await _rows(
+            log_conn,
+            "select engine, engine_version, model, review_codes, parent_run_id from agent_runs"
+            " where id = %s",
+            result.run_id,
+        )
+        assert run == {
+            "engine": "extract.requirements",
+            "engine_version": 1,
+            "model": MODEL,
+            "review_codes": list(result.extraction.review_codes),
+            "parent_run_id": None,
+        }
         rows = await _rows(
             conn,
             "select seq, file_name, extract_error, extracted_at is not null as done,"

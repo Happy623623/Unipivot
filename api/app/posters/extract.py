@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from app.eligibility import Department, Requirement, condition_text
+from app.engines.review import ReviewCode
 from app.extraction.models import DocumentDraft, RequirementDraft
 from app.extraction.validate import Context, Evidence, Submission, check_submission
 from app.llm import Blob, LlmClient, LlmReply, UserTurn
@@ -52,6 +53,8 @@ class Extracted:
     draft: PosterDraft
     poster_text: str  # 등록(F-16 2차)에서 공고 원문으로 쓴다
     reply: LlmReply
+    # 원문 확인 이유 코드(app.engines.ReviewCode). 화면에는 쓰지 않고 실행 기록에 남긴다(엔진 등록부 O2)
+    review_codes: tuple[str, ...] = ()
 
 
 async def extract(
@@ -113,7 +116,19 @@ async def extract(
             args.get("low_confidence_fields"), submission, title, _text(args.get("category"))
         ),
     )
-    return Extracted(draft, poster_text, reply)
+    return Extracted(draft, poster_text, reply, review_codes=_review_codes(submission))
+
+
+def _review_codes(submission: Submission) -> tuple[str, ...]:
+    """요건 추출과 같은 코드로 센다(같은 검증 코드를 쓴다). 확인 화면이 강조하는 항목과는 따로다."""
+    codes = []
+    if submission.fixes:
+        codes.append(ReviewCode.REPAIRED)
+    if any(req.is_ambiguous for req in submission.requirements):
+        codes.append(ReviewCode.AMBIGUOUS)
+    if submission.confidence < LOW_CONFIDENCE:
+        codes.append(ReviewCode.LOW_CONFIDENCE)
+    return tuple(str(code) for code in codes)
 
 
 def _requirement(req: RequirementDraft) -> PosterRequirementDraft:

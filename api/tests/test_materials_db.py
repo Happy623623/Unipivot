@@ -255,6 +255,11 @@ async def test_a_material_is_summarized_once_and_then_served_from_the_cache(
             calls = await (
                 await conn.execute("select model from llm_calls where run_id = %s", (run_id,))
             ).fetchall()
+            stamp = await (
+                await conn.execute(
+                    "select engine, engine_version, model from agent_runs where id = %s", (run_id,)
+                )
+            ).fetchone()
         finally:
             await conn.close()
         # 자료 본문은 기록에 남기지 않는다(파일 id와 크기만)
@@ -262,6 +267,12 @@ async def test_a_material_is_summarized_once_and_then_served_from_the_cache(
         assert "고유값" not in str([tool["output"] for tool in tools])
         assert tools[1]["output"]["saved"] is True
         assert [one["model"] for one in calls] == ["gemini-3.5-flash-lite"]
+        # 엔진 도장(O2): 이 실행이 곧 요약 엔진 한 번이다
+        assert stamp == {
+            "engine": "summarize.material",
+            "engine_version": 1,
+            "model": "gemini-3.5-flash-lite",
+        }
 
 
 async def test_a_material_over_the_token_limit_is_refused_and_recorded(

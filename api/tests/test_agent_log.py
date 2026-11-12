@@ -7,7 +7,8 @@ from typing import Any
 import pytest
 
 from app import pricing
-from app.agent_log import AgentRun, abandon_run, agent_run, error_text, scrub, using
+from app.agent_log import AgentRun, abandon_run, agent_run, error_text, scrub, start_run, using
+from app.engines import ENGINES
 from app.errors import ApiError
 from app.pricing import Price, cost_usd
 from tests.fakes import CHILD_RUN_ID, FakeLogConnection
@@ -159,7 +160,7 @@ async def test_abandon_run_closes_a_run_that_never_started() -> None:
 
 
 def _closed(log: FakeLogConnection, run_id: str) -> list[Any]:
-    """그 실행을 닫은 문장의 값들(status, latency, input, output, cost, error, id)."""
+    """그 실행을 닫은 문장의 값들(status, latency, input, output, cost, model, review_codes, error, id)."""
     return [
         params
         for query, params in log.statements
@@ -183,7 +184,9 @@ async def test_a_child_run_hangs_under_its_parent_and_adds_its_cost() -> None:
         )
 
     assert child.id == CHILD_RUN_ID
-    assert log.children() == [{"user": None, "scenario": None, "parent": log.run_id}]
+    assert log.children() == [
+        {"user": None, "scenario": None, "parent": log.run_id, "engine": None, "version": None}
+    ]
     assert (parent.input_tokens, parent.output_tokens, parent.cost_usd) == (
         100,
         20,
@@ -191,6 +194,8 @@ async def test_a_child_run_hangs_under_its_parent_and_adds_its_cost() -> None:
     )
     (closed,) = _closed(log, CHILD_RUN_ID)
     assert (closed[0], closed[2], closed[3], closed[4]) == ("succeeded", 100, 20, Decimal("0.002"))
+    assert (closed[5], closed[6]) == ("model-a", [])  # 자식이 부른 모델(O2)
+    assert parent.model is None  # 부모는 모델을 부르지 않았다
     assert _closed(log, log.run_id) == []  # 부모를 닫는 것은 부모를 연 쪽이다
 
 
@@ -211,7 +216,108 @@ async def test_a_failed_child_is_closed_as_failed_and_still_charges_its_parent()
             )
             raise ApiError(502, "LLM_TIMEOUT", "늦었어요.")
 
-    assert log.children() == [{"user": "u-1", "scenario": "T-1", "parent": log.run_id}]
+    assert log.children() == [
+        {"user": "u-1", "scenario": "T-1", "parent": log.run_id, "engine": None, "version": None}
+    ]
     (closed,) = _closed(log, CHILD_RUN_ID)
-    assert (closed[0], closed[5]) == ("failed", "LLM_TIMEOUT: 늦었어요.")
+    assert (closed[0], closed[-2]) == ("failed", "LLM_TIMEOUT: 늦었어요.")
     assert parent.cost_usd == Decimal("0.001")
+
+
+@pytest.mark.anyio
+async def test_an_engine_child_carries_the_engine_name_version_model_and_review_codes() -> None:
+    """엔진 도장(O2): 자식 행에 등록부의 엔진 이름·버전을 남기고, 닫을 때 모델과 이유 코드를 남긴다."""
+    log = FakeLogConnection()
+    parent = AgentRun(connect=using(log), id=log.run_id)  # type: ignore[arg-type]
+    async with parent.child(engine="extract.requirements") as child:
+        await child.record_llm(
+            provider="test",
+            model="model-a",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            cost_usd=0,
+        )
+        await child.record_llm(
+            provider="test",
+            model="model-b",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            cost_usd=0,
+        )
+        child.review_codes = ("AMBIGUOUS", "LOW_CONFIDENCE")
+
+    assert log.children() == [
+        {
+            "user": None,
+            "scenario": None,
+            "parent": log.run_id,
+            "engine": "extract.requirements",
+            "version": ENGINES["extract.requirements"].version,
+        }
+    ]
+    (closed,) = _closed(log, CHILD_RUN_ID)
+    # 모델은 마지막으로 부른 것이다(캐스케이드면 위 등급, 명세 v1 3.6)
+    assert (closed[0], closed[5], closed[6]) == (
+        "succeeded",
+        "model-b",
+        ["AMBIGUOUS", "LOW_CONFIDENCE"],
+    )
+
+
+@pytest.mark.anyio
+async def test_a_shared_engine_run_cannot_name_a_student() -> None:
+    """결과를 여러 학생이 보는 엔진의 실행에는 user_id를 남기지 못한다(명세 v1 6장 5번). 행도 만들지 않는다."""
+    log = FakeLogConnection()
+    parent = AgentRun(connect=using(log), id=log.run_id)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="user_id"):
+        async with parent.child(engine="classify.announcement", user_id="u-1"):
+            pass
+    with pytest.raises(ValueError, match="user_id"):
+        await start_run(
+            using(log),  # type: ignore[arg-type]
+            trigger="batch_crawl",
+            user_id="u-1",
+            engine="extract.requirements",
+        )
+    assert log.statements == []
+
+
+@pytest.mark.anyio
+async def test_an_unknown_engine_is_refused_before_any_row() -> None:
+    log = FakeLogConnection()
+    parent = AgentRun(connect=using(log), id=log.run_id)  # type: ignore[arg-type]
+    with pytest.raises(KeyError, match="extract.everything"):
+        async with parent.child(engine="extract.everything"):
+            pass
+    assert log.statements == []
+
+
+@pytest.mark.anyio
+async def test_a_single_engine_flow_stamps_its_root_when_the_row_is_made() -> None:
+    """포스터처럼 엔진 하나뿐인 흐름은 start_run이 뿌리에 엔진을 남긴다. 이어 쓰는 쪽은 엔진을 다시 주지 않는다."""
+    log = FakeLogConnection()
+    run_id = await start_run(
+        using(log),  # type: ignore[arg-type]
+        trigger="poster_upload",
+        user_id="u-1",
+        engine="extract.poster",
+    )
+    query, params = log.statements[0]
+    assert query.startswith("insert into agent_runs")
+    assert params == {
+        "user": "u-1",
+        "trigger": "poster_upload",
+        "scenario": None,
+        "engine": "extract.poster",
+        "version": ENGINES["extract.poster"].version,
+    }
+    with pytest.raises(ValueError, match="start_run"):
+        async with agent_run(
+            using(log),  # type: ignore[arg-type]
+            trigger="poster_upload",
+            run_id=run_id,
+            engine="extract.poster",
+        ):
+            pass

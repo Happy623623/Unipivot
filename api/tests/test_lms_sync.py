@@ -26,6 +26,7 @@ from app.config import Settings, get_settings
 from app.crypto import encrypt
 from app.db import get_log_connect
 from app.eligibility import KST
+from app.engines import ENGINES
 from app.extraction.agent import ExtractionAgent
 from app.lms.announce import AnnouncementService
 from app.lms.announcements import CanvasAnnouncement
@@ -74,7 +75,7 @@ from app.schemas.lms import (
     SyncCounts,
 )
 from tests.conftest import USER_ID, make_token
-from tests.fakes import CHILD_RUN_ID, FakeLogConnection
+from tests.fakes import CHILD_RUN_ID, CLASSIFY_RUN_ID, FakeLogConnection
 from tests.llm_fakes import ScriptedLlm
 from tests.llm_fakes import call as model_call
 from tests.lms_samples import (
@@ -461,6 +462,7 @@ class FakeAnnouncements:
     new_ids: dict[int, list[str]] = field(default_factory=dict)  # 과목 → 처음 본 공지 id
     pending_rows: list[PendingAnnouncement] = field(default_factory=list)
     classified: list[tuple[str, str, str | None]] = field(default_factory=list)
+    classify_run_ids: list[str | None] = field(default_factory=list)  # 갈래를 정한 분류 실행
     created: list[tuple[str, str]] = field(default_factory=list)  # (공지 id, 공고 종류)
     linked: set[str] = field(default_factory=set)  # 이미 공고가 붙은 공지
     asked: list[tuple[list[int], datetime, int]] = field(default_factory=list)
@@ -502,6 +504,7 @@ class FakeAnnouncements:
         if announcement_id in self.taken:
             return False
         self.classified.append((announcement_id, category, summary))
+        self.classify_run_ids.append(run_id)
         self.writes.append(("save_classification", self.tx))
         return True
 
@@ -2009,6 +2012,7 @@ def test_the_extraction_of_an_opportunity_announcement_is_a_child_run(
 
     그래서 공고 상세의 처리 과정(F-42, `tool_calls where run_id = extraction_run_id`)에 과목 받기·공지 분류 같은
     동기화 단계가 섞이지 않는다(10/28 계획 PR 7). 공고는 수강생 모두가 보므로 자식에 user_id를 남기지 않는다.
+    공지 분류도 엔진 한 번이라 자식 실행이고(엔진 등록부 O2), 두 자식에 엔진 이름·버전이 남는다.
     """
     announcements_repo.pending_rows = [pending()]
     llm.replies = [
@@ -2018,8 +2022,18 @@ def test_the_extraction_of_an_opportunity_announcement_is_a_child_run(
 
     client.post(SYNC)
 
-    assert log.children() == [{"user": None, "scenario": None, "parent": log.run_id}]
+    assert log.children() == [
+        {
+            "user": None,
+            "scenario": None,
+            "parent": log.run_id,
+            "engine": engine,
+            "version": ENGINES[engine].version,
+        }
+        for engine in ("classify.announcement", "extract.requirements")
+    ]
     assert announcements_repo.run_ids == [CHILD_RUN_ID]
+    assert announcements_repo.classify_run_ids == [CLASSIFY_RUN_ID]  # 갈래를 정한 엔진 실행
     tools = {
         params[2]: params[0]
         for query, params in log.statements
@@ -2032,12 +2046,72 @@ def test_the_extraction_of_an_opportunity_announcement_is_a_child_run(
         for query, params in log.statements
         if "insert into llm_calls" in query and isinstance(params, tuple)
     ]
-    assert models == [(log.run_id, CLASSIFY_MODEL), (CHILD_RUN_ID, EXTRACTION_MODEL)]
+    assert models == [(CLASSIFY_RUN_ID, CLASSIFY_MODEL), (CHILD_RUN_ID, EXTRACTION_MODEL)]
     assert log.outputs()["extract_announcement"] == {
         "extraction_run_id": CHILD_RUN_ID,
         "opportunity_id": f"opportunity-{RESEARCH_TOPIC_ID}",
         "requirements": 1,
     }
+    assert log.outputs()["classify_announcement"] == {
+        "category": "opportunity",
+        "summary": "연구 참여 학생을 모집한다",
+        "classify_run_id": CLASSIFY_RUN_ID,
+    }
+    closed = {
+        params[-1]: (params[0], params[5], params[6])
+        for query, params in log.statements
+        if query.startswith("update agent_runs set status") and params[-1] != log.run_id
+    }
+    assert closed == {
+        CLASSIFY_RUN_ID: ("succeeded", CLASSIFY_MODEL, []),
+        CHILD_RUN_ID: ("succeeded", EXTRACTION_MODEL, []),
+    }
+
+
+def test_a_classification_without_a_submission_is_coded_no_submission(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    llm: ScriptedLlm,
+    log: FakeLogConnection,
+) -> None:
+    """모델이 분류를 제출하지 않으면 갈래는 general(안전한 쪽)이고, 분류 실행에 NO_SUBMISSION이 남는다.
+
+    갈래는 그대로라 학생 화면은 바뀌지 않는다. 엔진별 지표(O3)가 이 코드로 "분류를 못 한 공지"를 센다.
+    """
+    announcements_repo.pending_rows = [pending()]
+    llm.replies = ["어느 갈래인지 모르겠어요."]
+
+    client.post(SYNC)
+
+    assert announcements_repo.classified == [(f"n-{RESEARCH_TOPIC_ID}", "general", None)]
+    (codes,) = [
+        params[6]
+        for query, params in log.statements
+        if query.startswith("update agent_runs set status") and params[-1] == CLASSIFY_RUN_ID
+    ]
+    assert codes == ["NO_SUBMISSION"]
+
+
+def test_an_extraction_without_a_submission_leaves_its_code_on_the_child_run(
+    client: TestClient,
+    announcements_repo: FakeAnnouncements,
+    llm: ScriptedLlm,
+    log: FakeLogConnection,
+) -> None:
+    """요건을 못 뽑으면 공고는 만들되 판정에서 빠지고(원문 확인 필요), 추출 자식에 NO_SUBMISSION이 남는다(O2)."""
+    announcements_repo.pending_rows = [pending(category="opportunity")]  # 분류는 끝났다
+    llm.replies = ["요건은 3학년 이상이에요.", "다시 말해 3학년 이상이에요."]
+
+    client.post(SYNC)
+
+    (extraction,) = announcements_repo.extractions
+    assert not extraction.succeeded and extraction.review_codes == ("NO_SUBMISSION",)
+    (closed,) = [
+        params
+        for query, params in log.statements
+        if query.startswith("update agent_runs set status") and params[-1] == CHILD_RUN_ID
+    ]
+    assert (closed[0], closed[6]) == ("succeeded", ["NO_SUBMISSION"])
 
 
 def test_a_failed_extraction_closes_its_child_run_as_failed(

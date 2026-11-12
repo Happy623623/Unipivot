@@ -36,11 +36,13 @@ from psycopg import AsyncConnection
 from app.agent_log import AgentRun, LogConnect, agent_run
 from app.crawl.hanyang import BOARD_URL, SOURCE_NAME
 from app.crawl.saved import NoticeContent
+from app.engines.review import ReviewCode
 from app.extraction.agent import ExtractionAgent
 from app.extraction.models import ExtractionResult
 from app.extraction.store import content_hash, save_extraction
 
 SOURCE_TYPE = "school_notice"
+ENGINE = "extract.requirements"  # 엔진 등록부 id(O2). 요건 추출 실행에 이 이름·버전을 남긴다
 RETRY_HINT = "지난 추출이 실패해 판정에서 빠져 있어요. --force로 다시 추출하세요"
 RESTORED = "숨김·만료였던 공고를 다시 보이게 함(status = active)"
 
@@ -168,12 +170,15 @@ async def import_content(
         )
 
     extraction_run = (
-        agent_run(log_connect, trigger="batch_crawl", scenario_code=options.scenario)
+        agent_run(log_connect, trigger="batch_crawl", scenario_code=options.scenario, engine=ENGINE)
         if parent is None
-        else parent.child(scenario_code=options.scenario)
+        else parent.child(engine=ENGINE, scenario_code=options.scenario)
     )
     async with extraction_run as run, asyncio.timeout(options.model_timeout):
         extraction = await agent.run(notice, run)
+        if content.missing:
+            extraction = _note_missing(extraction, content)
+        run.review_codes = extraction.review_codes  # 엔진 도장(O2). 화면 문구는 review_reasons
     if not extraction.succeeded and not options.keep_unjudged:
         return ImportResult(
             "error",
@@ -183,8 +188,6 @@ async def import_content(
             cost_usd=run.cost_usd,
             unjudged=True,
         )
-    if content.missing:
-        extraction = _note_missing(extraction, content)
     async with connect() as conn, conn.transaction():
         opportunity_id = await _upsert(conn, source_id, content, notice.body)
         ids = await _replace_attachments(conn, opportunity_id, content, extraction)
@@ -375,4 +378,5 @@ def _note_missing(extraction: ExtractionResult, saved: NoticeContent) -> Extract
         extraction,
         needs_review=True,
         review_reasons=(*extraction.review_reasons, f"가져오지 못해 읽지 않은 첨부: {names}"),
+        review_codes=tuple(dict.fromkeys((*extraction.review_codes, str(ReviewCode.MISSING_FILE)))),
     )

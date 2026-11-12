@@ -83,6 +83,11 @@ class Classified:
         return self.category == "opportunity"
 
     @property
+    def submitted(self) -> bool:
+        """모델이 분류를 제출했는가. 아니면 갈래는 general(안전한 쪽)로 둔 것이다."""
+        return any(call.name == SUBMIT for call in self.reply.turn.tool_calls)
+
+    @property
     def is_schedule_change(self) -> bool:
         return self.category == "schedule_change"
 

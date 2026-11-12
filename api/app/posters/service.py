@@ -36,6 +36,7 @@ from app.uploads.storage import StorageDep, StorageError, SupabaseStorage
 logger = logging.getLogger(__name__)
 Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 TRIGGER = "poster_upload"
+ENGINE = "extract.poster"  # 엔진 등록부 id(O2). 이 실행이 곧 엔진 한 번이다
 RETRY_HINT = "포스터 전체가 보이게 밝은 곳에서 다시 찍어 주세요."
 SLOW = "포스터를 읽는 데 너무 오래 걸렸어요. 잠시 후 다시 눌러 주세요."
 STORAGE_FAILED = "올린 포스터를 불러오지 못했어요. 잠시 후 다시 눌러 주세요."
@@ -76,7 +77,9 @@ class PosterService:
 
     async def begin(self, user_id: str, file: PosterFile, *, now: datetime, today: date) -> str:
         """실행 행을 만들고 일을 띄운다. run_id를 준다."""
-        run_id = await start_run(self.log_connection, trigger=TRIGGER, user_id=user_id)
+        run_id = await start_run(
+            self.log_connection, trigger=TRIGGER, user_id=user_id, engine=ENGINE
+        )
         job = PosterJob(run_id, user_id, file, today, now)
         work = self.execute(job)
         try:
@@ -94,6 +97,7 @@ class PosterService:
             ) as run:
                 async with run.tool(SUBMIT, {"file_id": job.file.id}) as call:
                     extracted = await self._read(run, call, job)
+                    run.review_codes = extracted.review_codes  # 엔진 도장(O2)
                     duplicate = await self._duplicate(job, extracted)
                     call.output = {
                         "draft": extracted.draft.model_dump(mode="json"),

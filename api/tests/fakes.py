@@ -299,6 +299,8 @@ class FakeMetricsRepository:
 
 
 CHILD_RUN_ID = "00000000-0000-4000-8000-0000000000a3"  # FakeLogConnection이 자식 실행에 주는 번호
+# 공지 분류 자식(엔진 classify.announcement, O2)에 주는 번호. 한 동기화에 분류·추출 자식이 함께 생긴다
+CLASSIFY_RUN_ID = "00000000-0000-4000-8000-0000000000a4"
 
 
 class FakeLogCursor:
@@ -328,13 +330,16 @@ class FakeLogConnection:
         if "returning id" not in query:
             return FakeLogCursor(None)
         if "parent_run_id" in query:  # 자식 실행(run.child, 실행 트리 O1)
-            return FakeLogCursor({"id": CHILD_RUN_ID})
+            engine = params.get("engine") if isinstance(params, dict) else None
+            return FakeLogCursor(
+                {"id": CLASSIFY_RUN_ID if engine == "classify.announcement" else CHILD_RUN_ID}
+            )
         if "agent_runs" in query:
             return FakeLogCursor({"id": self.run_id})
         return FakeLogCursor({"id": "00000000-0000-4000-8000-0000000000a2"})
 
     def children(self) -> list[dict[str, Any]]:
-        """연 자식 실행의 값(부모 id·user_id·scenario_code). 연 순서대로."""
+        """연 자식 실행의 값(부모 id·user_id·scenario_code·엔진 이름과 버전). 연 순서대로."""
         return [
             params
             for query, params in self.statements

@@ -34,6 +34,7 @@ from app.uploads.storage import StorageDep, StorageError, SupabaseStorage
 logger = logging.getLogger(__name__)
 Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 TRIGGER = "syllabus_upload"
+ENGINE = "extract.syllabus"  # 엔진 등록부 id(O2). 이 실행이 곧 엔진 한 번이다
 RETRY_HINT = "포털 계획서를 브라우저에서 PDF로 저장해 올려 주세요."
 NO_TEXT = "계획서에서 글자를 찾지 못했어요."
 SLOW = "계획서를 읽는 데 너무 오래 걸렸어요. 잠시 후 다시 눌러 주세요."
@@ -81,7 +82,7 @@ class SyllabusService:
     async def begin(self, job_without_run: "SyllabusJob") -> str:
         """실행 행을 만들고 일을 띄운다. run_id를 준다."""
         run_id = await start_run(
-            self.log_connection, trigger=TRIGGER, user_id=job_without_run.user_id
+            self.log_connection, trigger=TRIGGER, user_id=job_without_run.user_id, engine=ENGINE
         )
         job = SyllabusJob(**{**job_without_run.__dict__, "run_id": run_id})
         work = self.execute(job)
