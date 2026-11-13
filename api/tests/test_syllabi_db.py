@@ -640,6 +640,8 @@ async def test_confirming_saves_the_items_and_makes_planner_tasks(settings: Sett
     assert task["link"]["type"] == "syllabus_item"
     assert task["link"]["title"] == "데이터베이스"  # LMS 과목명이 이긴다(모델이 읽은 이름이 아니다)
     assert task["link"]["id"] == next(one["id"] for one in items if one["title"] == "중간고사")
+    # 누르면 그 과목의 계획서 탭으로 간다(11/20)
+    assert task["link"]["course_id"] == world.courses["202620HY23525_데이터베이스"]
 
 
 async def test_confirming_twice_keeps_one_task(settings: Settings) -> None:

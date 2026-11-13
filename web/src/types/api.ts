@@ -338,6 +338,7 @@ export interface PlannerTask {
     title: string | null;                // 공고 제목 또는 과목명
     category: Category | null;           // 공고에서 온 할 일만
     html_url?: string;
+    course_id?: string | null;           // 과목에서 온 할 일의 내 과목 ID(누르면 그 과목 탭으로, 11/20)
   };
   auto_completed?: boolean;              // LMS 제출로 자동 완료
 }

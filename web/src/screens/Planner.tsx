@@ -142,6 +142,7 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
           date={selectedDate}
           tasks={selectedTasks}
           markers={selectedMarkers}
+          navigate={navigate}
           onToggle={toggleTask}
           onAdd={async (title, date) => {
             await save(

@@ -128,6 +128,8 @@
 >
 > v0.4 보강(11/20, 새 공고 알림 묶기): `new_eligible`을 **학생마다 하루 한 건**으로 묶는다(키 `new_eligible:day:{알릴 날}`). 그날 알릴 공고가 여럿이면 마감이 가장 가까운 공고를 잇고 "대표 제목 외 N개"라고 쓴다. 묶음에 넣는 공고는 지난 묶음을 만든 뒤 들어온 것이다 — 11/12에 청년정책이 한꺼번에 들어와 학생 6명에게 하루 96건이 갔다. `profile_needed`는 마감까지 3일 넘게 남은 공고만 묻는다(PRD F-33). 응답 모양은 그대로다
 >
+> v0.4 보강(11/20, 할 일 출처 링크): 플래너 할 일의 `link`에 `course_id`가 생겼다 — 과목에서 온 할 일(계획서 일정·LMS 과제·과목 공지)의 **내** 과목 ID다. 홈 '이번 주 할 일'과 플래너는 누르면 그 과목 화면의 탭(계획서·과제·공지)으로 간다(사용자 피드백 4①). 다른 응답 모양은 그대로다
+>
 > v0.4 보강(11/21, 엔진 등록부): 실행 기록에 **엔진 도장**이 생겼다. 엔진 한 번인 실행(`agent_runs`)에 엔진 이름·버전(`engine`·`engine_version`, 등록부 `api/app/engines/registry.py`), 마지막으로 부른 모델(`model`), 원문 확인 이유 코드(`review_codes`)가 남는다. LMS 동기화의 공지 분류도 동기화 실행의 **자식 실행**이 되었다(엔진 `classify.announcement`) — 동기화 실행에는 `classify_announcement` 한 줄이 그대로 남고 출력에 `classify_run_id`가 더해진다. 학생에게 보이는 원문 확인 이유(`review_reasons`)와 모든 응답 모양은 그대로다
 >
 > v0.4 보강(11/23, 엔진별 지표): `GET /internal/metrics`에 네 번째 묶음 `engines`가 생겼다 — 엔진 도장이 있는 운영 실행을 엔진·버전·모델마다 센다(12장). 공지 분류 평가 세트를 돌리는 명령 `python -m app.eval.classify`(EV-CLASSIFY)가 생겼다. 다른 응답 모양은 그대로다
@@ -920,7 +922,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
       "due_date": "2026-10-08",
       "is_done": true,
       "source": "lms_assignment",
-      "link": { "type": "lms_assignment", "id": "uuid", "title": "AI창업캡스톤디자인", "html_url": "https://learning.hanyang.ac.kr/..." },
+      "link": { "type": "lms_assignment", "id": "uuid", "title": "AI창업캡스톤디자인", "html_url": "https://learning.hanyang.ac.kr/...", "course_id": "uuid" },
       "auto_completed": true
     }
   ],
@@ -935,6 +937,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 - `auto_completed`: LMS 제출로 자동 완료된 항목(F-51)
 - `markers`는 체크할 수 없는 표시 항목이다. 지금은 **준비를 마친** 공고의 마감일(`kind = deadline`)만 있다. 공고 상세의 `prep.prepared`와 같은 기준이라 준비하는 중이거나 멈춘 계획은 들어가지 않고, 날짜는 `deadline_at`을 KST 날짜로 바꾼 값이다. 마감일이 없는 상시 공고는 마커가 없다
 - `link.category`는 공고에서 온 할 일에만 있고, LMS·강의계획서 할 일은 칩에 과목명(`link.title`)을 쓴다
+- `link.course_id`는 과목에서 온 할 일(`syllabus_item`·`lms_assignment`·`lms_announcement`)의 **내** 과목 ID다(11/20). 공고 할 일, 직접 만든 할 일, LMS 과목에 잇지 않고 올린 계획서의 일정은 null이다. 화면은 누르면 그 과목의 계획서·과제·공지 탭으로 간다 — 과목 공지는 과목 공통이라 내 과목 행을 잇는다
 - LMS 과제의 `is_done`은 사용자가 바꿀 수 있고, 동기화는 미제출에서 제출로 바뀔 때만 true로 바꾼다
 
 ### `POST /planner/tasks` · `PATCH /planner/tasks/{id}` · `DELETE /planner/tasks/{id}`

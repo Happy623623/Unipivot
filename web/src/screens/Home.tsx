@@ -5,6 +5,7 @@ import FeedList from "@/components/FeedList";
 import FeedSummary, { type SummaryFilter } from "@/components/FeedSummary";
 import FeedTabs, { arrivalTab, showTabLabel, type FeedTab, type TabArrival } from "@/components/FeedTabs";
 import Header from "@/components/Header";
+import HomeWeekTasks from "@/components/HomeWeekTasks";
 import { EmptyBox, HomeSkeleton, type EmptyState } from "@/components/HomeStates";
 import OpportunityCard from "@/components/OpportunityCard";
 import { markError, markToast } from "@/components/OpportunityMarkButtons";
@@ -244,6 +245,7 @@ export default function Home({ navigate }: HomeProps) {
     <>
       <Header title={`안녕하세요, ${me.display_name}님`} subtitle="나에게 맞는 기회와 이번 주 할 일을 한눈에 확인하세요." />
       <FeedSummary counts={shownCounts} selected={summaryFilter} onToggle={toggleSummary} />
+      <HomeWeekTasks navigate={navigate} />
       <section ref={listRef}>
         <div className="flex items-center justify-between gap-3">
           <FeedTabs

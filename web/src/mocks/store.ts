@@ -248,6 +248,7 @@ export function syncStoredSyllabusTask(
   dueDate: string,
   course: string | null,
   selected: boolean,
+  courseId: string | null = null,
 ): boolean {
   const found = plannerState.items.find((task) => task.link.id === itemId);
   if (!selected) {
@@ -267,7 +268,7 @@ export function syncStoredSyllabusTask(
     due_date: dueDate,
     is_done: false,
     source: "syllabus",
-    link: { type: "syllabus_item", id: itemId, title: course, category: null },
+    link: { type: "syllabus_item", id: itemId, title: course, category: null, course_id: courseId },
   });
   return true;
 }
