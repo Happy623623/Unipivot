@@ -14,11 +14,21 @@ def create_pools(database_url: str) -> tuple[AsyncConnectionPool, AsyncConnectio
 
     로그를 따로 커밋해야 실패한 에이전트 실행도 agent_runs에 남는다.
     prepare_threshold=None: Supabase 트랜잭션 풀러(6543)에서도 동작하게 prepared statement를 끈다.
+    check: 빌려주기 전에 연결이 살아 있는지 빈 문장 하나로 본다. 서버(풀러)가 끊은 연결은 버리고 새로 연다 —
+    11/12 00:50 알림 발송이 끊긴 연결을 받아 실패했다. 빌릴 때마다 DB 왕복이 한 번 는다(같은 지역이라 몇 ms).
     """
     common = {"row_factory": dict_row, "prepare_threshold": None}
-    pool = AsyncConnectionPool(database_url, min_size=1, max_size=10, open=False, kwargs=common)
+    check = AsyncConnectionPool.check_connection
+    pool = AsyncConnectionPool(
+        database_url, min_size=1, max_size=10, open=False, kwargs=common, check=check
+    )
     log_pool = AsyncConnectionPool(
-        database_url, min_size=1, max_size=5, open=False, kwargs={**common, "autocommit": True}
+        database_url,
+        min_size=1,
+        max_size=5,
+        open=False,
+        kwargs={**common, "autocommit": True},
+        check=check,
     )
     return pool, log_pool
 
