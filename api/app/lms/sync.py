@@ -19,13 +19,17 @@
 
 공지 첨부(F-54)는 마지막에 학생 문서함에 받는다(`app/lms/files.py`). 파일 저장소 설정이 없으면 하지
 않고, 실패해도 동기화는 성공이다.
+
+주차학습 강의를 들었는지(11/24)는 그 뒤에 읽는다(`app/lms/lectures.py`). 처리방침 v0.3이 시행된 뒤, 새 동의
+문구에 동의한 학생만, 학생이 학업 화면을 열어 시작한 동기화는 그때마다·배치는 1시간에 한 번 읽는다. 주차학습을 한 번
+열어(LTI) 받은 표로 과목마다 목록만 읽고 강의 항목은 열지 않는다. 실패해도 동기화는 성공이다.
 """
 
 import logging
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Annotated, Any
 
@@ -36,7 +40,7 @@ from app.agent_log import AgentRun, LogConnect, abandon_run, agent_run, start_ru
 from app.background import RunnerDep, TaskRunner
 from app.calendar import EVENT_MINUTES, GoogleCalendarClient, assignment_title, event_id_for
 from app.calendar.service import CalendarService
-from app.config import Settings, get_settings
+from app.config import LECTURE_CONSENT_VERSION, Settings, get_settings
 from app.crypto import decrypt
 from app.eligibility import KST, Department
 from app.errors import ApiError
@@ -47,8 +51,9 @@ from app.llm.deps import LlmDep
 from app.lms.announce import AnnouncementOutcome, AnnouncementService
 from app.lms.announcements import CanvasAnnouncement, announcements
 from app.lms.assignments import CanvasAssignment, assignments
-from app.lms.client import LearningXClient, LearningXError
+from app.lms.client import LearningXClient, LearningXError, LearningXSession
 from app.lms.files import AttachmentSaver
+from app.lms.lectures import OPEN, Lecture, lecture_status, lectures
 from app.lms.modules import CanvasModuleItem, module_items, needs_items
 from app.lms.service import API_ERROR, NOT_CONNECTED, TOKEN_EXPIRED, student_courses
 from app.repositories.announcements import AnnouncementRepository
@@ -67,7 +72,14 @@ from app.repositories.notifications import (
     MaterialNotice,
     NotificationRepository,
 )
-from app.schemas.lms import SAVE_TOOL, SyncCounts, SyncResponse, SyncSkipped, SyncStarted
+from app.schemas.lms import (
+    LECTURE_TOOL,
+    SAVE_TOOL,
+    SyncCounts,
+    SyncResponse,
+    SyncSkipped,
+    SyncStarted,
+)
 from app.uploads.storage import SupabaseStorage, get_storage
 
 logger = logging.getLogger(__name__)
@@ -79,6 +91,11 @@ STOPPED = "동기화를 시작하지 못했어요. 잠시 후 다시 시도해 �
 TOKEN_UNREADABLE = "저장한 토큰을 읽을 수 없어요. 다시 연결해 주세요."
 NEW_TITLE = "{course} 새 과제가 올라왔어요"
 MATERIAL_TITLE = "{course} {module} 자료가 올라왔어요"
+# 배치가 주차학습을 다시 읽는 간격. 학생이 학업 화면을 열어 시작한 동기화는 그때마다 읽는다
+LECTURE_EVERY = timedelta(hours=1)
+# 주차학습을 여는 데 이만큼 실패하면 이번에는 읽지 않는다(탭이 없는 과목은 세지 않는다)
+LAUNCH_FAILURES = 3
+ALWAYS = datetime.min.replace(tzinfo=UTC)  # 여는 시각을 정하지 않았을 때(설정이 비면) 쓰는 기준
 
 
 class StoredTokenUnreadable(Exception):
@@ -125,6 +142,7 @@ class SyncJob:
     user_id: str
     now: datetime
     token: str = field(repr=False)  # 복호화한 토큰. 실수로 찍지 않게 repr에서 뺀다
+    manual: bool = False  # 학생이 학업 화면을 열어 시작한 동기화(`POST /lms/sync`). 배치는 False다
 
 
 @dataclass(frozen=True)
@@ -176,6 +194,7 @@ class LmsSyncService:
         repos: Callable[[AsyncConnection], Repos] = Repos.of,
         storage: SupabaseStorage | None = None,
         files: Callable[[AsyncConnection], FileRepository] = FileRepository,
+        lectures_from: datetime | None = None,
     ) -> None:
         self.transaction = transaction  # 블록이 끝나면 커밋하는 연결(요청 트랜잭션과 따로)
         self.log_connection = log_connection
@@ -187,6 +206,8 @@ class LmsSyncService:
         self.repos = repos
         self.storage = storage  # 없으면 공지 첨부를 받지 않는다(F-54)
         self.files = files
+        # 주차학습 강의를 읽기 시작하는 시각(11/24). None이면 읽지 않는다(설정으로 껐다)
+        self.lectures_from = lectures_from
 
     # ── 사용자가 눌렀을 때 ──────────────────────────────────────────────────
 
@@ -208,7 +229,7 @@ class LmsSyncService:
             logger.warning("저장한 LMS 토큰을 읽지 못했어요: user %s", user_id)
             raise ApiError(422, "LMS_TOKEN_INVALID", TOKEN_UNREADABLE) from exc
         run_id = await start_run(self.log_connection, trigger="lms_sync", user_id=user_id)
-        job = SyncJob(run_id=run_id, user_id=user_id, now=now, token=token)
+        job = SyncJob(run_id=run_id, user_id=user_id, now=now, token=token, manual=True)
         work = self.execute(job)
         try:
             await self.runner.start(work)
@@ -295,6 +316,7 @@ class LmsSyncService:
         outcome = await self._calendar(run, job, outcome, changes)
         outcome = await self._classify(run, job, outcome, rows)
         await self._attachments(run, job, notices)
+        await self._lectures(run, job, rows)
         async with run.tool(SAVE_TOOL) as call:
             # `GET /runs/{id}`가 이 출력으로 결과를 만든다(repositories/runs.py)
             call.output = {
@@ -529,6 +551,97 @@ class LmsSyncService:
             await saver.run(run, job.user_id, notices)
         except Exception as exc:  # 이미 저장한 첨부 조회가 터진 경우까지. 다음 동기화에서 다시 본다
             logger.warning("공지 첨부 저장을 건너뛰어요: user %s, %r", job.user_id, exc)
+
+    # ── 주차학습 강의 (11/24) ────────────────────────────────────────────────
+
+    async def _lectures(self, run: AgentRun, job: SyncJob, rows: list[CourseRow]) -> None:
+        """주차학습 강의를 들었는지 읽어 저장한다(`app/lms/lectures.py`).
+
+        처리방침 v0.3이 시행된 뒤(`lectures_from`), 새 동의 문구에 동의한 학생만 읽는다(`lectures_due`). 학생이 학업
+        화면을 열어 시작한 동기화는 그때마다, 배치는 1시간에 한 번이다. **실패해도 동기화는 성공이다** — 읽어 둔 값이
+        남고 다음 동기화가 다시 읽는다. 주차학습이 표를 거절해도(401) 학생의 LearningX 토큰 문제가 아니므로 연결은 그대로 둔다.
+        """
+        if self.lectures_from is None or job.now < self.lectures_from or not rows:
+            return
+        try:
+            async with self.transaction() as conn:
+                due = await self.repos(conn).lms.lectures_due(
+                    job.user_id,
+                    consent=LECTURE_CONSENT_VERSION,
+                    before=None if job.manual else job.now - LECTURE_EVERY,
+                )
+            if not due:
+                return
+            async with run.tool(LECTURE_TOOL, {"courses": len(rows)}) as call:
+                session = await self._open_weekly(job, rows)
+                if session is None:  # 주차학습 탭이 있는 과목이 없거나 열지 못했다
+                    call.output = {"skipped": "not_opened"}
+                    return
+                read, failed = await self._read_lectures(session, rows)
+                if read:
+                    async with self.transaction() as conn:
+                        repo = self.repos(conn).lms
+                        for course, items in read:
+                            await repo.save_lectures(job.user_id, course.id, items, now=job.now)
+                        await repo.touch_lectures(job.user_id, now=job.now)
+                call.output = {
+                    "courses": len(read),
+                    "lectures": sum(len(items) for _, items in read),
+                    "todo": sum(
+                        1
+                        for _, items in read
+                        for one in items
+                        if lecture_status(one, job.now) in OPEN
+                    ),
+                    "failed_courses": failed,
+                }
+        except Exception as exc:  # 저장이 터진 경우까지. 다음 동기화에서 다시 읽는다
+            logger.warning("주차학습 강의 확인을 건너뛰어요: user %s, %r", job.user_id, exc)
+
+    async def _open_weekly(self, job: SyncJob, rows: list[CourseRow]) -> LearningXSession | None:
+        """주차학습 탭이 있는 과목에서 주차학습을 한 번 연다. 그 표 하나로 모든 과목을 읽는다."""
+        failures = 0
+        for course in rows:
+            try:
+                session = await self.client.learningx_session(job.token, course.canvas_course_id)
+            except LearningXError as exc:
+                failures += 1
+                logger.warning(
+                    "주차학습을 열지 못했어요: course %s, status %s",
+                    course.canvas_course_id,
+                    exc.status,
+                )
+                if exc.unauthorized or failures >= LAUNCH_FAILURES:
+                    return None
+                continue
+            if session is not None:
+                return session
+        return None
+
+    async def _read_lectures(
+        self, session: LearningXSession, rows: list[CourseRow]
+    ) -> tuple[list[tuple[CourseRow, list[Lecture]]], int]:
+        """과목마다 주차학습 목록을 읽는다. 한 과목이 실패하면 그 과목만 두고(저장해 둔 값이 남는다) 넘어간다.
+
+        표가 막히면(401) 남은 과목도 못 읽으니 멈추고, 못 읽은 과목은 모두 실패로 센다.
+        """
+        read: list[tuple[CourseRow, list[Lecture]]] = []
+        failed = 0
+        for index, course in enumerate(rows):
+            try:
+                raw = await self.client.lecture_modules(session, course.canvas_course_id)
+            except LearningXError as exc:
+                logger.warning(
+                    "주차학습 목록을 읽지 못했어요: course %s, status %s",
+                    course.canvas_course_id,
+                    exc.status,
+                )
+                if exc.unauthorized:
+                    return read, failed + len(rows) - index
+                failed += 1
+                continue
+            read.append((course, lectures(raw)))
+        return read, failed
 
     # ── 캘린더 (F-51·F-32) ──────────────────────────────────────────────────
 
@@ -792,6 +905,12 @@ def lms_sync_service_for(
         else None  # 모델 설정이 없으면 공지를 저장만 한다(F-53)
     )
     storage = get_storage(settings)
+    # 주차학습 강의 읽기(11/24). 끄면 None — 새로 읽지 않고 저장해 둔 것만 보인다
+    lectures_from = (
+        (settings.lecture_progress_opens_at or ALWAYS)
+        if settings.lecture_progress_enabled
+        else None
+    )
     return LmsSyncService(
         transaction=pool.connection,
         log_connection=log_pool.connection,
@@ -807,6 +926,7 @@ def lms_sync_service_for(
         announcer=announcer,
         # 저장소 설정(SUPABASE_SECRET_KEY·SUPABASE_URL)이 없으면 공지 첨부를 받지 않는다(F-54)
         storage=storage if storage.ready else None,
+        lectures_from=lectures_from,
     )
 
 

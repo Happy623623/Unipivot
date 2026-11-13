@@ -240,6 +240,8 @@ def test_the_course_list_has_the_short_name_and_the_portal_link(client: TestClie
     assert "suup=23525" in items[0]["portal_syllabus_url"]
     assert items[2]["portal_syllabus_url"] is None  # 과목명 꼴이 달라 링크를 만들 수 없다
     assert items[0]["name"] == "202620HY23525_데이터베이스"  # 원래 이름은 그대로 둔다
+    # 안 들은 주차학습 강의 수(11/24). 주차학습을 읽은 적이 없으면 0이다
+    assert [one["lectures_todo"] for one in items] == [0, 0, 0]
 
 
 @respx.mock

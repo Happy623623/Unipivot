@@ -15,6 +15,9 @@
 - `last_synced_at`은 동기화를 **시작할 때** 찍는다(`claim_sync`). 같은 사용자를 두 번 동시에
   동기화하지 않고, 실패한 사람이 배치 앞자리를 계속 차지하지도 않는다
 - 목록 순서는 `ordered()`·`by_due()`·`update_key()`가 정한다. DB의 정렬 규칙은 환경마다 달라서 쓰지 않는다
+- 주차학습 강의(11/24, `lms_lecture_progress`)는 학생마다 다른 값이라 과제처럼 사용자별 표다. 과목 하나를 끝까지
+  읽으면 그 과목 강의를 맞춰 바꾸고 목록에 없는 강의는 지운다(빈 목록이면 모두 지운다 — 강의가 없는 과목이다).
+  상태(다 들음·안 들음·놓침…)는 저장하지 않고 읽을 때 `lecture_status()`로 정한다 — 시각이 지나면 바뀌는 값이다
 """
 
 import base64
@@ -33,6 +36,7 @@ from app.db import get_conn
 from app.eligibility import KST
 from app.lms.announcements import too_large
 from app.lms.assignments import SUBMITTED, CanvasAssignment
+from app.lms.lectures import OPEN, Lecture, lecture_status
 from app.lms.modules import CanvasModuleItem
 from app.lms.parse import course_name, is_canvas_id
 from app.repositories.materials import RUN_ALIVE
@@ -49,6 +53,7 @@ from app.schemas.lms import (
     CourseDetail,
     CourseHeader,
     CourseItem,
+    CourseLecture,
     CourseMaterial,
     CourseModuleItem,
     CourseSyllabusItem,
@@ -363,6 +368,29 @@ _UPSERT_COURSE = (
     " is_active = true, synced_at = excluded.synced_at"
 )
 
+_UPSERT_LECTURE = (
+    "insert into lms_lecture_progress (user_id, lms_course_id, item_key, canvas_item_id,"
+    " module_name, title, kind, completed, attendance, period, unlock_at, due_at, late_at,"
+    " duration_seconds, position, checked_at)"
+    " values (%(uid)s, %(course)s, %(key)s, %(canvas)s, %(module)s, %(title)s, %(kind)s,"
+    " %(completed)s, %(attendance)s, %(period)s, %(unlock)s, %(due)s, %(late)s, %(duration)s,"
+    " %(position)s, %(now)s)"
+    # 같은 강의가 다른 과목으로 옮겨 왔으면(과목 복제) 새 과목으로 붙인다
+    " on conflict (user_id, item_key) do update set lms_course_id = excluded.lms_course_id,"
+    " canvas_item_id = excluded.canvas_item_id, module_name = excluded.module_name,"
+    " title = excluded.title, kind = excluded.kind, completed = excluded.completed,"
+    " attendance = excluded.attendance, period = excluded.period, unlock_at = excluded.unlock_at,"
+    " due_at = excluded.due_at, late_at = excluded.late_at,"
+    " duration_seconds = excluded.duration_seconds, position = excluded.position,"
+    " checked_at = excluded.checked_at"
+)
+# 강의 상태를 정하는 데 쓰는 칸(`_lecture()`가 Lecture로 바꾼다)
+_LECTURE_COLUMNS = (
+    "p.lms_course_id, p.item_key, p.canvas_item_id, p.module_name, p.title, p.kind, p.completed,"
+    " p.attendance, p.period, p.unlock_at, p.due_at, p.late_at, p.duration_seconds, p.position,"
+    " p.checked_at"
+)
+
 
 class LmsRepository:
     def __init__(self, conn: AsyncConnection) -> None:
@@ -643,6 +671,13 @@ class LmsRepository:
             syllabus_items=await self._course_syllabus(user_id, course_id),
             materials=await self._course_materials(user_id, course_id),
         )
+        lectures, checked = await self._course_lectures(
+            user_id,
+            course_id,
+            now=now,
+            course_url=detail.course.html_url,
+        )
+        detail = detail.model_copy(update={"lectures": lectures, "lectures_checked_at": checked})
         # 본 시각은 읽기가 끝난 뒤에 올린다(위의 is_new가 올리기 전 값을 쓰게).
         # 뒤로 돌리지 않는다 — 그새 첫 수집이 밀어 둔 값을 지우면 지난 자료가 다시 "새 자료"가 된다
         await self.conn.execute(
@@ -814,6 +849,111 @@ class LmsRepository:
             for row in rows
         ]
 
+    async def _course_lectures(
+        self, user_id: str, course_id: str, *, now: datetime, course_url: str
+    ) -> tuple[list[CourseLecture], datetime | None]:
+        """이 과목의 주차학습 강의와 내 상태(11/24), 그리고 그 값을 읽은 때. 주차 순(주차학습 응답 순서)이다.
+
+        'LMS에서 듣기' 주소는 저장하지 않고 과목 주소 + 주차 항목 번호로 만든다(과목 주소와 같은 규칙).
+        """
+        rows = await self._rows(
+            f"select {_LECTURE_COLUMNS} from lms_lecture_progress p"
+            " where p.user_id = %(uid)s and p.lms_course_id = %(course)s",
+            {"uid": user_id, "course": course_id},
+        )
+        rows.sort(key=lambda row: (row["position"], row["item_key"]))
+        items = [
+            CourseLecture(
+                id=row["item_key"],
+                module_name=row["module_name"],
+                title=row["title"],
+                kind=row["kind"],
+                status=lecture_status(_lecture(row), now),
+                attendance=row["attendance"],
+                unlock_at=_kst(row["unlock_at"]),
+                due_at=_kst(row["due_at"]),
+                late_at=_kst(row["late_at"]),
+                duration_seconds=row["duration_seconds"],
+                html_url=f"{course_url}/modules/items/{row['canvas_item_id']}"
+                if row["canvas_item_id"] is not None
+                else None,
+            )
+            for row in rows
+        ]
+        checked = max((row["checked_at"] for row in rows), default=None)
+        return items, _kst(checked)
+
+    async def lectures_due(self, user_id: str, *, consent: str, before: datetime | None) -> bool:
+        """주차학습을 읽을 차례인지(11/24). 연결돼 있고, `consent` 판 이상의 동의 문구에 동의했고, `before` 뒤에
+        읽지 않았으면 True다. `before`가 None이면(학생이 학업 화면을 열어 시작한 동기화) 읽은 때는 보지 않는다.
+
+        동의 버전은 날짜(YYYY-MM-DD)라 글자 순서가 날짜 순서다(web `lib/consent.ts`와 같은 비교). DB의 정렬 규칙에
+        맡기지 않고 파이선에서 견준다.
+        """
+        row = await self._row(
+            "select p.consent_version, c.lectures_checked_at from lms_connections c"
+            " join profiles p on p.id = c.user_id"
+            " where c.user_id = %s and c.status <> 'disconnected'",
+            (user_id,),
+        )
+        if row is None or not isinstance(row["consent_version"], str):
+            return False
+        if row["consent_version"] < consent:  # 옛 문구에 동의했다. 다시 동의할 때까지 읽지 않는다
+            return False
+        checked = row["lectures_checked_at"]
+        return before is None or checked is None or checked <= before
+
+    async def save_lectures(
+        self, user_id: str, course_id: str, lectures: list[Lecture], *, now: datetime
+    ) -> int:
+        """한 과목의 주차학습을 끝까지 읽은 값으로 맞춘다. 저장한 강의 수를 돌려준다.
+
+        목록에 없는 강의는 지운다. **빈 목록이면 그 과목 강의를 모두 지운다** — 주차학습을 끝까지 받았는데 강의가
+        없다는 뜻이다(받다가 실패한 과목은 `app/lms/sync.py`가 여기 보내지 않는다). 알림·할 일이 이 표를 가리키지
+        않아서 지워도 다른 것이 깨지지 않고, 다시 나타나면 다음에 읽을 때 들어온다.
+        """
+        if lectures:
+            async with self.conn.cursor() as cursor:
+                await cursor.executemany(
+                    _UPSERT_LECTURE,
+                    [
+                        {
+                            "uid": user_id,
+                            "course": course_id,
+                            "key": one.key,
+                            "canvas": one.canvas_item_id,
+                            "module": one.module_name,
+                            "title": one.title,
+                            "kind": one.kind,
+                            "completed": one.completed,
+                            "attendance": one.attendance,
+                            "period": one.period,
+                            "unlock": one.unlock_at,
+                            "due": one.due_at,
+                            "late": one.late_at,
+                            "duration": one.duration_seconds,
+                            "position": one.position,
+                            "now": now,
+                        }
+                        for one in lectures
+                    ],
+                )
+        await self.conn.execute(
+            "delete from lms_lecture_progress where user_id = %(uid)s"
+            " and lms_course_id = %(course)s and item_key <> all(%(keys)s::text[])",
+            {"uid": user_id, "course": course_id, "keys": [one.key for one in lectures]},
+        )
+        return len(lectures)
+
+    async def touch_lectures(self, user_id: str, *, now: datetime) -> None:
+        """주차학습을 읽었다고 적는다(배치가 1시간마다 읽는 기준). 시각을 뒤로 돌리지 않는다."""
+        await self.conn.execute(
+            "update lms_connections"
+            " set lectures_checked_at = greatest(coalesce(lectures_checked_at, %(now)s), %(now)s)"
+            " where user_id = %(uid)s",
+            {"uid": user_id, "now": now},
+        )
+
     async def save_module_items(
         self, user_id: str, canvas_course_id: int, items: list[CanvasModuleItem], *, now: datetime
     ) -> ModuleChanges:
@@ -976,7 +1116,22 @@ class LmsRepository:
 
     async def courses(self, user_id: str, *, now: datetime) -> list[CourseItem]:
         rows = await self._rows(_COURSES, {"uid": user_id, "now": now})
-        return ordered([_course(row) for row in rows])
+        todo = await self._lectures_todo(user_id, now=now)
+        return ordered([_course(row, lectures_todo=todo.get(str(row["id"]), 0)) for row in rows])
+
+    async def _lectures_todo(self, user_id: str, *, now: datetime) -> dict[str, int]:
+        """과목마다 아직 안 들은 강의 수(출석·지각 인정 기간 안). 상태는 과목 상세와 같은 `lecture_status()`로 정한다."""
+        rows = await self._rows(
+            f"select {_LECTURE_COLUMNS} from lms_lecture_progress p"
+            " where p.user_id = %s and p.completed is false",
+            (user_id,),
+        )
+        counts: dict[str, int] = {}
+        for row in rows:
+            if lecture_status(_lecture(row), now) in OPEN:
+                course = str(row["lms_course_id"])
+                counts[course] = counts.get(course, 0) + 1
+        return counts
 
     # ── 조회 ────────────────────────────────────────────────────────────────
 
@@ -1154,7 +1309,7 @@ def _assignment(row: dict[str, Any]) -> AssignmentItem:
     )
 
 
-def _course(row: dict[str, Any]) -> CourseItem:
+def _course(row: dict[str, Any], *, lectures_todo: int = 0) -> CourseItem:
     parsed = course_name(row["name"])
     due = row["next_due"]
     return CourseItem(
@@ -1173,7 +1328,31 @@ def _course(row: dict[str, Any]) -> CourseItem:
         )
         if due
         else None,
+        lectures_todo=lectures_todo,
     )
+
+
+def _lecture(row: dict[str, Any]) -> Lecture:
+    """저장한 강의 한 줄. 상태를 정하는 `lecture_status()`에 넘긴다."""
+    return Lecture(
+        key=row["item_key"],
+        canvas_item_id=row["canvas_item_id"],
+        module_name=row["module_name"],
+        title=row["title"],
+        kind=row["kind"],
+        completed=row["completed"],
+        attendance=row["attendance"],
+        period=row["period"],
+        unlock_at=row["unlock_at"],
+        due_at=row["due_at"],
+        late_at=row["late_at"],
+        duration_seconds=row["duration_seconds"],
+        position=row["position"],
+    )
+
+
+def _kst(value: datetime | None) -> datetime | None:
+    return value.astimezone(KST) if value else None
 
 
 def get_lms_repo(conn: Annotated[AsyncConnection, Depends(get_conn)]) -> LmsRepository:

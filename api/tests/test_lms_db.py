@@ -12,10 +12,12 @@ from uuid import uuid4
 import pytest
 from psycopg.types.json import Jsonb
 
+from app.config import LECTURE_CONSENT_VERSION
 from app.eligibility import KST
 from app.extraction.models import ExtractionResult, RequirementDraft
 from app.lms.announcements import CanvasAnnouncement, CanvasAttachment
 from app.lms.assignments import CanvasAssignment, assignments
+from app.lms.lectures import Lecture
 from app.lms.modules import CanvasModuleItem, module_items
 from app.repositories.announcements import AnnouncementRepository
 from app.repositories.files import FileRepository
@@ -3203,3 +3205,212 @@ async def test_the_course_detail_says_which_items_are_in_the_calendar(
         "기말고사": False,  # 자리만 잡은 행은 아직 들어간 것이 아니다
         "발표": False,  # 남의 캘린더 일정은 내 것이 아니다
     }
+
+
+# ── 주차학습 강의 (11/24) ───────────────────────────────────────────────────
+
+
+def _lecture(
+    key: str,
+    *,
+    module: str = "6주차",
+    title: str = "강의",
+    kind: str = "video",
+    completed: bool | None = False,
+    attendance: str | None = "none",
+    period: str | None = "open",
+    unlock: datetime | None = None,
+    due: datetime | None = None,
+    late: datetime | None = None,
+    duration: int | None = None,
+    position: int = 0,
+) -> Lecture:
+    return Lecture(
+        key=key,
+        canvas_item_id=int(key) if key.isdigit() else None,
+        module_name=module,
+        title=title,
+        kind=kind,  # type: ignore[arg-type]
+        completed=completed,
+        attendance=attendance,
+        period=period,
+        unlock_at=unlock,
+        due_at=due,
+        late_at=late,
+        duration_seconds=duration,
+        position=position,
+    )
+
+
+async def _lecture_keys(world: dict[str, Any], course: str) -> dict[str, Any]:
+    rows = await (
+        await world["conn"].execute(
+            "select item_key, completed from lms_lecture_progress where lms_course_id = %s",
+            (course,),
+        )
+    ).fetchall()
+    return {row["item_key"]: row["completed"] for row in rows}
+
+
+async def test_lectures_are_kept_per_student_and_shown_in_week_order(
+    world: dict[str, Any],
+) -> None:
+    repo, me, other, now = world["repo"], world["me"], world["other"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_courses(other, [DATABASE], now=now)
+    course = await _course_id(world)
+    read_at = now - timedelta(minutes=5)
+    saved = await repo.save_lectures(
+        me,
+        course,
+        [
+            _lecture(
+                "8570005",
+                module="7주차",
+                period="not_open",
+                unlock=now + timedelta(days=2),
+                due=now + timedelta(days=8),
+                position=2,
+            ),
+            _lecture(
+                "8569302",
+                module="3주차",
+                title="3주차 강의",
+                completed=True,
+                attendance="attendance",
+                period="closed",
+                due=now - timedelta(days=30),
+                duration=1932,
+                position=0,
+            ),
+            _lecture("lx:71001", kind="material", completed=None, position=1),
+        ],
+        now=read_at,
+    )
+    assert saved == 3
+
+    detail = await repo.course_detail(me, course, now=now, lms_base=LMS_BASE)
+    assert detail is not None
+    assert [(one.id, one.module_name, one.status) for one in detail.lectures] == [
+        ("8569302", "3주차", "done"),
+        ("lx:71001", "6주차", "unknown"),  # LearningX가 완료 여부를 모른다고 했다
+        ("8570005", "7주차", "upcoming"),
+    ]
+    first, unknown, later = detail.lectures
+    # 'LMS에서 듣기'는 과목 주소 + 주차 항목 번호다. LearningX 번호뿐인 강의는 주소가 없다
+    assert first.html_url == f"{LMS_BASE}/courses/{DATABASE['id']}/modules/items/8569302"
+    assert unknown.html_url is None
+    assert (first.attendance, first.duration_seconds, first.kind) == ("attendance", 1932, "video")
+    assert later.due_at is not None and later.due_at.utcoffset() == timedelta(hours=9)
+    assert detail.lectures_checked_at == read_at
+    assert detail.lectures_checked_at is not None
+    assert detail.lectures_checked_at.utcoffset() == timedelta(hours=9)
+
+    # 같은 과목을 듣는 다른 학생에게는 보이지 않는다(사람마다 다른 값이다)
+    theirs = await repo.course_detail(
+        other, await _course_id_of(world, other), now=now, lms_base=LMS_BASE
+    )
+    assert theirs is not None and (theirs.lectures, theirs.lectures_checked_at) == ([], None)
+
+
+async def test_reading_a_course_again_replaces_only_that_course(world: dict[str, Any]) -> None:
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE, MACHINE_LEARNING], now=now)
+    db, ml = await _course_id(world), await _course_id(world, MACHINE_LEARNING["id"])
+    await repo.save_lectures(me, db, [_lecture("1"), _lecture("2")], now=now)
+    await repo.save_lectures(me, ml, [_lecture("9")], now=now)
+
+    # 1은 주차학습에서 빠졌고, 2는 다 들었고, 3이 새로 올라왔다
+    later = now + timedelta(hours=1)
+    await repo.save_lectures(
+        me, db, [_lecture("2", completed=True), _lecture("3", position=1)], now=later
+    )
+    assert await _lecture_keys(world, db) == {"2": True, "3": False}
+    assert await _lecture_keys(world, ml) == {"9": False}  # 다른 과목은 그대로다
+
+    # 끝까지 읽었는데 강의가 없다 — 그 과목 강의만 지운다
+    assert await repo.save_lectures(me, db, [], now=later) == 0
+    assert await _lecture_keys(world, db) == {}
+    assert await _lecture_keys(world, ml) == {"9": False}
+
+
+async def test_the_course_list_counts_the_lectures_still_open(world: dict[str, Any]) -> None:
+    repo, me, other, now = world["repo"], world["me"], world["other"], world["now"]
+    await repo.save_courses(me, [DATABASE, MACHINE_LEARNING], now=now)
+    await repo.save_courses(other, [DATABASE], now=now)
+    db = await _course_id(world)
+    await repo.save_lectures(
+        me,
+        db,
+        [
+            _lecture("1", period="open"),  # 안 들음
+            _lecture("2", period="late"),  # 지각 인정 기간
+            _lecture("3", period="closed"),  # 놓침 — 세지 않는다
+            _lecture("4", completed=True),  # 다 들음
+            _lecture("5", period="not_open"),  # 열리기 전
+            _lecture("6", completed=None),  # 모름
+            # 기간이 없으면 시각으로 가늠한다
+            _lecture("7", period=None, due=now + timedelta(days=1)),
+            _lecture("8", period=None, due=now - timedelta(days=1), late=now + timedelta(days=1)),
+            _lecture("9", period=None, due=now - timedelta(days=1)),
+        ],
+        now=now,
+    )
+    theirs = await _course_id_of(world, other)
+    await repo.save_lectures(other, theirs, [_lecture("1"), _lecture("2")], now=now)
+
+    counts = {one.short_name: one.lectures_todo for one in await repo.courses(me, now=now)}
+    assert counts == {"데이터베이스": 4, "기계학습": 0}
+    # 다른 학생 것은 섞이지 않는다
+    assert [one.lectures_todo for one in await repo.courses(other, now=now)] == [2]
+
+
+async def test_lectures_are_read_for_the_new_consent_and_once_an_hour(
+    world: dict[str, Any],
+) -> None:
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    hour_ago = now - timedelta(hours=1)
+    assert not await repo.lectures_due(
+        me, consent=LECTURE_CONSENT_VERSION, before=None
+    )  # 연결 없음
+
+    await repo.save_connection(me, token="enc-1", last4="a9f2", canvas_user_id=1)
+
+    async def agreed(version: str | None) -> None:
+        await conn.execute("update profiles set consent_version = %s where id = %s", (version, me))
+
+    for version in ("2026-10-07", "2026-11-03", None):  # 옛 문구에 동의했거나 동의 기록이 없다
+        await agreed(version)
+        assert not await repo.lectures_due(me, consent=LECTURE_CONSENT_VERSION, before=None)
+    for version in (LECTURE_CONSENT_VERSION, "2026-12-01"):  # 새 문구 이상
+        await agreed(version)
+        assert await repo.lectures_due(me, consent=LECTURE_CONSENT_VERSION, before=hour_ago)
+
+    await repo.touch_lectures(me, now=now)
+    # 배치: 한 시간 안에 읽었으면 건너뛴다. 학업 화면을 열어 시작한 동기화(before=None)는 그때마다 읽는다
+    assert not await repo.lectures_due(me, consent=LECTURE_CONSENT_VERSION, before=hour_ago)
+    assert await repo.lectures_due(me, consent=LECTURE_CONSENT_VERSION, before=None)
+    assert await repo.lectures_due(me, consent=LECTURE_CONSENT_VERSION, before=now)
+
+    await repo.touch_lectures(me, now=now - timedelta(days=1))  # 늦게 끝난 앞 동기화
+    row = await (
+        await conn.execute(
+            "select lectures_checked_at from lms_connections where user_id = %s", (me,)
+        )
+    ).fetchone()
+    assert row["lectures_checked_at"] == now  # 뒤로 돌리지 않는다
+
+    await conn.execute(
+        "update lms_connections set status = 'disconnected' where user_id = %s", (me,)
+    )
+    assert not await repo.lectures_due(me, consent=LECTURE_CONSENT_VERSION, before=None)
+
+
+async def test_leaving_removes_the_lectures(world: dict[str, Any]) -> None:
+    """탈퇴하면 바로 지운다(처리방침 3장) — profiles를 지우면 cascade로 함께 지워진다."""
+    repo, me, now, conn = world["repo"], world["me"], world["now"], world["conn"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    course = await _course_id(world)
+    await repo.save_lectures(me, course, [_lecture("1"), _lecture("2")], now=now)
+    await conn.execute("delete from profiles where id = %s", (me,))
+    assert await _lecture_keys(world, course) == {}

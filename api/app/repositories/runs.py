@@ -17,7 +17,14 @@ from pydantic import ValidationError
 
 from app.db import get_conn
 from app.eligibility import KST
-from app.schemas.lms import ATTACHMENT_TOOL, EXTRACT_TOOL, SAVE_TOOL, LmsSyncResult, SyncCounts
+from app.schemas.lms import (
+    ATTACHMENT_TOOL,
+    EXTRACT_TOOL,
+    LECTURE_TOOL,
+    SAVE_TOOL,
+    LmsSyncResult,
+    SyncCounts,
+)
 from app.schemas.materials import READ_TOOL as MATERIAL_READ
 from app.schemas.materials import SUMMARIZE_TOOL as MATERIAL_TOOL
 from app.schemas.materials import MaterialSummaryResult
@@ -53,6 +60,7 @@ LMS_LABELS = {
     "fetch_lms_assignments": "과제·제출 받기",
     "fetch_lms_modules": "주차 자료 받기",
     ATTACHMENT_TOOL: "공지 첨부 저장",  # F-54
+    LECTURE_TOOL: "주차학습 강의 수강 확인",  # 11/24
     EXTRACT_TOOL: "기회성 공지에서 지원 자격 정리",  # F-53 1부. 그 단계들은 자식 실행에 있다(O1)
     SAVE_TOOL: "바뀐 것 저장",
 }

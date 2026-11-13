@@ -6,7 +6,7 @@ export type Route =
   | {
       name: "course";
       id: string;
-      tab?: "assignments" | "materials" | "announcements" | "syllabus";
+      tab?: "assignments" | "materials" | "announcements" | "syllabus" | "lectures";
     }
   | { name: "documents" }
   | { name: "upload" }

@@ -7,6 +7,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _KST = timezone(timedelta(hours=9))
 # 처리방침 v0.2(학교 공지 링크를 적은 판)의 시행 시각. web/src/app/privacy/page.tsx의 EFFECTIVE와 같은 날이다
 POLICY_V02_EFFECTIVE = datetime(2026, 11, 12, tzinfo=_KST)
+# 처리방침 v0.3(주차학습 강의 수강 여부를 적은 판)의 시행 시각. web/src/app/privacy/page.tsx의 EFFECTIVE와 같은 날이다
+POLICY_V03_EFFECTIVE = datetime(2026, 11, 28, tzinfo=_KST)
+# 주차학습 강의 수강 여부를 적은 동의 문구의 버전(web lib/consent.ts의 CONSENT_VERSION). 이 버전 이상에 동의한
+# 학생만 읽는다 — 옛 문구에 동의한 학생은 다시 동의할 때까지 읽지 않는다
+LECTURE_CONSENT_VERSION = "2026-11-24"
 
 
 class Settings(BaseSettings):
@@ -68,8 +73,14 @@ class Settings(BaseSettings):
     # 링크 가져오기를 여는 시각. 그 전에는 새로 읽지 않는다(409 NOTICE_LINK_DISABLED) — 이 기능을 적은 처리방침이
     # 시행되기 전에 붙인 공지 주소를 남기지 않는다. 로컬에서 미리 보려면 지난 시각을 넣는다(배포에는 옮기지 않는다)
     notice_link_opens_at: datetime | None = POLICY_V02_EFFECTIVE
+    # 주차학습 강의를 들었는지 읽기(11/24, LMS 동기화). 학교가 멈춰 달라고 하면 false로 두고 deploy한다 —
+    # 새로 읽지 않고 저장해 둔 것만 보인다
+    lecture_progress_enabled: bool = True
+    # 읽기 시작하는 시각. 그 전에는 읽지 않는다 — 이 처리를 적은 처리방침(v0.3)이 시행되기 전이다.
+    # 로컬에서 미리 보려면 지난 시각을 넣는다(배포에는 옮기지 않는다)
+    lecture_progress_opens_at: datetime | None = POLICY_V03_EFFECTIVE
 
-    @field_validator("notice_link_opens_at")
+    @field_validator("notice_link_opens_at", "lecture_progress_opens_at")
     @classmethod
     def _kst_if_no_offset(cls, value: datetime | None) -> datetime | None:
         """시간대를 빼고 적었으면 KST로 본다(서버 시계와 견줄 수 있게)."""

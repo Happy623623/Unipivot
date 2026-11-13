@@ -161,7 +161,7 @@ export default function Onboarding({ onDone }: OnboardingProps) {
           <ConsentStep
             saving={saving}
             onAgree={agree}
-            renewal={renewing ? { incomeOn: me.income_info_consented } : undefined}
+            renewal={renewing ? { incomeOn: me.income_info_consented, agreed: me.consent_version } : undefined}
           />
         )}
         {stage.kind === "profile" && (

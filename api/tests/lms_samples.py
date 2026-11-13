@@ -508,3 +508,205 @@ ML_ANNOUNCEMENTS: list[dict[str, Any]] = [
         posted_at="2026-10-12T01:00:00Z",
     )
 ]
+
+
+# ── 주차학습 강의 (11/24) ───────────────────────────────────────────────────
+# 2026-11-12 한양대 실측(학생 본인 계정, 읽기만)의 **모양**이다. 값(번호·제목·시각)은 지어냈다.
+# 과목 탭 → 한 번 쓰는 실행 주소 → LTI 폼 → `xn_api_token` 쿠키 → 주차학습 목록(`include_detail=true`)
+TABS: list[dict[str, Any]] = [
+    {"id": "home", "label": "홈", "type": "internal", "position": 1, "html_url": "/courses/214023"},
+    # 옮기기 전 도구가 탭에 남아 있었다. 지금 도구('주차학습')를 고른다
+    {
+        "id": "context_external_tool_138",
+        "label": "(구) 강의콘텐츠",
+        "type": "external",
+        "position": 2,
+        "html_url": "/courses/214023/external_tools/138",
+    },
+    {
+        "id": "context_external_tool_140",
+        "label": "주차학습",
+        "type": "external",
+        "position": 3,
+        "html_url": "/courses/214023/external_tools/140",
+    },
+    {"id": "assignments", "label": "과제", "type": "internal", "position": 4},
+]
+TABS_WITHOUT_WEEKLY: list[dict[str, Any]] = [TABS[0], TABS[3]]
+LAUNCH_VERIFIER = "verifier-sample-0000"  # 한 번 쓰는 실행 주소의 값(지어냄). 로그에 남으면 안 된다
+LAUNCH: dict[str, Any] = {
+    "id": 140,
+    "name": "주차학습",
+    "url": (
+        "https://lms.test/courses/214023/external_tools/sessionless_launch"
+        f"?verifier={LAUNCH_VERIFIER}&id=140&launch_type=course_navigation"
+    ),
+}
+LEARNINGX_TOKEN = "xn-sample-token-0000"  # 주차학습이 쿠키로 주는 표(지어냄)
+
+
+def launch_page(action: str = "https://lms.test/learningx/lti/modulebuilder") -> str:
+    """Canvas가 주는 실행 페이지: 숨은 값을 담은 POST 폼 하나와 그 폼을 바로 보내는 스크립트(실측 값 47개를 줄였다)."""
+    return f"""<!DOCTYPE html><html><head><title>주차학습</title></head><body>
+<form action="{action}" method="POST" id="tool_form" target="_self">
+  <input type="hidden" name="oauth_consumer_key" value="learningx" />
+  <input type="hidden" name="custom_canvas_course_id" value="214023" />
+  <input type="hidden" name="lis_person_name_full" value="학생" />
+  <input type="hidden" name="oauth_signature" value="c2ln&amp;=" />
+  <button type="submit">계속</button>
+</form>
+<form id="logout" method="get" action="/logout"><input type="hidden" name="x" value="1" /></form>
+<script>document.getElementById("tool_form").submit()</script>
+</body></html>"""
+
+
+# 폼이 보내는 값(HTML 글자를 풀어 둔 것). 클라이언트가 이대로 다시 보내야 한다
+LAUNCH_FIELDS: list[tuple[str, str]] = [
+    ("oauth_consumer_key", "learningx"),
+    ("custom_canvas_course_id", "214023"),
+    ("lis_person_name_full", "학생"),
+    ("oauth_signature", "c2ln&="),
+]
+
+
+def lecture_item(
+    module_item_id: int | None,
+    title: str,
+    *,
+    content_type: str = "attendance_item",
+    media: str | None = "movie",
+    live: bool = False,
+    use_attendance: bool = True,
+    completed: Any = False,
+    determinable: bool = True,
+    attendance: str = "none",
+    period: str | None = "open",
+    unlock_at: str | None = None,
+    due_at: str | None = None,
+    late_at: str | None = None,
+    duration: Any = None,
+    published: bool = True,
+    item_id: int | None = None,
+) -> dict[str, Any]:
+    """주차학습 항목 하나(실측 모양). 학생 본인의 상태가 `completed`·`attendance_status`로 함께 온다."""
+    content: dict[str, Any] = {"content_type": media} if media else {}
+    if duration is not None:
+        content["duration"] = duration
+    data: dict[str, Any] = {
+        "item_id": item_id if item_id is not None else (module_item_id or 0) + 1_000_000,
+        "title": title,
+        "published": published,
+        "use_attendance": use_attendance,
+        "lecture_period_status": period,
+        "unlock_at": unlock_at,
+        "due_at": due_at,
+        "late_at": late_at,
+        "item_content_data": content,
+    }
+    if live:
+        data["item_content_type"] = "video_conference"
+    return {
+        "module_item_id": module_item_id,
+        "title": title,
+        "content_type": content_type,
+        "published": published,
+        "completed": completed,
+        "completion_determinable": determinable,
+        "attendance_status": attendance,
+        "content_data": data,
+    }
+
+
+# 데이터베이스(214023) — 2026-10-16 12:00 KST 기준으로 다 들음·안 들음·놓침·학습자료·열리기 전이 하나씩.
+# 출석 대상이 아닌 PDF, 퀴즈, 공개하지 않은 강의는 강의가 아니다
+DB_LECTURE_MODULES: list[dict[str, Any]] = [
+    {
+        "module_id": 9003,
+        "title": "3주차",
+        "module_items": [
+            lecture_item(
+                8569302,
+                "3주차 강의",
+                completed=True,
+                attendance="attendance",
+                period="closed",
+                unlock_at="2026-09-15T00:00:00Z",
+                due_at="2026-09-21T14:59:59Z",
+                duration=1932.4,
+            ),
+            # 제목이 같은 둘째 항목은 출석 대상이 아닌 PDF다
+            lecture_item(8569303, "3주차 강의", media="pdf", use_attendance=False),
+            lecture_item(8569304, "3주차 퀴즈", content_type="quiz", media=None),
+        ],
+    },
+    {"module_id": 9004, "title": "4주차 (개천절 대체휴일)", "module_items": []},
+    {
+        "module_id": 9006,
+        "title": "6주차",
+        "module_items": [
+            lecture_item(
+                8570001,
+                "6주차 강의 1부",
+                media="mp4",
+                unlock_at="2026-10-13T00:00:00Z",
+                due_at="2026-10-19T14:59:59Z",
+                late_at="2026-10-26T14:59:59Z",
+                duration=2405,
+            ),
+            lecture_item(
+                8570002,
+                "6주차 실시간 수업",
+                media=None,
+                live=True,
+                attendance="absent",
+                period="closed",
+                due_at="2026-10-14T06:00:00Z",
+            ),
+            lecture_item(
+                8570003,
+                "6주차 읽기 자료",
+                media="pdf",
+                completed=True,
+                attendance="attendance",
+            ),
+            lecture_item(8570004, "6주차 보충 강의(준비 중)", published=False),
+        ],
+    },
+    {
+        "module_id": 9007,
+        "title": "7주차",
+        "module_items": [
+            lecture_item(
+                8570005,
+                "7주차 강의",
+                period="not_open",
+                unlock_at="2026-10-20T00:00:00Z",
+                due_at="2026-10-26T14:59:59Z",
+            )
+        ],
+    },
+]
+
+# 기계학습(216515) — Canvas 주차 항목 번호가 없는 강의(LearningX 번호로 가린다)와 완료 여부를 알 수 없는 강의,
+# 지각 인정 기간인 강의
+ML_LECTURE_MODULES: list[dict[str, Any]] = [
+    {
+        "module_id": 9101,
+        "title": "Week 3 : Trees",
+        "module_items": [
+            lecture_item(
+                None,
+                "Decision trees (recorded)",
+                item_id=71001,
+                determinable=False,
+            ),
+            lecture_item(
+                8631790,
+                "Week 3 lecture",
+                period="late",
+                due_at="2026-10-15T14:59:59Z",
+                late_at="2026-10-22T14:59:59Z",
+            ),
+        ],
+    }
+]

@@ -1,7 +1,9 @@
 """LearningX(Canvas) API 클라이언트 (F-50, API 명세 9장).
 
 지키는 것(명세 9장·PRD 7장):
-- **GET만 보낸다.** 다른 방법은 요청을 만들기 전에 예외다
+- **GET만 보낸다.** 다른 방법은 요청을 만들기 전에 예외다. 예외는 하나 — 주차학습(LearningX)을 열 때 Canvas가
+  만들어 준 LTI 폼을 그대로 돌려보내는 POST 한 번이다(`learningx_session`, 11/24). 브라우저가 주차학습 탭을 열 때
+  하는 일과 같고 아무것도 바꾸지 않는다
 - **허용 경로만 부른다.** 2026-09-28 점검과 10-16 녹화에서 쓴 경로뿐이고, 그 밖은 예외다
 - 쪽이 나뉘면 `Link: rel="next"`를 따라가되 **우리 주소와 허용 경로인 쪽만** 따라간다
   (서버가 준 주소를 그대로 믿으면 엉뚱한 곳에 토큰을 보낼 수 있다)
@@ -26,9 +28,10 @@
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
 
 import httpx
 
@@ -47,7 +50,20 @@ ALLOWED_PATHS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/v1/courses/\d+/modules$"),
     re.compile(r"^/api/v1/courses/\d+/modules/\d+/items$"),
     re.compile(r"^/api/v1/courses/\d+/discussion_topics$"),
+    # 주차학습(LearningX)을 여는 길(11/24): 과목 탭 목록에서 주차학습 도구 번호를 찾고 한 번 쓰는 실행 주소를 받는다
+    re.compile(r"^/api/v1/courses/\d+/tabs$"),
+    re.compile(r"^/api/v1/courses/\d+/external_tools/sessionless_launch$"),
 )
+
+# 주차학습(LearningX, 11/24). 11/12 한양대 실측: 탭 이름 '주차학습'(context_external_tool_140) → 실행 주소
+# `/courses/{id}/external_tools/sessionless_launch?verifier=…`(토큰 없이 연다) → 폼 하나(POST
+# `/learningx/lti/modulebuilder`, 값 47개) → 응답이 `xn_api_token` 쿠키를 준다 → 그 표로 모든 과목의 주차학습을 읽는다
+LAUNCH_PAGE = re.compile(r"^/courses/\d+/external_tools/sessionless_launch$")
+LTI_FORM = re.compile(r"^/learningx/lti/[a-z_]+$")
+LEARNINGX_MODULES = re.compile(r"^/learningx/api/v1/courses/\d+/modules$")
+WEEKLY_TAB = re.compile(r"주차\s*학습|강의\s*콘텐츠|lecture\s*contents?", re.I)
+LEGACY_TAB = re.compile(r"^\s*\((구|old)\)", re.I)  # 옮기기 전 도구의 탭("(구) 강의콘텐츠")
+LEARNINGX_COOKIE = "xn_api_token"
 
 
 # 공지 첨부 받기(F-54). API 경로가 아니어서 ALLOWED_PATHS와 따로 둔다
@@ -71,6 +87,74 @@ class AttachmentTooLarge(AttachmentUnavailable):
 class DownloadedFile:
     data: bytes
     content_type: str | None
+
+
+@dataclass(frozen=True)
+class LearningXSession:
+    """주차학습(LearningX)에 들어간 표. 이 동기화에서만 메모리에 두고 저장·기록하지 않는다."""
+
+    token: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class LtiForm:
+    action: str
+    fields: list[tuple[str, str]]
+
+
+class _FormReader(HTMLParser):
+    """실행 페이지의 첫 폼(주소·방법·숨은 값)만 읽는다. 값은 HTML 글자 그대로 풀어 둔다."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms = 0
+        self.inside = False
+        self.method = ""
+        self.action = ""
+        self.fields: list[tuple[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key: value or "" for key, value in attrs}
+        if tag == "form":
+            self.forms += 1
+            if self.forms == 1:
+                self.inside = True
+                self.method = values.get("method", "").upper()
+                self.action = values.get("action", "")
+        elif tag == "input" and self.inside and values.get("name"):
+            self.fields.append((values["name"], values.get("value", "")))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form":
+            self.inside = False
+
+
+def lti_form(html: str) -> LtiForm | None:
+    """실행 페이지의 LTI 폼. POST 폼이 아니거나 주소·값이 없으면 None이다."""
+    reader = _FormReader()
+    reader.feed(html)
+    if reader.method != "POST" or not reader.action or not reader.fields:
+        return None
+    return LtiForm(action=reader.action, fields=reader.fields)
+
+
+def weekly_tool(tabs: Any) -> int | None:
+    """과목 탭 목록에서 주차학습 도구 번호. 지금 도구를 옛 도구('(구) …')보다 먼저 고른다. 없으면 None."""
+    if not isinstance(tabs, list):
+        return None
+    found = [
+        tab
+        for tab in tabs
+        if isinstance(tab, dict)
+        and isinstance(tab.get("label"), str)
+        and WEEKLY_TAB.search(tab["label"])
+    ]
+    found.sort(key=lambda tab: bool(LEGACY_TAB.search(tab["label"])))
+    for tab in found:
+        matched = re.fullmatch(r"context_external_tool_(\d+)", str(tab.get("id") or ""))
+        if matched:
+            return int(matched.group(1))
+    return None
 
 
 class LearningXError(Exception):
@@ -150,6 +234,78 @@ class LearningXClient:
             f"/api/v1/courses/{course_id}/discussion_topics",
             {"only_announcements": "true"},
         )
+
+    async def learningx_session(self, token: str, course_id: int) -> LearningXSession | None:
+        """주차학습(LearningX)을 한 번 연다(11/24). 그 과목에 주차학습 탭이 없으면 None이다.
+
+        브라우저가 주차학습 탭을 열 때와 같은 길이다: 과목 탭에서 도구 번호를 찾고, Canvas에서 한 번 쓰는 실행 주소를
+        받아(토큰은 이 API 호출에만 보낸다) 열면 LTI 폼이 오고, 그 폼을 그대로 보내면 LearningX가 표(쿠키)를 준다.
+        **폼을 보내는 POST가 이 클라이언트의 유일한 POST다** — 받은 값을 그대로 돌려보낼 뿐 아무것도 바꾸지 않는다.
+        강의 항목은 열지 않으므로 시청·출석 처리되지 않는다. 실행 주소와 폼 주소는 우리 LearningX(같은 스킴·호스트)의
+        정해진 경로만 따른다. 표는 이 동기화에서만 쓰고 저장하지 않는다 — 학생 한 명의 표 하나로 모든 과목을 읽는다.
+        """
+        tabs, _ = await self._fetch(
+            token, self._url(f"/api/v1/courses/{course_id}/tabs", {"include[]": "external"})
+        )
+        tool = weekly_tool(tabs)
+        if tool is None:
+            return None
+        launch, _ = await self._fetch(
+            token,
+            self._url(
+                f"/api/v1/courses/{course_id}/external_tools/sessionless_launch", {"id": str(tool)}
+            ),
+        )
+        url = launch.get("url") if isinstance(launch, dict) else None
+        if not isinstance(url, str) or not self._same_site(url, LAUNCH_PAGE):
+            raise LearningXError("주차학습 실행 주소가 우리 LearningX가 아니에요.")
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
+                page = await client.get(url, headers={"Accept": "text/html"})
+                if page.status_code != 200:
+                    raise LearningXError(
+                        f"주차학습을 열지 못했어요({page.status_code}).", page.status_code
+                    )
+                form = lti_form(page.text)
+                if form is None:
+                    raise LearningXError("주차학습 실행 폼을 찾지 못했어요.")
+                action = urljoin(url, form.action)
+                if not self._same_site(action, LTI_FORM):
+                    raise LearningXError("주차학습 폼이 우리 LearningX가 아닌 곳으로 가요.")
+                posted = await client.post(
+                    action,
+                    content=urlencode(form.fields).encode(),
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "text/html",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise LearningXError("주차학습에 연결하지 못했어요.") from exc
+        if not 200 <= posted.status_code < 400:
+            raise LearningXError(
+                f"주차학습이 실행을 거절했어요({posted.status_code}).", posted.status_code
+            )
+        # 이름이 같은 쿠키가 경로·도메인별로 둘 올 수 있다(`cookies.get`은 그때 예외다). 처음 것을 쓴다
+        value = next(
+            (one.value for one in posted.cookies.jar if one.name == LEARNINGX_COOKIE and one.value),
+            None,
+        )
+        if not value:
+            raise LearningXError("주차학습 표를 받지 못했어요.")
+        return LearningXSession(token=value)
+
+    async def lecture_modules(
+        self, session: LearningXSession, course_id: int
+    ) -> list[dict[str, Any]]:
+        """주차학습 목록과 학생 본인의 상태(app/lms/lectures.py). 한 번에 다 온다(11/12 실측, 쪽 나눔 없음)."""
+        path = f"/learningx/api/v1/courses/{course_id}/modules"
+        if not LEARNINGX_MODULES.match(path):
+            raise LearningXError(f"허용하지 않은 LearningX 경로예요: {path}")
+        body, _ = await self._fetch(session.token, f"{self.api_base}{path}?include_detail=true")
+        if not isinstance(body, list):
+            raise LearningXError("주차학습 응답을 읽지 못했어요.")
+        return [row for row in body if isinstance(row, dict)]
 
     async def attachment(
         self, url: str, *, max_bytes: int, html_ok: bool = False
@@ -255,6 +411,15 @@ class LearningXClient:
             raise LearningXError(f"허용하지 않은 LearningX 경로예요: {path}")
         query = "&".join(f"{key}={value}" for key, value in params.items())
         return f"{self.api_base}{path}{'?' + query if query else ''}"
+
+    def _same_site(self, url: str, path: re.Pattern[str]) -> bool:
+        """우리 LearningX(같은 스킴·호스트)의 그 경로인지. 주차학습 실행 주소·폼 주소를 이걸로 본다."""
+        parts = urlsplit(url)
+        return (
+            parts.scheme == self._scheme
+            and parts.netloc.lower() == self._host
+            and bool(path.match(parts.path))
+        )
 
     def _ours(self, url: str) -> bool:
         """다음 쪽 주소가 우리 LearningX의 허용 경로인지. 아니면 따라가지 않는다."""
