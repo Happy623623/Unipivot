@@ -169,15 +169,51 @@ def test_region() -> None:
     ("codes", "expected"),
     [
         ("0049010", []),
+        # 대학 재학만: 학적 묶음 + 학위과정이 학부인 묶음(대학원 재학도 "재학"이라서)
         (
             "0049005",
-            [(1, "enrollment_status", "in", ["enrolled", "on_leave", "deferred_graduation"])],
+            [
+                (1, "enrollment_status", "in", ["enrolled", "on_leave", "deferred_graduation"]),
+                (2, "degree_program", "in", ["bachelor"]),
+            ],
         ),
         (
             "0049005,0049006",
             [
                 (1, "enrollment_status", "in", ["enrolled", "on_leave", "deferred_graduation"]),
                 (1, "other", "eq", {"text": "학력: 대졸 예정"}),
+                (2, "degree_program", "in", ["bachelor"]),
+            ],
+        ),
+        # 석·박사도 고르면 대학원생도 받는다 — 학부 묶음이 없다
+        (
+            "0049005,0049008",
+            [
+                (1, "enrollment_status", "in", ["enrolled", "on_leave", "deferred_graduation"]),
+                (1, "degree_program", "in", ["master", "doctoral", "integrated"]),
+            ],
+        ),
+        # 기타·모르는 코드가 섞이면 무엇을 받는지 몰라 학부 묶음을 더하지 않는다(원문 확인 조건이 있다)
+        (
+            "0049005,0049009",
+            [
+                (1, "enrollment_status", "in", ["enrolled", "on_leave", "deferred_graduation"]),
+                (1, "other", "eq", {"text": "학력: 기타"}),
+            ],
+        ),
+        (
+            "0049005,0049099",
+            [
+                (1, "enrollment_status", "in", ["enrolled", "on_leave", "deferred_graduation"]),
+                (1, "other", "eq", {"text": "학력: 0049099"}),
+            ],
+        ),
+        # 대졸 예정만: 원문 확인 + 학부 묶음(대학원생은 대졸 예정이 아니다)
+        (
+            "0049006",
+            [
+                (1, "other", "eq", {"text": "학력: 대졸 예정"}),
+                (2, "degree_program", "in", ["bachelor"]),
             ],
         ),
         (
@@ -198,7 +234,10 @@ def test_region() -> None:
         # 고교 학력은 대학 학력과 함께면 대학생 판정에 쓰지 않는다
         (
             "0049004,0049005",
-            [(1, "enrollment_status", "in", ["enrolled", "on_leave", "deferred_graduation"])],
+            [
+                (1, "enrollment_status", "in", ["enrolled", "on_leave", "deferred_graduation"]),
+                (2, "degree_program", "in", ["bachelor"]),
+            ],
         ),
         ("0049002,0049003", [(1, "other", "eq", {"text": "학력: 고교 재학·고졸 예정"})]),
         (",".join(f"00490{n:02d}" for n in range(1, 10)), []),  # 모든 학력을 고름 = 제한 없음
@@ -355,7 +394,8 @@ def test_apply_site_reads_only_its_own_section() -> None:
 
 
 def test_every_condition_is_judgeable() -> None:
-    """모든 칸을 채운 정책도 판정 엔진이 받는 모양이다. 칸마다 묶음 하나다."""
+    """모든 칸을 채운 정책도 판정 엔진이 받는 모양이다. 칸마다 묶음 하나다(학력 칸만 대학 재학·대졸 예정이면
+    학부 묶음이 하나 더 있다)."""
     full = record(
         sprtTrgtMinAge="19",
         sprtTrgtMaxAge="34",
@@ -370,7 +410,7 @@ def test_every_condition_is_judgeable() -> None:
         addAplyQlfcCndCn="공고문 참조",
         ptcpPrpTrgtCn="재학생 제외",
     )
-    assert max(d.clause_no for d in full.requirements) == 10
+    assert max(d.clause_no for d in full.requirements) == 11
     for draft in full.requirements:
         requirement = Requirement(
             id="x",
@@ -401,6 +441,7 @@ def test_broken_policy_values_become_ambiguous() -> None:
         ({"sprtTrgtMinAge": "35", "sprtTrgtMaxAge": "39"}, "ineligible"),
         ({"sprtTrgtMinAge": "34", "sprtTrgtMaxAge": "99"}, "needs_review"),  # 믿기 어려운 나이
         ({"sprtTrgtMinAge": "0", "sprtTrgtMaxAge": "1"}, "needs_review"),  # 자녀 나이
+        ({"schoolCd": "0049005"}, "eligible"),  # 대학 재학만: 학부 재학생
         ({"schoolCd": "0049008"}, "ineligible"),  # 석·박사만
         ({"schoolCd": "0049007"}, "ineligible"),  # 대학 졸업만: 학부 재학생은 아니다
         ({"plcyMajorCd": "0011003"}, "ineligible"),  # 상경계열(경상대학)
@@ -419,6 +460,31 @@ def test_graduate_students_have_finished_university() -> None:
     assert judge(record(schoolCd="0049007"), graduate) == "eligible"
     unknown = replace(STUDENT, degree_program=None)
     assert judge(record(schoolCd="0049007"), unknown) == "missing_info"
+
+
+def test_undergraduate_only_policies_leave_out_graduate_students() -> None:
+    """대학 재학만 고른 정책(PRD 14장): 대학원 재학생은 지원 어려움, 학위과정을 모르면 물어본다.
+
+    전에는 학적만 봐서 대학원생도 "재학"으로 지원 가능이었다. 대학 졸업·석·박사를 함께 고른 정책은 그대로 받는다.
+    """
+    graduate = replace(STUDENT, degree_program="master", grade=None)
+    assert judge(record(schoolCd="0049005"), graduate) == "ineligible"
+    assert judge(record(schoolCd="0049005,0049008"), graduate) == "eligible"
+    assert judge(record(schoolCd="0049005,0049007"), graduate) == "eligible"
+    integrated = replace(STUDENT, degree_program="integrated", grade=None)
+    assert judge(record(schoolCd="0049005"), integrated) == "ineligible"
+    unknown = replace(STUDENT, degree_program=None)
+    assert judge(record(schoolCd="0049005"), unknown) == "missing_info"
+    # 학부 묶음의 근거는 학력 칸과 같은 글이다(판정표에서 왜 묻는지 보인다)
+    degree = [d for d in record(schoolCd="0049005").requirements if d.field == "degree_program"]
+    assert [(d.evidence_text, d.is_ambiguous) for d in degree] == [
+        ("온통청년 학력 요건: 대학 재학", False)
+    ]
+    # 글에 졸업예정자가 있어 대졸 예정이 더해져도 학부 묶음이다
+    texted = record(schoolCd="0049005", addAplyQlfcCndCn="졸업예정자 포함").requirements
+    assert [d.evidence_text for d in texted if d.field == "degree_program"] == [
+        "온통청년 학력 요건: 대학 재학(글에 졸업예정자가 있음)"
+    ]
 
 
 def test_content_hash() -> None:
