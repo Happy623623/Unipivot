@@ -1191,6 +1191,110 @@ async def test_it_saves_module_items_as_a_shared_table(world: dict[str, Any]) ->
     assert (await repo.courses(other, now=later))[0].new_materials == 1  # 같이 듣는 사람도 센다
 
 
+# ── LearningX에서 사라진 주차 항목 (피드백 2①, 11/23) ─────────────────────────
+
+
+async def _removed_at(world: dict[str, Any], item: int) -> Any:
+    row = await (
+        await world["conn"].execute(
+            "select removed_at from lms_module_items where canvas_item_id = %s", (item,)
+        )
+    ).fetchone()
+    return row["removed_at"]
+
+
+async def _detail_items(world: dict[str, Any], user: str, now: datetime) -> list[tuple[str, bool]]:
+    course = await _course_id_of(world, user)
+    detail = await world["repo"].course_detail(user, course, now=now, lms_base="https://lms.test")
+    assert detail is not None
+    return [(one.title, one.removed) for one in detail.module_items]
+
+
+async def test_an_item_gone_from_learningx_leaves_the_materials_tab(world: dict[str, Any]) -> None:
+    """목록을 끝까지 받았는데 없던 항목은 removed_at을 찍고 자료 탭·새 학업 정보·새 자료 수에서 뺀다.
+    다시 나타나면 되돌린다. 행은 지우지 않는다."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_module_items(me, DATABASE["id"], [], now=now)  # 첫 수집(아직 항목 없음)
+    kept = CanvasModuleItem(8569302, "3주차", "3주차 강의", "ExternalTool", "https://lms.test/a")
+    gone = CanvasModuleItem(
+        8569303, "3주차", "3주차 지운 강의", "ExternalTool", "https://lms.test/b"
+    )
+    added = now + timedelta(minutes=10)
+    await repo.save_module_items(me, DATABASE["id"], [kept, gone], now=added)
+    assert (await repo.courses(me, now=added))[0].new_materials == 2
+
+    later = now + timedelta(hours=1)
+    await repo.save_module_items(me, DATABASE["id"], [kept], now=later)
+    assert await _removed_at(world, 8569303) == later
+    assert await _removed_at(world, 8569302) is None
+    assert (await repo.courses(me, now=later))[0].new_materials == 1
+    assert await _detail_items(world, me, later) == [("3주차 강의", False)]  # 연 뒤에는 새 자료 0
+    feed, _ = await repo.updates(
+        me, since=now - timedelta(days=7), now=later, kinds=["module_item"]
+    )
+    assert [one.title for one in feed] == ["3주차 강의"]
+
+    back = later + timedelta(hours=1)
+    await repo.save_module_items(me, DATABASE["id"], [kept, gone], now=back)
+    assert await _removed_at(world, 8569303) is None  # 다시 나타났다
+
+
+async def test_an_empty_list_does_not_remove_every_item(world: dict[str, Any]) -> None:
+    """빈 목록은 찍지 않는다 — 이상한 빈 응답 하나로 한 학기 자료가 사라지지 않게."""
+    repo, me, now = world["repo"], world["me"], world["now"]
+    await repo.save_courses(me, [DATABASE], now=now)
+    await repo.save_module_items(me, DATABASE["id"], module_items(DB_MODULES), now=now)
+    await repo.save_module_items(me, DATABASE["id"], [], now=now + timedelta(hours=1))
+    assert await _removed_at(world, 8569302) is None
+
+
+async def test_an_older_sync_does_not_remove_an_item_found_after_it_started(
+    world: dict[str, Any],
+) -> None:
+    """같이 듣는 학생의 동기화가 방금 넣은 항목은, 그보다 먼저 시작한 내 동기화의 목록에 없어도 찍지 않는다."""
+    repo, me, other, now = world["repo"], world["me"], world["other"], world["now"]
+    for user in (me, other):
+        await repo.save_courses(user, [DATABASE], now=now)
+    old = CanvasModuleItem(8569302, "3주차", "3주차 강의", "ExternalTool", None)
+    fresh = CanvasModuleItem(8569999, "4주차", "4주차 강의", "ExternalTool", None)
+    await repo.save_module_items(
+        other, DATABASE["id"], [old, fresh], now=now + timedelta(minutes=5)
+    )
+    await repo.save_module_items(me, DATABASE["id"], [old], now=now)  # 내 동기화가 먼저 시작했다
+    assert await _removed_at(world, 8569999) is None
+
+
+async def test_a_gone_item_with_my_upload_stays_for_me_only(world: dict[str, Any]) -> None:
+    """사라진 항목에 강의자료를 올려 둔 학생은 그 항목을 removed로 계속 본다(요약을 다시 열 수 있게).
+    올리지 않은 같은 과목 학생에게는 보이지 않는다."""
+    repo, me, other, now, conn = (
+        world["repo"],
+        world["me"],
+        world["other"],
+        world["now"],
+        world["conn"],
+    )
+    for user in (me, other):
+        await repo.save_courses(user, [DATABASE], now=now)
+    kept = CanvasModuleItem(8569302, "3주차", "3주차 강의", "ExternalTool", None)
+    gone = CanvasModuleItem(8569303, "3주차", "3주차 지운 강의", "ExternalTool", None)
+    await repo.save_module_items(me, DATABASE["id"], [kept, gone], now=now)
+    row = await (
+        await conn.execute("select id from lms_module_items where canvas_item_id = 8569303", ())
+    ).fetchone()
+    await conn.execute(
+        "insert into files (user_id, kind, origin, storage_path, sha256, lms_module_item_id)"
+        " values (%s, 'lecture_material', 'upload', 'p/gone', 'abc', %s)",
+        (me, row["id"]),
+    )
+    later = now + timedelta(hours=1)
+    await repo.save_module_items(other, DATABASE["id"], [kept], now=later)
+
+    assert ("3주차 지운 강의", True) in await _detail_items(world, me, later)
+    assert [title for title, _ in await _detail_items(world, other, later)] == ["3주차 강의"]
+
+
 async def test_the_second_sync_only_reports_the_new_item(world: dict[str, Any]) -> None:
     repo, me, now = world["repo"], world["me"], world["now"]
     await repo.save_courses(me, [DATABASE], now=now)

@@ -1347,6 +1347,7 @@ def test_it_opens_a_course(client: TestClient, lms: FakeLms, settings: Settings)
         "submission_state",
         "html_url",
     }
+    # removed: LearningX에서 사라진 항목(11/23). 내가 강의자료를 올린 항목만 true로 남는다
     assert set(body["module_items"][0]) == {
         "id",
         "module_name",
@@ -1355,6 +1356,7 @@ def test_it_opens_a_course(client: TestClient, lms: FakeLms, settings: Settings)
         "html_url",
         "is_new",
         "uploaded_file_id",
+        "removed",
     }
     assert set(body["announcements"][0]) == {
         "id",
