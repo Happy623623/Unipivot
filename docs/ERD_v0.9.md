@@ -743,7 +743,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 
 | 종류 | 키 | 비고 |
 | --- | --- | --- |
-| new_eligible | `new_eligible:opp:{opportunity_id}` | |
+| new_eligible | `new_eligible:day:{알릴 날(KST)}` | 학생마다 하루 1행 — 그날 알릴 공고를 한 행으로 묶고 마감이 가장 가까운 공고를 잇는다. 묶음에 넣는 공고는 지난 묶음을 만든 뒤(`created_at`) 들어온 것(11/20, 전에는 `new_eligible:opp:{opportunity_id}` 공고당 1회) |
 | deadline_soon (공고) | `deadline_soon:opp:{opportunity_id}:D-3`, `…:D-1` | 공고당 2행 |
 | deadline_soon (LMS 과제) | `deadline_soon:asg:{lms_assignment_id}:D-3`, `…:D-1` | 제출하면 pending 행 삭제 |
 | profile_needed | `profile_needed:field:{물어볼 항목}` | 항목당 1회 — 같은 항목을 묻는 공고는 한 행으로 묶고 마감이 가장 가까운 공고를 잇는다(11/19, 전에는 `profile_needed:opp:{opportunity_id}` 공고당 1회). 하루 1건 제한은 발송 배치 |
@@ -928,6 +928,7 @@ group by c.id;
 ## 변경 이력
 
 - v0.9 보강 (2026-11-21): agent_runs.engine·engine_version·model·review_codes — 엔진 도장(O2). 공지 분류가 동기화 실행의 자식 실행이 되고 lms_announcements.classified_run_id가 그 자식을 가리킨다
+- v0.9 보강 (2026-11-20): 새 공고 알림 키를 학생·알릴 날 단위로(`new_eligible:day:{날짜}`, 대표 공고는 마감이 가장 가까운 것, 지난 묶음을 만든 뒤 들어온 공고만), 정보 필요 알림은 마감까지 3일 넘게 남은 공고만. 옛 키의 pending 행은 다음 예약이 지운다. 스키마 변경 없음
 - v0.9 보강 (2026-11-19): 정보 필요 알림 키를 항목 단위로(`profile_needed:field:{항목}`, 대표 공고는 마감이 가장 가까운 것), 옛 키의 pending 행은 다음 예약이 지운다. 스키마 변경 없음
 - v0.9 보강 (2026-11-18): job_schedule — 정기 작업 예약표(작업마다 한 줄, 다음 차례·임대 30분·실패하면 늦춤). 서버가 꺼져 있던 차례를 깨어나 한 번 따라잡고, 몇 대가 떠도 작업마다 한 번만 돈다
 - v0.9 보강 (2026-11-17): agent_runs.parent_run_id·root_run_id — 실행 트리(O1). LMS 기회성 공지·학교 공지 링크의 요건 추출이 자식 실행이 되고, 시나리오 지표는 뿌리만 센다

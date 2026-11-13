@@ -6,11 +6,16 @@
 
 | 종류 | 키 | 누구에게 |
 | --- | --- | --- |
-| new_eligible | `new_eligible:opp:{id}` | 등록 7일 이내 + 적격 + 아직 상세를 열지 않음 |
+| new_eligible | `new_eligible:day:{알릴 날}` | 등록 7일 이내 + 적격 + 아직 상세를 열지 않음 + 지난 묶음 뒤에 들어옴. **학생마다 하루 한 행** |
 | deadline_soon | `deadline_soon:opp:{id}:D-3`·`:D-1` | 적격이거나 준비한 공고. 마감일이 있어야 한다 |
-| profile_needed | `profile_needed:field:{항목}` | 판정 불가 + 물어볼 항목이 있음. **학생 × 물어볼 첫 항목마다 한 행** |
+| profile_needed | `profile_needed:field:{항목}` | 판정 불가 + 물어볼 항목이 있음 + 마감까지 3일 넘게 남음. **학생 × 물어볼 첫 항목마다 한 행** |
 
-정보 필요 알림은 **항목 단위로 묶는다**(11/19). 같은 항목(예: 거주지역)을 묻는 공고가 여럿이면 알림은 하나이고,
+새 공고 알림은 **학생마다 하루 한 건으로 묶는다**(11/20). 그날 알릴 공고가 여럿이면 마감이 가장 가까운 공고를
+대표로 잇고 "대표 제목 외 N개"라고 쓴다. 묶음에 넣는 공고는 **지난 묶음을 만든 뒤에 들어온 것**이다(처음이면 7일
+그대로) — 묶음을 만든 시각(`created_at`)이 다음 묶음의 기준이다. 전에는 공고마다 한 행이라, 청년정책이 한꺼번에
+들어온 날 아침에 학생마다 열 몇 건이 갔다(11/12: 학생 6명에게 96건).
+
+정보 필요 알림은 **항목 단위로 묶는다**(11/19). 마감까지 3일 넘게 남은 공고만 묻는다(PRD F-33, 11/20). 같은 항목(예: 거주지역)을 묻는 공고가 여럿이면 알림은 하나이고,
 마감이 가장 가까운 공고(없으면 새 공고)를 대표로 잇는다 — 누르면 그 공고 상세의 즉석 입력으로 가고, 한 번 넣으면
 묶인 공고가 함께 판정된다. 공고 수가 바뀌면 아직 보내지 않은 행의 대표·문구만 고친다. 보낸 항목은 다시 묻지
 않는다(항목당 1회). 전에는 공고마다 한 행이라 같은 항목을 공고 수만큼 하루 1건씩 되물었다(11/11: 한 학생에게
@@ -37,7 +42,7 @@ profile_needed는 사용자당 KST 하루 1건까지만 보낸다(ERD). 넘는 �
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -69,6 +74,9 @@ NEW_TITLE = "지원할 수 있는 공고가 있어요"
 DEADLINE_TITLE = "마감이 가까워요"
 PROFILE_TITLE = "프로필 정보가 필요해요"
 PROFILE_KEY = "profile_needed:field:"  # 정보 필요 알림 키의 앞부분. 뒤에 물어볼 항목 이름이 붙는다
+PROFILE_MIN_DAYS = 3  # 정보 필요 알림은 마감까지 이 날수보다 많이 남은 공고만 묻는다(PRD F-33)
+NEW_KEY = "new_eligible:day:"  # 새 공고 알림 키의 앞부분. 뒤에 알릴 날(KST 날짜)이 붙는다
+LEGACY_NEW_KEY = "new_eligible:opp:"  # 공고마다 한 행이던 옛 새 공고 알림 키(11/20 전)
 ASSIGNMENT_TYPE = "new_assignment"  # notifications.type·user_settings.muted_notification_types
 MATERIAL_TYPE = "new_material"  # 새 주차 항목(F-52). 과목 수강생 모두에게 간다
 SCHEDULE_TYPE = "schedule_change"  # 일정 변경 공지(F-53 2부). 과목 수강생 모두에게 간다
@@ -187,7 +195,7 @@ class NotificationRepository:
         common = {"now": now, "next_day": next_day}
         result = ScheduleResult(created=0, rescheduled=0, removed=0, by_type={})
         for kind, query, params in (
-            ("new_eligible", _NEW_ELIGIBLE, {}),
+            ("new_eligible", _NEW_ELIGIBLE, {"new_key": NEW_KEY, "legacy_key": LEGACY_NEW_KEY}),
             ("deadline_soon", _DEADLINE_SOON, {"days": list(DEADLINE_DAYS)}),
             (
                 "profile_needed",
@@ -200,13 +208,20 @@ class NotificationRepository:
             result.created += created
             result.rescheduled += len(rows) - created
             result.by_type[kind] = len(rows)
-        result.removed = await self._removed(now)
+        result.removed = await self._removed(now, next_day)
         return result
 
-    async def _removed(self, now: datetime) -> int:
+    async def _removed(self, now: datetime, next_day: date) -> int:
         """보낼 이유가 없어진 pending 행을 지운다. 보낸 행은 알림함에 남으므로 건드리지 않는다."""
         cursor = await self.conn.execute(
-            _STALE, {"now": now, "types": list(_KINDS), "profile_key": PROFILE_KEY}
+            _STALE,
+            {
+                "now": now,
+                "next_day": next_day,
+                "types": list(_KINDS),
+                "profile_key": PROFILE_KEY,
+                "new_key": NEW_KEY,
+            },
         )
         return cursor.rowcount
 
@@ -548,17 +563,38 @@ _COLUMNS = (
     " (user_id, type, opportunity_id, title, body, scheduled_at, dedupe_key)"
 )
 
-# 새 공고: 등록 7일 이내 + 적격 + 아직 상세를 열지 않음. 공고당 1회라 이미 있으면 그대로 둔다
+# 새 공고: 등록 7일 이내 + 적격 + 아직 상세를 열지 않음 + **지난 묶음을 만든 뒤에 들어온 공고**. 학생마다 하루
+# 한 행으로 묶는다(키 끝이 알릴 날). 대표는 마감이 가장 가까운 공고(없으면 새 공고), 문구는 "대표 제목 외 N개"다.
+# 묶음을 만든 시각(created_at = 예약한 시각)이 다음 묶음의 기준이라, 아직 보내지 않은 묶음을 고칠 때 함께 옮긴다.
+# 공고마다 한 행이던 옛 알림(키 new_eligible:opp:…)을 이미 보낸 공고는 다시 알리지 않는다 — 보내지 않은 옛 행은
+# _STALE이 지우고 이 묶음에 들어간다
 _NEW_ELIGIBLE = (
-    f"{_COLUMNS} select p.id, %(type)s, o.id, '{NEW_TITLE}', o.title,"
-    f" {_AT_HOUR % _NEXT_DAY}, 'new_eligible:opp:' || o.id"
+    "insert into notifications"
+    " (user_id, type, opportunity_id, title, body, scheduled_at, dedupe_key, created_at)"
+    f" select g.user_id, %(type)s, g.opportunity_id, '{NEW_TITLE}',"
+    " g.title || case when g.waiting > 1 then ' 외 ' || (g.waiting - 1) || '개' else '' end,"
+    f" {_AT_HOUR % _NEXT_DAY}, %(new_key)s || %(next_day)s::text, %(now)s"
+    " from (select p.id as user_id, o.id as opportunity_id, o.title,"
+    " count(*) over (partition by p.id) as waiting,"
+    " row_number() over (partition by p.id"
+    " order by o.deadline_at nulls last, o.created_at desc, o.id) as pick"
     f"{_JOINS} where{_ACTIVE} and{_UNEXPIRED} and{_NOT_DISMISSED} and{_VISIBLE} and{_NOT_MUTED}"
     " and e.status = 'eligible' and o.created_at >= %(now)s - make_interval(days => "
     f"{NEW_DAYS})"
     " and not exists (select 1 from opportunity_views v"
     " where v.user_id = p.id and v.opportunity_id = o.id)"
-    f" and {_AT_HOUR % _NEXT_DAY} > %(now)s"
-    " on conflict (user_id, dedupe_key) do nothing" + _INSERTED
+    " and o.created_at > coalesce((select max(b.created_at) from notifications b"
+    " where b.user_id = p.id and b.type = %(type)s and b.dedupe_key like %(new_key)s || '%%'"
+    " and b.dedupe_key <> %(new_key)s || %(next_day)s::text), '-infinity')"
+    " and not exists (select 1 from notifications l where l.user_id = p.id"
+    " and l.dedupe_key = %(legacy_key)s || o.id and l.status <> 'pending')) g"
+    f" where g.pick = 1 and {_AT_HOUR % _NEXT_DAY} > %(now)s"
+    " on conflict (user_id, dedupe_key) do update"
+    " set opportunity_id = excluded.opportunity_id, body = excluded.body,"
+    " created_at = excluded.created_at"
+    " where notifications.status = 'pending'"
+    " and (notifications.body is distinct from excluded.body"
+    " or notifications.opportunity_id is distinct from excluded.opportunity_id)" + _INSERTED
 )
 
 # 마감 임박: 적격이거나 준비한 공고. 마감이 바뀌면 아직 보내지 않은 행의 시각만 고친다
@@ -575,9 +611,10 @@ _DEADLINE_SOON = (
     " and notifications.scheduled_at <> excluded.scheduled_at" + _INSERTED
 )
 
-# 정보 필요: 판정 불가 + 물어볼 항목이 있음. **학생 × 물어볼 첫 항목마다 한 행**으로 묶는다. 대표 공고는
-# 마감이 가장 가까운 것(없으면 새 공고)이고, 문구는 "대표 제목 외 N개 · 항목을 입력하면 판정할 수 있어요"다
-# (항목 이름은 조사까지 붙여 넘긴다). 공고 수가 바뀌면 아직 보내지 않은 행의 대표·문구만 고친다
+# 정보 필요: 판정 불가 + 물어볼 항목이 있음 + 알릴 때 마감까지 3일 넘게 남음(PRD F-33). **학생 × 물어볼 첫
+# 항목마다 한 행**으로 묶는다. 대표 공고는 마감이 가장 가까운 것(없으면 새 공고)이고, 문구는 "대표 제목 외 N개 ·
+# 항목을 입력하면 판정할 수 있어요"다(항목 이름은 조사까지 붙여 넘긴다). 공고 수가 바뀌면 아직 보내지 않은 행의
+# 대표·문구만 고친다
 _PROFILE_NEEDED = (
     f"{_COLUMNS} select g.user_id, %(type)s, g.opportunity_id, '{PROFILE_TITLE}',"
     " g.title || case when g.waiting > 1 then ' 외 ' || (g.waiting - 1) || '개' else '' end"
@@ -589,7 +626,9 @@ _PROFILE_NEEDED = (
     " order by o.deadline_at nulls last, o.created_at desc, o.id) as pick"
     f"{_JOINS} where{_ACTIVE} and{_UNEXPIRED} and{_NOT_DISMISSED} and{_VISIBLE} and{_NOT_MUTED}"
     " and e.status = 'undetermined' and coalesce(array_length(e.missing_fields, 1), 0) > 0"
-    " and %(needed)s::jsonb ? e.missing_fields[1]) g"
+    " and %(needed)s::jsonb ? e.missing_fields[1]"
+    f" and (o.deadline_at is null or o.deadline_at > {_AT_HOUR % _NEXT_DAY}"
+    f" + make_interval(days => {PROFILE_MIN_DAYS}))) g"
     f" where g.pick = 1 and {_AT_HOUR % _NEXT_DAY} > %(now)s"
     " on conflict (user_id, dedupe_key) do update"
     " set opportunity_id = excluded.opportunity_id, body = excluded.body"
@@ -598,7 +637,7 @@ _PROFILE_NEEDED = (
     " or notifications.opportunity_id is distinct from excluded.opportunity_id)" + _INSERTED
 )
 
-# 보낼 이유가 없어진 pending 행: 숨김·준비 취소·마감 지남·숨겨진 공고·이미 본 새 공고
+# 보낼 이유가 없어진 pending 행: 숨김·준비 취소·마감 지남·숨겨진 공고·이미 본 새 공고·마감 3일 안의 정보 필요
 _STALE = (
     # 지우는 대상(n)은 USING의 조인 조건에서 볼 수 없다. 그래서 과목 공개 범위는 exists로 본다
     "delete from notifications n using opportunities o"
@@ -617,6 +656,9 @@ _STALE = (
     "        and e.opportunity_id = o.id and e.status = 'eligible')"
     "      and not exists (select 1 from prep_plans pl where pl.user_id = n.user_id"
     "        and pl.opportunity_id = o.id))"
+    # 새 공고 묶음은 예약이 방금 대표를 고쳤다. 대표가 뜻을 잃었으면 묶을 공고가 남지 않은 것이다. 공고마다
+    # 한 행이던 옛 키(new_eligible:opp:…)의 보내지 않은 행도 지운다 — 그 공고는 방금 묶음에 들어갔다(11/20)
+    "   or (n.type = 'new_eligible' and n.dedupe_key not like %(new_key)s || '%%')"
     "   or (n.type = 'new_eligible' and (exists ("
     "        select 1 from opportunity_views v where v.user_id = n.user_id"
     "        and v.opportunity_id = o.id)"
@@ -629,6 +671,10 @@ _STALE = (
     "        select 1 from eligibility_results e where e.user_id = n.user_id"
     "        and e.opportunity_id = o.id and e.status = 'undetermined'"
     "        and e.missing_fields[1] = substr(n.dedupe_key, length(%(profile_key)s) + 1)))"
+    # 마감까지 3일 넘게 남지 않았다(예약과 같은 기준: 알릴 날 09:00 + 3일, PRD F-33)
+    "   or (n.type = 'profile_needed' and o.deadline_at is not null"
+    f"      and o.deadline_at <= {_AT_HOUR % _NEXT_DAY}"
+    f" + make_interval(days => {PROFILE_MIN_DAYS}))"
     " )"
 )
 
