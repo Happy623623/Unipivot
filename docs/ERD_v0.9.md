@@ -247,6 +247,7 @@ erDiagram
         text item_type "ExternalTool, Assignment ..."
         text html_url "LMS 바로가기"
         timestamptz first_seen_at
+        timestamptz removed_at "LearningX에서 사라진 때(11/23)"
     }
     lms_announcements {
         uuid id PK
@@ -685,6 +686,7 @@ erDiagram
 - **과제 동기화(F-51)**: 과제는 `(user_id, canvas_assignment_id)`로 upsert한다. `first_seen_at`은 처음 본 때로 두고 다시 받을 때 밀지 않는다. 이번 목록에 없던 과제는 `removed_at`을 찍고(**목록이 비어 와도 찍는다** — 과제 0건인 과목이 흔하고, 클라이언트는 끝까지 받지 못하면 예외라 빈 목록은 "정말 없다"는 뜻이다), 다시 나타나면 지우고 새 과제로 센다. 수강을 뺀 과목(`lms_courses.is_active` false)의 과제는 더 받지 않으므로 목록에서 과목 조건으로 뺀다. `lms_connections.last_synced_at`은 동기화를 **시작할** 때 찍는다(같은 사용자를 동시에 두 번 동기화하지 않고, 실패한 사용자가 배치 앞자리를 차지하지 않게). 성공은 `status`·`last_error`로 적는다.
 - **LMS 과제 할 일(F-51·F-43)**: `planner_tasks`에는 **마감이 있는 미제출 과제**만 넣는다(`due_date`가 not null이고, 연결 첫 동기화에 들어오는 지난 과제로 할 일을 만들지 않는다). 마감이 바뀌면 아직 끝내지 않은 할 일의 날짜만 고치고, 마감이 없다가 생긴 과제는 그때 할 일을 만든다. 값에서 값으로 바뀐 마감은 할 일을 새로 만들지 않는다 — 학생이 지운 할 일을 되살리지 않으려는 것이다. 제출하면 할 일을 완료로 바꾸고 아직 보내지 않은 알림(`notifications.status = pending`)을 지운다.
 - **새 자료 감지**: 동기화 때 `canvas_item_id`가 처음 보이면 `lms_module_items`에 넣고, 그 과목 수강생에게 `new_material` 알림을 만든다(**연결을 끊은 사람과 수강을 뺀 과목은 뺀다** — 해제하면 동기화를 멈춘다). 그 과목의 첫 수집에는 만들지 않는다. 같은 제목의 항목이 여러 개인 과목이 있어서(영상·슬라이드 추정) 비교 기준은 제목이 아니라 ID다
+- **사라진 주차 항목(11/23)**: 그 과목 목록을 끝까지 받았는데 없던 항목은 지우지 않고 `lms_module_items.removed_at`을 찍는다 — 알림(`new_material`)과 학생이 올린 강의자료(`files.lms_module_item_id`)가 그 행을 가리킨다. 다시 나타나면 upsert가 지운다. 받다가 실패한 과목은 찍지 않고, **목록이 비어 오면 찍지 않는다**(한 학기 자료가 한꺼번에 사라지는 쪽이 더 아프다). 그 동기화가 시작한 뒤 처음 본 항목(같이 듣는 학생의 동기화가 방금 넣은 것)도 찍지 않는다. 사라진 항목은 자료 탭·새 학업 정보·새 자료 수에서 빠지고, 강의자료를 올린 학생에게만 자료 탭에 남는다
 - **제출 연동**: `submission_state`가 submitted·graded로 바뀌면 연결된 `planner_tasks.is_done = true`로 바꾸고, 아직 안 보낸 마감 임박 알림을 취소한다
 - **공지 → 공고**: 기회성 공지는 `opportunities`에 `source_type = 'lms_announcement'`, `visible_canvas_course_id = 과목 ID`로 넣는다. 이 공고는 해당 과목 수강생에게만 보이고, 배치 판정도 수강생에게만 돌린다. 요건 추출은 동기화 실행의 자식 실행이고(user_id 없음) 공고의 `extraction_run_id`가 그 자식이다 — 처리 과정(F-42)에 동기화 단계가 섞이지 않는다(11/17)
 - **LMS 응답 규칙(10/16 녹화)**: `lms_assignments.due_at`은 Canvas `due_at ?? lock_at`이다(녹화 17건 중 5건이 `due_at` null). `submission_state`는 Canvas `submission.workflow_state`를 그대로 쓰고(`unsubmitted`·`submitted`·`graded` 관측, `pending_review`는 아직 못 봤지만 제출로 센다), 과목 전체 기준인 `has_submitted_submissions`는 쓰지 않는다. `lms_module_items.canvas_item_id`가 유일 키다 — 한 모듈에 제목이 같은 항목이 둘씩 있다(87건 중 15쌍). `item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`가 관측됐고 `File`은 0건이다. `module_name`은 `1주차`·`Week 3 : …` 꼴이 섞이고 Canvas `position`은 연속이 아니라 저장하지 않는다. `lms_courses.term`은 과목명에서 만든 `2026-2`이고, 과목명 꼴이 다르면 LearningX가 준 학기 이름(`2026년 2학기`)을 넣는다
@@ -841,6 +843,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 16 | `supabase/migrations/20261117000000_agent_run_tree.sql` | agent_runs.parent_run_id·root_run_id(실행 트리, 부분 인덱스 둘). 여러 번 돌려도 같다 |
 | 17 | `supabase/migrations/20261118000000_job_schedule.sql` | job_schedule(정기 작업 예약표 — 작업마다 한 줄, 다음 차례·임대·횟수·마지막 실패). RLS를 켜고 정책을 두지 않는다(백엔드만). 줄은 서버가 처음 tick할 때 넣는다. 여러 번 돌려도 같다 |
 | 18 | `supabase/migrations/20261121000000_agent_run_engine.sql` | agent_runs.engine·engine_version·model·review_codes(엔진 도장). 엔진 이름과 버전은 함께 있거나 함께 없다(검사 제약), 엔진별 부분 인덱스 하나. 여러 번 돌려도 같다 |
+| 19 | `supabase/migrations/20261123000000_lms_module_item_removed.sql` | lms_module_items.removed_at(LearningX에서 사라진 주차 항목, 11/23). 여러 번 돌려도 같다 |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -919,6 +922,7 @@ select c.id, count(m.id) as new_materials
 from lms_courses c
 left join lms_module_items m
   on m.canvas_course_id = c.canvas_course_id and m.first_seen_at > c.last_viewed_at
+  and m.removed_at is null
 where c.user_id = :uid
 group by c.id;
 ```
@@ -927,6 +931,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-23): lms_module_items.removed_at — 그 과목 목록을 끝까지 받았는데 없던 항목에 찍고 다시 나타나면 지운다(빈 목록이면 찍지 않는다). 자료 탭·새 학업 정보·새 자료 수에서 빠지고 강의자료를 올린 항목만 남는다(사용자 피드백 2①)
 - v0.9 보강 (2026-11-21): agent_runs.engine·engine_version·model·review_codes — 엔진 도장(O2). 공지 분류가 동기화 실행의 자식 실행이 되고 lms_announcements.classified_run_id가 그 자식을 가리킨다
 - v0.9 보강 (2026-11-20): 새 공고 알림 키를 학생·알릴 날 단위로(`new_eligible:day:{날짜}`, 대표 공고는 마감이 가장 가까운 것, 지난 묶음을 만든 뒤 들어온 공고만), 정보 필요 알림은 마감까지 3일 넘게 남은 공고만. 옛 키의 pending 행은 다음 예약이 지운다. 스키마 변경 없음
 - v0.9 보강 (2026-11-19): 정보 필요 알림 키를 항목 단위로(`profile_needed:field:{항목}`, 대표 공고는 마감이 가장 가까운 것), 옛 키의 pending 행은 다음 예약이 지운다. 스키마 변경 없음

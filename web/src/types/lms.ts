@@ -156,6 +156,7 @@ export interface CourseDetail {
     html_url: string | null;
     is_new: boolean;
     uploaded_file_id: string | null;
+    removed?: boolean; // LearningX에서 지워진 항목(11/23). 내가 강의자료를 올린 항목만 남는다
   }[];
   announcements: {
     id: string;

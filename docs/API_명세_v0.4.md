@@ -134,6 +134,8 @@
 >
 > v0.4 보강(11/23, 엔진별 지표): `GET /internal/metrics`에 네 번째 묶음 `engines`가 생겼다 — 엔진 도장이 있는 운영 실행을 엔진·버전·모델마다 센다(12장). 공지 분류 평가 세트를 돌리는 명령 `python -m app.eval.classify`(EV-CLASSIFY)가 생겼다. 다른 응답 모양은 그대로다
 >
+> v0.4 보강(11/23, 사라진 주차 항목): 그 과목 주차 목록을 끝까지 받았는데 없던 항목에 `lms_module_items.removed_at`을 찍는다(지우지 않고, 다시 나타나면 지운다. 빈 목록이면 찍지 않는다). 사라진 항목은 과목 상세의 자료 탭·`GET /lms/updates`·과목 목록의 새 자료 수에서 빠지고, 내가 강의자료를 올려 둔 항목만 `module_items[].removed = true`로 남는다 — 요약은 다시 볼 수 있고 LMS로 가는 길은 없다(사용자 피드백 2①). 마이그레이션 하나(칸 하나 더하기)
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1255,7 +1257,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 - `canvas_course_id`는 Canvas 과목 id(예: 214023)이고, 과목명 안의 과목번호(23525)와 다르다. 포털 링크에 들어가는 번호는 과목명에서 뽑는다
 - `short_name`은 과목명 `_` 뒤다. 과목명이 그 꼴이 아니면 이름 전체가 `short_name`이고 `portal_syllabus_url`은 null이다
 - `portal_syllabus_url`은 사용자 브라우저에서 여는 링크다. **서버는 이 주소에 요청하지 않는다**(포털 robots.txt)
-- `new_materials`는 `last_viewed_at` 이후 생긴 주차 항목 수다. `next_due`는 미제출 과제와 확정된 강의계획서 일정 중 가장 가까운 것이고, 없으면 null이다
+- `new_materials`는 `last_viewed_at` 이후 생긴 주차 항목 수다(LearningX에서 사라진 항목은 세지 않는다, 11/23). `next_due`는 미제출 과제와 확정된 강의계획서 일정 중 가장 가까운 것이고, 없으면 null이다
 - 항목은 `short_name` 순(글자 코드 순)으로 내려준다. 순서는 서버가 정하고 DB의 정렬 규칙(collation)에 맡기지 않는다 — 환경마다 한글과 숫자의 앞뒤가 달라진다
 
 ### `GET /lms/courses/{id}`
@@ -1264,7 +1266,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 {
   "course": { "id": "uuid", "short_name": "선형대수", "has_syllabus": true, "syllabus_id": "uuid", "portal_syllabus_url": "https://portal.hanyang.ac.kr/...", "html_url": "https://learning.hanyang.ac.kr/courses/..." },
   "assignments": [ { "id": "uuid", "title": "Homework 4", "due_at": "2026-10-13T23:59:00+09:00", "submission_state": "unsubmitted", "html_url": "https://learning.hanyang.ac.kr/..." } ],
-  "module_items": [ { "id": "uuid", "module_name": "8주차", "title": "08 - Eigenvalues", "item_type": "ExternalTool", "html_url": "https://learning.hanyang.ac.kr/...", "is_new": true, "uploaded_file_id": null } ],
+  "module_items": [ { "id": "uuid", "module_name": "8주차", "title": "08 - Eigenvalues", "item_type": "ExternalTool", "html_url": "https://learning.hanyang.ac.kr/...", "is_new": true, "uploaded_file_id": null, "removed": false } ],
   "announcements": [ { "id": "uuid", "title": "강의실 변경 안내", "summary": "다음 주 수업은 다른 강의실에서 한다", "category": "schedule_change", "posted_at": "2026-10-04T14:00:00+09:00", "opportunity_id": null, "attachments": [ { "name": "자리 배치도.pdf", "size_bytes": 86169, "status": "saved", "file_id": "uuid" } ] } ],
   "syllabus_items": [ { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-20T10:30:00+09:00", "is_confirmed": true, "calendar_registered": true } ],
   "materials": [ { "file_id": "uuid", "original_name": "08_eigen.pdf", "status": "succeeded" } ]
@@ -1280,6 +1282,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 - **남의 과목과 수강을 뺀 과목(`is_active` false)은 404 `NOT_FOUND`다**
 - 순서는 서버가 정한다(DB 정렬 규칙에 맡기지 않는다): 과제는 마감이 가까운 순(마감 없는 것은 뒤), 주차 항목은 **새 항목 먼저** 다음 주차·제목 순, 공지는 올린 순(최신 먼저), 계획서 일정은 날짜 순, 내 자료는 올린 순(최신 먼저). 값이 같으면 id로 가른다
 - `module_items[].item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`다(녹화에 `File`은 없었다). `module_name`·`html_url`·`item_type`은 null일 수 있다
+- LearningX에서 **사라진 주차 항목**(`removed_at`, 11/23)은 내려주지 않는다. 다만 **내가 강의자료를 올려 둔 항목**은 `removed: true`로 남긴다 — 올린 자료의 요약을 다시 볼 수 있게. 그 항목의 `is_new`는 늘 false이고, 화면은 'LMS에서 열기'를 숨긴다(그 주소는 LearningX에 없다)
 - `syllabus_items[].calendar_registered`는 그 일정이 **캘린더에 실제로 들어갔는지**다(과제 목록의 같은 이름 칸과 같은 기준: `external_event_id`가 있는 행). 화면은 이 값으로 "캘린더에 넣기" 버튼을 숨긴다 — 자리만 잡고 넣다 만 일정은 false여서 다시 넣을 수 있다. 추출 결과(8장)에서는 아직 확정하지 않은 일정이라 늘 false다
 - `materials[].status`는 요약 상태다. 파일만 올리고 아직 요약하지 않았으면 `pending`이다
 - `course.syllabus_id`는 그 과목 계획서의 번호다(없으면 null, `has_syllabus`와 같은 뜻이다). 뽑아 두고 **확인하지 않은 일정**(`is_confirmed` false)이 남았을 때, 계획서를 다시 올리지 않고 이 번호로 `POST /syllabi/{id}/confirm`을 부르라고 준다
@@ -1352,6 +1355,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 - 공지는 **올린 때**(`posted_at`)로 가른다 — 처음 받은 때 뒤, `since` 뒤에 올린 공지만 넣는다. 공지 표도 과목 공통이라, 같이 처음 연결한 학생의 동기화나 첫 동기화에서 못 받은 공지가 처음 본 시각을 늦추기 때문이다. 주차 항목 중 과제·퀴즈 링크(`item_type`이 `Assignment`·`Quiz`)는 과제와 겹쳐서 넣지 않는다(퀴즈도 과제 목록에 온다)
 - 순서: 과제 → 주차 항목 → 공지로 묶는다(부른 `type`의 순서와 상관없다). 과제는 마감이 가까운 순(마감 없는 과제는 뒤), 주차 항목은 처음 본 순(최신 먼저, 같으면 주차 이름의 번호가 큰 순 — 번호가 없으면 뒤), 공지는 올린 순(`posted_at`, 최신 먼저)이다. 그다음은 과목 이름 순이고, 같은 과목의 주차 항목은 만든 순이다. `module_item`에는 `item_type`(`ExternalTool`·`Page`·`Quiz`·`Assignment`, 녹화에 `File`은 없었다)이 함께 간다. `module_name`·`html_url`·`item_type`은 null일 수 있다
 - `assignment` 항목은 `{type, id, course, title, due_at, submission_state, html_url, first_seen_at}`이다. **내지 않은 과제만** 들어온다. 새로 본 과제(마감이 지나지 않은 것)이거나 **마감 D-3 이내** 과제다(마감 임박은 `since`보다 오래된 것, 연결 전부터 있던 것도 넣는다)
+- LearningX에서 사라진 주차 항목(`removed_at`, 11/23)은 넣지 않는다
 - `uploaded_file_id`: 사용자가 이 항목 알림에서 넘어가 PDF를 올렸으면 해당 파일. 프론트는 "업로드하기" 버튼 대신 "요약 보기"를 띄운다
 - 공지 `category`: `schedule_change` \| `material` \| `opportunity` \| `general` \| `null`(분류 전)
 - `opportunity`로 분류된 공지는 `opportunity_id`로 공고 상세에 연결된다(그 공고는 그 과목 수강생만 본다)

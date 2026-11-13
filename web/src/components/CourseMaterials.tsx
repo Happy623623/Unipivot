@@ -108,13 +108,19 @@ export default function CourseMaterials({ course, onOpenSummary, onUploaded }: C
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <div className="flex items-center gap-2">
-                      <p className="text-[14px] font-semibold">{item.title}</p>
+                      <p className={`text-[14px] font-semibold ${item.removed ? "text-[#a0a4ab]" : ""}`}>{item.title}</p>
                       {item.is_new && <Badge>새 자료</Badge>}
+                      {item.removed && <Badge tone="gray">LMS에서 지워짐</Badge>}
                     </div>
-                    <p className="mt-1 text-[11px] text-[#667085]">LMS에서 직접 열어야 학습 완료가 인정돼요</p>
+                    <p className="mt-1 text-[11px] text-[#667085]">
+                      {item.removed
+                        ? "LearningX에서 지워진 항목이에요. 올려 둔 강의자료 요약만 볼 수 있어요"
+                        : "LMS에서 직접 열어야 학습 완료가 인정돼요"}
+                    </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-3">
-                    {item.html_url && (
+                    {/* 지워진 항목의 LMS 주소는 LearningX에 없다(피드백 2①) */}
+                    {item.html_url && !item.removed && (
                       <a href={item.html_url} target="_blank" rel="noreferrer" className="text-[12px] font-semibold text-[#4f6ef7]">
                         LMS에서 열기
                       </a>
@@ -124,6 +130,7 @@ export default function CourseMaterials({ course, onOpenSummary, onUploaded }: C
                         요약 보기
                       </button>
                     ) : (
+                      !item.removed &&
                       uploadButton(item.id, { courseId: course.course.id, moduleItemId: item.id }, "받은 PDF 올려서 요약하기")
                     )}
                   </div>

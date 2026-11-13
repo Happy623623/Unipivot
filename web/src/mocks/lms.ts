@@ -100,8 +100,10 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
       title: `${week + 4}주차 강의자료`,
       item_type: "ExternalTool",
       html_url: `https://lms.example.edu/${course.id}/modules/${week}`,
-      is_new: week >= 3,
+      is_new: week >= 3 && !(course.id === "database" && week === 4),
       uploaded_file_id: week === 4 ? `${course.id}-material` : null,
+      // LearningX에서 지워졌지만 강의자료를 올려 둔 항목(11/23) — 데이터베이스 과목에서만 본다
+      removed: course.id === "database" && week === 4,
     })),
     announcements: [
       {

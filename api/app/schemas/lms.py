@@ -239,6 +239,8 @@ class CourseModuleItem(BaseModel):
     html_url: str | None
     is_new: bool  # 이번에 열기 전 기준이다(열면 last_viewed_at이 지금으로 바뀐다)
     uploaded_file_id: str | None
+    # LearningX에서 사라진 항목(11/23). 내가 강의자료를 올린 항목만 남아 이 값이 true다 — LMS로 가는 길은 없다
+    removed: bool = False
 
 
 # 공지 첨부의 저장 상태(F-54). saved: 내 문서함에 있다, too_large: 20MB를 넘어 받지 않는다,

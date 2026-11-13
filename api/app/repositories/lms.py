@@ -5,7 +5,8 @@
   (수강을 뺀 과목이다 — 과제·공지 기록은 남겨 두고 목록에서만 뺀다). **목록이 비어 오면 내리지 않는다**
 - 과목 목록의 숫자는 지금 저장된 것으로 센다. 주차 항목 동기화는 F-52라 `new_materials`는 그때까지 0이다
 - 주차 항목(`lms_module_items`)은 **과목 공통**이라 `user_id`가 없다(ERD 3-2). `canvas_item_id`로만
-  같은 항목인지 가리고, 사라진 항목은 지우지 않는다
+  같은 항목인지 가린다. 그 과목 목록을 끝까지 받았는데 없던 항목은 지우지 않고 `removed_at`을 찍고(11/23),
+  다시 나타나면 지운다. 자료 탭·새 학업 정보·새 자료 수에서 빠진다. **목록이 비어 오면 찍지 않는다**
 - 과제는 `(user_id, canvas_assignment_id)`로 upsert한다(제출 상태가 사람마다 달라 사용자별 표다, ERD 5장).
   이번 목록에 없던 과제는 `removed_at`을 찍고, 다시 나타나면 지운다. **목록이 비어 와도 찍는다** —
   과제는 과목과 달리 0건인 과목이 흔하고(녹화 6과목 중 2과목), 클라이언트가 끝까지 받지 못하면 예외라
@@ -254,6 +255,7 @@ _UPDATES = (
     "  join lms_courses c on c.canvas_course_id = i.canvas_course_id and c.user_id = %(uid)s"
     "    and coalesce(c.is_active, true)"
     "  where i.first_seen_at >= %(since)s and i.first_seen_at > c.modules_synced_at"
+    "    and i.removed_at is null"  # LearningX에서 사라진 항목(11/23)
     # 과제·퀴즈 링크는 과제 묶음과 겹친다(퀴즈도 과제 목록에 온다). 내도 2주 동안 남아 있어 뺀다
     "    and coalesce(i.item_type, '') not in ('Assignment', 'Quiz')"
     "  union all"
@@ -308,6 +310,7 @@ _COURSES = (
     # 주차 항목은 과목 공통 표라 과목 번호로 잇는다. 마지막으로 과목을 본 뒤 생긴 것만 센다
     # (연결 전부터 있던 항목은 첫 수집 때 last_viewed_at을 올려서 빼고 센다, save_module_items)
     " (select count(*) from lms_module_items i where i.canvas_course_id = c.canvas_course_id"
+    "   and i.removed_at is null"
     "   and i.first_seen_at > coalesce(c.last_viewed_at, to_timestamp(0))) as new_materials,"
     # 가장 가까운 것 하나: 미제출 과제와 확정된 계획서 일정 중에서(명세 9장)
     " (select json_build_object('kind', due.kind, 'title', due.title, 'due_at', due.at) from ("
@@ -332,7 +335,8 @@ _UPSERT_ITEM = (
     # 과목이 바뀐 항목(과목 복제 등)은 새 과목으로 다시 붙인다. 안 그러면 동기화마다 새 항목이 된다
     " on conflict (canvas_item_id) do update set canvas_course_id = excluded.canvas_course_id,"
     " module_name = excluded.module_name, title = excluded.title,"
-    " item_type = excluded.item_type, html_url = excluded.html_url"
+    # 목록에 다시 나타났다 — 사라졌다는 표시를 지운다(11/23)
+    " item_type = excluded.item_type, html_url = excluded.html_url, removed_at = null"
     " returning id"
 )
 
@@ -674,12 +678,19 @@ class LmsRepository:
     async def _course_items(
         self, user_id: str, canvas_course_id: int, *, seen: datetime | None
     ) -> list[CourseModuleItem]:
-        """주차 항목. 과목 공통 표라 과목 번호로 읽고, 올린 파일은 내 것만 잇는다."""
+        """주차 항목. 과목 공통 표라 과목 번호로 읽고, 올린 파일은 내 것만 잇는다.
+
+        LearningX에서 사라진 항목(`removed_at`)은 뺀다 — 'LMS에서 열기'가 없는 주소로 간다(피드백 2①).
+        내가 강의자료를 올려 둔 항목만 `removed`로 남긴다(요약을 다시 볼 수 있게).
+        """
         rows = await self._rows(
             "select i.id, i.module_name, i.title, i.item_type, i.html_url, i.first_seen_at,"
+            " i.removed_at is not null as removed,"
             " (select f.id from files f where f.lms_module_item_id = i.id and f.user_id = %(uid)s"
             "   order by f.created_at, f.id limit 1) as uploaded_file_id"
-            " from lms_module_items i where i.canvas_course_id = %(canvas)s",
+            " from lms_module_items i where i.canvas_course_id = %(canvas)s"
+            " and (i.removed_at is null or exists (select 1 from files f"
+            "   where f.lms_module_item_id = i.id and f.user_id = %(uid)s))",
             {"uid": user_id, "canvas": canvas_course_id},
         )
         items = [
@@ -690,8 +701,9 @@ class LmsRepository:
                 item_type=row["item_type"],
                 html_url=row["html_url"],
                 # 과목 목록의 새 자료 수와 같은 기준이다(본 적 없으면 다 새 것, `_COURSES`)
-                is_new=row["first_seen_at"] > (seen or _EPOCH),
+                is_new=not row["removed"] and row["first_seen_at"] > (seen or _EPOCH),
                 uploaded_file_id=str(row["uploaded_file_id"]) if row["uploaded_file_id"] else None,
+                removed=row["removed"],
             )
             for row in rows
         ]
@@ -822,7 +834,11 @@ class LmsRepository:
         나에게 새 것이 된다(새로 들어온 학업 정보 `_UPDATES`, 과목 카드의 새 자료 수). 내가 같은 항목을
         쓰는 저장은 그 학생의 저장이 끝나기를 기다리므로, 이 문장이 돌 때는 그 행이 보인다.
 
-        사라진 항목은 지우지 않는다(표에 `removed_at`이 없다). 교수가 항목을 지워도 기록은 남는다.
+        **사라진 항목**(11/23, 피드백 2①): 받은 목록에 없는 그 과목 항목에 `removed_at`을 찍는다. 행은 지우지
+        않는다(알림·올린 강의자료가 가리킨다). 다시 나타나면 upsert가 지운다. 받다가 실패한 과목은 여기 오지
+        않는다(`app/lms/sync.py`가 그 과목을 건너뛴다) — 목록은 늘 끝까지 받은 것이다. 그래도 **빈 목록은 찍지
+        않는다**: 항목을 다 지운 과목보다 이상한 빈 응답이 더 아프다(한 학기 자료가 한꺼번에 사라진다). 이 동기화가
+        시작한 뒤에 처음 본 항목(같이 듣는 학생의 동기화가 방금 넣었다)도 찍지 않는다.
         """
         row = await self._row(
             "select modules_synced_at from lms_courses"
@@ -860,6 +876,17 @@ class LmsRepository:
                         title=one.title,
                     )
                 )
+        if items:
+            await self.conn.execute(
+                "update lms_module_items set removed_at = %(now)s"
+                " where canvas_course_id = %(canvas)s and removed_at is null"
+                " and first_seen_at <= %(now)s and canvas_item_id <> all(%(seen)s::bigint[])",
+                {
+                    "canvas": canvas_course_id,
+                    "now": now,
+                    "seen": [one.canvas_item_id for one in items],
+                },
+            )
         # 첫 수집 표시와 "여기까지 봤다"를 함께 올린다(둘 다 그 사용자 과목 행이다)
         await self.conn.execute(
             "update lms_courses c set modules_synced_at = f.at,"
