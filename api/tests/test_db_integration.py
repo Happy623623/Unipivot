@@ -13,6 +13,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 from app.agent_log import AgentRun, abandon_run, agent_run, start_run, using
+from app.db import create_pools
 from app.errors import ApiError
 from app.repositories.meta import MetaRepository
 from app.repositories.profiles import ProfileRepository
@@ -324,6 +325,34 @@ async def test_start_run_and_finish_share_no_connection() -> None:
         async with pool.connection() as conn:
             await conn.execute("delete from agent_runs where id = %s", (run_id,))
         await pool.close()
+
+
+async def test_the_pools_replace_a_connection_the_server_closed() -> None:
+    """서버(풀러)가 끊은 연결을 빌려주지 않는다 — 11/12 00:50 알림 발송이 끊긴 연결을 받아 실패했다.
+
+    두 풀 모두 연결 하나를 빌려 그 서버 프로세스를 끊은 뒤 다시 빌린다. 풀이 빌려주기 전에 보지 않으면
+    끊긴 연결이 그대로 나와 첫 문장에서 OperationalError가 난다.
+    """
+    pool, log_pool = create_pools(DATABASE_URL)
+    for each in (pool, log_pool):
+        await each.open()
+    try:
+        for each in (pool, log_pool):
+            await each.wait(timeout=10)
+            async with each.connection() as conn:
+                row = await (await conn.execute("select pg_backend_pid() as pid")).fetchone()
+                closed = row["pid"]
+            admin = await connect(autocommit=True)
+            try:
+                await admin.execute("select pg_terminate_backend(%s)", (closed,))
+            finally:
+                await admin.close()
+            async with each.connection(timeout=5) as conn:
+                row = await (await conn.execute("select pg_backend_pid() as pid")).fetchone()
+                assert row["pid"] != closed
+    finally:
+        for each in (pool, log_pool):
+            await each.close()
 
 
 async def test_child_runs_make_a_tree_and_roll_their_cost_up() -> None:
