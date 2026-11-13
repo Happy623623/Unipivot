@@ -697,6 +697,12 @@ async def test_a_new_assignment_becomes_a_planner_task(world: dict[str, Any]) ->
     assert rows[0]["due_date"] == due.astimezone(KST).date()  # 마감은 KST 날짜다
     assert rows[0]["source"] == "lms_assignment"
     assert not rows[0]["is_done"]
+    # 플래너에서는 과목 이름 칩과 내 과목 ID가 함께 간다 — 누르면 그 과목의 과제 탭으로 간다(11/20)
+    planner = await PlannerRepository(world["conn"]).tasks(
+        me, start=due.astimezone(KST).date(), end=due.astimezone(KST).date(), include_done=True
+    )
+    link = planner.items[0].link
+    assert (link.type, link.title, link.course_id) == ("lms_assignment", "데이터베이스", course)
 
 
 async def test_an_assignment_without_a_deadline_gets_no_task(world: dict[str, Any]) -> None:
@@ -3024,6 +3030,8 @@ async def test_a_schedule_change_task_shows_the_course_in_the_planner(
         saved[0].id,
         "데이터베이스",
     )
+    # 누르면 그 과목의 공지 탭으로 간다 — 공지는 과목 공통이라 **내** 과목 행을 잇는다(11/20)
+    assert task.link.course_id == await _course_id_of(world, me)
 
 
 # ── 계획서 일정의 캘린더 등록 여부 (명세 9장) ───────────────────────────────

@@ -143,6 +143,7 @@ export function confirmStoredSyllabus(
       (starts_at ?? "").slice(0, 10),
       course,
       fixed.selected,
+      syllabus.courseId,
     );
     if (fixed.selected) {
       confirmed += 1;

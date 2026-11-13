@@ -3,9 +3,10 @@ import Badge from "@/components/Badge";
 import Button from "@/components/Button";
 import Modal, { ModalCancelButton } from "@/components/Modal";
 import { formatKstLongDate } from "@/lib/format";
-import { getPlannerTaskMeta } from "@/lib/planner";
+import { getPlannerTaskMeta, plannerTaskRoute } from "@/lib/planner";
 import { focusIfLost } from "@/lib/useFocusHandoff";
 import type { PlannerMarker, PlannerTask } from "@/types/api";
+import type { Route } from "@/types/route";
 
 interface PlannerDayPanelProps {
   date: string;
@@ -15,6 +16,7 @@ interface PlannerDayPanelProps {
   onAdd: (title: string, date: string) => Promise<void>;
   onEdit: (task: PlannerTask, title: string, date: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  navigate: (route: Route) => void; // 할 일의 출처(공고 상세·과목 탭)로 간다(피드백 4②)
 }
 
 // 고칠 수 있는 범위는 출처가 정한다(API 명세 7장). 직접 추가한 할 일만 제목까지 고치고 지운다.
@@ -35,6 +37,7 @@ export default function PlannerDayPanel({
   onAdd,
   onEdit,
   onDelete,
+  navigate,
 }: PlannerDayPanelProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<PlannerTask | null>(null);
@@ -94,6 +97,7 @@ export default function PlannerDayPanel({
         <div className="flex flex-col gap-3">
           {tasks.map((task) => {
             const meta = getPlannerTaskMeta(task);
+            const source = plannerTaskRoute(task); // 제목은 체크 칸의 이름이라 따로 "보기"를 둔다
             return (
               <article key={task.id} className="relative rounded-xl bg-[#f7f8fa] p-[14px]">
                 <div className="flex items-start justify-between gap-2">
@@ -128,6 +132,16 @@ export default function PlannerDayPanel({
                   </label>
                   <div className="flex items-center gap-2">
                     <Badge tone={meta.tone}>{meta.label}</Badge>
+                    {source && (
+                      <button
+                        type="button"
+                        onClick={() => navigate(source)}
+                        aria-label={`${task.title} 출처 보기`}
+                        className="text-[12px] font-semibold whitespace-nowrap text-[#4f6ef7]"
+                      >
+                        보기
+                      </button>
+                    )}
                     {(editable(task).title || editable(task).date) && (
                       <button type="button" onClick={(event) => {
                         menuButton.current = event.currentTarget;
@@ -181,9 +195,14 @@ export default function PlannerDayPanel({
             <h3 className="text-[13px] font-semibold text-[#667085]">마감</h3>
             <div className="mt-2 flex flex-col gap-2">
               {markers.map((marker) => (
-                <div key={marker.opportunity_id} className="rounded-[10px] border border-[#4f6ef7] px-3 py-2 text-[12px] font-semibold text-[#4f6ef7]">
-                  {marker.title} · 마감
-                </div>
+                <button
+                  key={marker.opportunity_id}
+                  type="button"
+                  onClick={() => navigate({ name: "opportunity", id: marker.opportunity_id })}
+                  className="rounded-[10px] border border-[#4f6ef7] px-3 py-2 text-left text-[12px] font-semibold text-[#4f6ef7] hover:bg-[#eef2ff]"
+                >
+                  {marker.title /* 서버가 "… 마감"으로 준다. 전에는 "· 마감"을 또 붙여 "마감 · 마감"이었다 */}
+                </button>
               ))}
             </div>
           </div>

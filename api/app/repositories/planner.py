@@ -20,14 +20,18 @@ from app.repositories.opportunities import PREP_DONE
 from app.schemas.planner import PlannerLink, PlannerMarker, PlannerResponse, PlannerTask
 
 # 공고에서 온 할 일은 계획 → 공고로 이어 제목·카테고리를 읽는다. 계획서 일정·LMS 과제·과목 공지는
-# 그 과목 이름을 이어 읽는다(명세 7장의 `link.type`). 공지는 과목 공통 표라 과목 번호로 잇는다
+# 그 과목 이름과 내 과목 ID를 이어 읽는다(명세 7장의 `link.type`·`link.course_id`). 공지는 과목 공통 표라
+# 과목 번호로 잇는다
 _TASK = (
     "select t.id::text as id, t.title, t.due_date, coalesce(t.is_done, false) as is_done,"
     " t.source::text as source, o.id::text as opportunity_id, o.title as opportunity_title,"
     " o.category::text as category,"
     " t.syllabus_item_id::text as syllabus_item_id, coalesce(sc.name, sy.course_name) as syllabus_course,"
+    " sc.id::text as syllabus_course_id,"
     " t.lms_assignment_id::text as lms_assignment_id, lc.name as assignment_course,"
-    " t.lms_announcement_id::text as lms_announcement_id, ac.name as announcement_course"
+    " lc.id::text as assignment_course_id,"
+    " t.lms_announcement_id::text as lms_announcement_id, ac.name as announcement_course,"
+    " ac.id::text as announcement_course_id"
     " from planner_tasks t"
     " left join prep_plans p on p.id = t.prep_plan_id and p.user_id = t.user_id"
     " left join opportunities o on o.id = p.opportunity_id"
@@ -57,6 +61,7 @@ def _link(row: dict[str, Any]) -> PlannerLink:
             id=row["syllabus_item_id"],
             title=_short(row["syllabus_course"]),
             category=None,
+            course_id=row["syllabus_course_id"],
         )
     if row["lms_assignment_id"]:
         return PlannerLink(
@@ -64,6 +69,7 @@ def _link(row: dict[str, Any]) -> PlannerLink:
             id=row["lms_assignment_id"],
             title=_short(row["assignment_course"]),
             category=None,
+            course_id=row["assignment_course_id"],
         )
     if row["lms_announcement_id"]:
         return PlannerLink(
@@ -71,6 +77,7 @@ def _link(row: dict[str, Any]) -> PlannerLink:
             id=row["lms_announcement_id"],
             title=_short(row["announcement_course"]),
             category=None,
+            course_id=row["announcement_course_id"],
         )
     return PlannerLink(type=None, id=None, title=None, category=None)
 

@@ -22,6 +22,9 @@ class PlannerLink(BaseModel):
     title: str | None  # 공고 제목 또는 과목명
     category: Category | None  # 공고에서 온 할 일만. 나머지는 칩에 title(과목명)을 쓴다
     html_url: str | None = None
+    # 과목에서 온 할 일(계획서 일정·LMS 과제·과목 공지)의 내 과목 ID. 누르면 그 과목 화면의 탭으로 간다(11/20).
+    # 과목에 잇지 않은 계획서(LMS 과목 없이 올린 것)는 null이다
+    course_id: str | None = None
 
 
 class PlannerTask(BaseModel):

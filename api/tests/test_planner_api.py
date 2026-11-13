@@ -121,6 +121,7 @@ def test_read_tasks_passes_the_range(
         "title": "한양브레인 장학금",
         "category": "scholarship",
         "html_url": None,
+        "course_id": None,
     }
     assert body["markers"][0]["kind"] == "deadline"
     assert planner.read == [
