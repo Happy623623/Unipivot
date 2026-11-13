@@ -349,18 +349,160 @@ async def test_rows_that_lost_their_reason_are_removed() -> None:
         for opportunity in (cancelled, hidden, seen):
             await built.judge(student, opportunity, "eligible")
         await built.repo.schedule(now=NOW)
-        assert len(await built.keys(student)) == 9  # 공고 3개 × (새 공고 + D-3 + D-1)
+        assert len(await built.keys(student)) == 7  # 새 공고 묶음 1 + 공고 3개 × (D-3 + D-1)
 
         await built.judge(student, cancelled, "ineligible")  # 판정이 바뀌었다
         await built.mark(student, hidden, "not_interested")
         await built.view(student, seen)  # 상세를 열었다 → 새 공고 알림은 뜻이 없다
         removed = (await built.repo.schedule(now=NOW)).removed
-        assert removed == 7  # 취소 3 + 숨김 3 + 열어 본 공고의 새 공고 알림 1
+        assert removed == 5  # 취소 2 + 숨김 2 + 묶을 공고가 남지 않은 새 공고 묶음 1
         lines = await built.keys(student)
         assert [line.split("|")[:2] for line in lines] == [
             ["deadline_soon", "열어 볼 장학"],
             ["deadline_soon", "열어 볼 장학"],
         ]
+
+
+# ── 예약: 새 공고는 하루 한 건으로 묶는다 (11/20) ──────────────────────────
+
+
+async def _new_rows(built: World, user_id: str) -> list[str]:
+    """새 공고 알림을 (키, 대표 제목, 문구, 상태) 글로 본다."""
+    rows = await (
+        await built.conn.execute(
+            "select n.dedupe_key, o.title, n.body, n.status from notifications n"
+            " left join opportunities o on o.id = n.opportunity_id"
+            " where n.user_id = %s and n.type = 'new_eligible' order by n.dedupe_key",
+            (user_id,),
+        )
+    ).fetchall()
+    return [f"{r['dedupe_key']}|{r['title']}|{r['body']}|{r['status']}" for r in rows]
+
+
+async def test_new_opportunities_are_bundled_into_one_morning_notice() -> None:
+    """새로 들어온 적격 공고가 여럿이면 학생마다 한 건이다. 대표는 마감이 가장 가까운 공고다(11/12 아침 96건)."""
+    async with world() as built:
+        student = await built.user()
+        for title, days in (("먼 장학", 20), ("가까운 장학", 5), ("마감 없는 장학", None)):
+            await built.judge(student, await built.opportunity(title, days=days), "eligible")
+        seen = await built.opportunity("열어 본 장학", days=4)
+        await built.judge(student, seen, "eligible")
+        await built.view(student, seen)  # 열어 본 공고는 묶음에도 들지 않는다
+
+        result = await built.repo.schedule(now=NOW)
+
+        assert result.by_type["new_eligible"] == 1
+        assert await _new_rows(built, student) == [
+            "new_eligible:day:2026-10-15|가까운 장학|가까운 장학 외 2개|pending"
+        ]
+        assert "new_eligible|가까운 장학|10-15 09:00|pending" in await built.keys(student)
+
+
+async def test_the_next_bundle_only_has_what_came_after_the_last_one() -> None:
+    """다음 날 묶음에는 지난 묶음 뒤에 들어온 공고만 든다. 열어 보지 않은 어제 공고를 되풀이하지 않는다."""
+    async with world() as built:
+        student = await built.user()
+        # 시험은 가짜 시계(NOW)로 예약한다. 공고가 들어온 때도 그 시계에 맞춰 둔다(기본값은 DB의 지금)
+        for title, days in (("어제 장학 1", 20), ("어제 장학 2", 25)):
+            yesterday = await built.opportunity(
+                title, days=days, created_at=NOW - timedelta(hours=1)
+            )
+            await built.judge(student, yesterday, "eligible")
+        await built.repo.schedule(now=NOW)
+        await built.repo.send(now=NOW + timedelta(hours=2))
+
+        tomorrow = NOW + timedelta(days=1)
+        fresh = await built.opportunity("오늘 장학", days=30, created_at=NOW + timedelta(hours=12))
+        await built.judge(student, fresh, "eligible")
+        nothing_new = await built.user()  # 새 공고가 없는 날에는 묶음을 만들지 않는다
+        await built.repo.schedule(now=tomorrow)
+
+        assert await _new_rows(built, student) == [
+            "new_eligible:day:2026-10-15|어제 장학 1|어제 장학 1 외 1개|succeeded",
+            "new_eligible:day:2026-10-16|오늘 장학|오늘 장학|pending",
+        ]
+        assert await built.keys(nothing_new) == []
+
+
+async def test_a_pending_bundle_takes_late_arrivals_and_moves_its_cutoff() -> None:
+    """보내기 전에 다시 예약하면 그사이 들어온 공고를 묶음에 넣고, 다음 묶음은 그 뒤부터 센다(같은 공고를 두 번 알리지 않는다)."""
+    async with world() as built:
+        student = await built.user()
+        first = await built.opportunity("첫 장학", days=20, created_at=NOW - timedelta(hours=1))
+        await built.judge(student, first, "eligible")
+        await built.repo.schedule(now=NOW)  # 08:00
+        late = await built.opportunity(
+            "늦게 온 장학", days=10, created_at=NOW + timedelta(minutes=10)
+        )
+        await built.judge(student, late, "eligible")
+        again = await built.repo.schedule(now=NOW + timedelta(minutes=20))  # 08:20, 아직 안 보냈다
+        assert (again.by_type["new_eligible"], again.rescheduled) == (1, 1)  # 고친 행은 묶음뿐
+        assert await _new_rows(built, student) == [
+            "new_eligible:day:2026-10-15|늦게 온 장학|늦게 온 장학 외 1개|pending"
+        ]
+        await built.repo.send(now=NOW + timedelta(hours=2))
+
+        nextday = await built.repo.schedule(now=NOW + timedelta(days=1))
+        assert nextday.by_type["new_eligible"] == 0  # 늦게 온 공고는 어제 묶음에 들었다
+        assert len(await _new_rows(built, student)) == 1
+
+
+async def test_opportunities_already_announced_one_by_one_are_not_announced_again() -> None:
+    """공고마다 한 행이던 옛 알림(new_eligible:opp:…)을 보낸 공고는 묶음에 넣지 않는다. 보내지 않은 옛 행은 지우고
+    그 공고를 묶음에 넣는다. 보낸 옛 행은 알림함에 남는다."""
+    async with world() as built:
+        student = await built.user()
+        announced = await built.opportunity("이미 알린 장학", days=None)
+        waiting = await built.opportunity("기다리던 장학", days=None)
+        for opportunity in (announced, waiting):
+            await built.judge(student, opportunity, "eligible")
+        for opportunity, status, sent in (
+            (announced, "succeeded", NOW),
+            (waiting, "pending", None),
+        ):
+            await built.conn.execute(
+                "insert into notifications (user_id, type, opportunity_id, title, body,"
+                " scheduled_at, sent_at, status, dedupe_key)"
+                " values (%s, 'new_eligible', %s, '옛 알림', '옛 알림', %s, %s, %s,"
+                " 'new_eligible:opp:' || %s)",
+                (student, opportunity, NOW, sent, status, opportunity),
+            )
+
+        result = await built.repo.schedule(now=NOW)
+
+        assert result.removed == 1  # 보내지 않은 옛 행
+        assert await _new_rows(built, student) == [
+            "new_eligible:day:2026-10-15|기다리던 장학|기다리던 장학|pending",
+            f"new_eligible:opp:{announced}|이미 알린 장학|옛 알림|succeeded",
+        ]
+
+
+# ── 예약: 정보 필요는 마감 3일 넘게 남은 공고만 (PRD F-33) ───────────────────
+
+
+async def test_profile_notices_skip_opportunities_closing_within_three_days() -> None:
+    """알릴 날 09:00에서 3일 안에 마감하는 공고는 정보를 묻지 않는다. 날이 지나 3일 안에 들면 보내지 않은 알림을 지운다."""
+    async with world() as built:
+        student = await built.user()
+        closing = await built.opportunity("곧 마감", days=3)  # 10-18 08:00 ≤ 10-15 09:00 + 3일
+        later = await built.opportunity("나흘 뒤 마감", days=4)  # 10-19 08:00
+        await built.judge(student, closing, "undetermined", ["region"])
+        await built.judge(student, later, "undetermined", ["age"])
+
+        await built.repo.schedule(now=NOW)
+        assert [line for line in await built.keys(student) if "profile_needed" in line] == [
+            "profile_needed|나흘 뒤 마감|10-15 09:00|pending"
+        ]
+
+        # 하루 한도로 미뤄져 아직 안 보냈는데 날이 바뀌었다: 이제 10-19 08:00 ≤ 10-16 09:00 + 3일
+        await built.conn.execute(
+            "update notifications set scheduled_at = scheduled_at + interval '1 day'"
+            " where user_id = %s",
+            (student,),
+        )
+        moved = await built.repo.schedule(now=NOW + timedelta(days=1))
+        assert moved.removed == 1
+        assert [line for line in await built.keys(student) if "profile_needed" in line] == []
 
 
 # ── 예약 앞에서 판정 다시 계산 (jobs.schedule_notifications) ──────────────
@@ -742,7 +884,7 @@ async def test_a_grouped_notice_follows_the_count_and_leaves_when_answered() -> 
     """공고 수가 바뀌면 아직 보내지 않은 행의 대표·문구를 고치고, 그 항목을 넣어 묶인 공고가 모두 판정되면 지운다."""
     async with world() as built:
         student = await built.user()
-        near = await built.opportunity("가까운 마감", days=3)
+        near = await built.opportunity("가까운 마감", days=5)  # 마감 3일 안은 묻지 않는다
         far = await built.opportunity("먼 마감", days=10)
         for opportunity in (near, far):
             await built.judge(student, opportunity, "undetermined", ["region"])
@@ -870,9 +1012,9 @@ async def test_the_inbox_pages_with_a_cursor() -> None:
         first = await built.repo.listing(student, now=later, limit=5)
         assert len(first.items) == 5 and first.next_cursor is not None
         second = await built.repo.listing(student, now=later, limit=5, cursor=first.next_cursor)
-        assert len(second.items) == 4 and second.next_cursor is None
+        assert len(second.items) == 2 and second.next_cursor is None
         ids = [item.id for item in first.items + second.items]
-        assert len(set(ids)) == 9  # 겹치지도 빠지지도 않는다
+        assert len(set(ids)) == 7  # 새 공고 묶음 1 + D-3·D-1 6. 겹치지도 빠지지도 않는다
         with pytest.raises(ValueError):  # 조건이 다른 목록의 cursor는 쓸 수 없다
             await built.repo.listing(student, now=later, unread_only=True, cursor=first.next_cursor)
 
