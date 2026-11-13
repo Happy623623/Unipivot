@@ -70,6 +70,8 @@ export interface Course {
     title: string;
     due_at: string;
   } | null;
+  // 아직 안 들은 주차학습 강의(11/24) — 출석·지각 인정 기간 안인 것만. 옛 api는 주지 않는다
+  lectures_todo?: number;
 }
 
 // POST /lms/sync (F-51) — 202면 run_id, 5분 안에 이미 받았으면 200 + skipped
@@ -131,6 +133,24 @@ export interface AnnouncementAttachment {
   status: AttachmentStatus;
   file_id: string | null; // 저장했으면 내 파일 번호
 }
+// 주차학습 강의(11/24). video 녹화 강의 · live 실시간 수업 · material 출석 대상 학습자료
+export type LectureKind = "video" | "live" | "material";
+// done 다 들음 · todo 출석 기간 안인데 아직 · late 지각 인정 기간 · missed 출석 기간 지남 · upcoming 열리기 전 ·
+// unknown LearningX가 완료 여부를 알 수 없다고 했다
+export type LectureStatus = "done" | "todo" | "late" | "missed" | "upcoming" | "unknown";
+export interface CourseLecture {
+  id: string; // Canvas 주차 항목 번호(없으면 "lx:" + LearningX 번호)
+  module_name: string;
+  title: string;
+  kind: LectureKind;
+  status: LectureStatus;
+  attendance: string | null; // LearningX 출결 값 그대로
+  unlock_at: string | null;
+  due_at: string | null; // 출석 인정 마감
+  late_at: string | null; // 지각 인정 마감
+  duration_seconds: number | null;
+  html_url: string | null; // LMS에서 듣기(학생이 열어야 출석이 인정된다)
+}
 export interface CourseDetail {
   course: {
     id: string;
@@ -173,6 +193,9 @@ export interface CourseDetail {
     original_name: string | null;
     status: RunStatus;
   }[];
+  // 주차학습 강의(11/24), 주차 순. 읽은 적이 없거나 강의가 없는 과목은 빈 목록이다. 옛 api는 주지 않는다
+  lectures?: CourseLecture[];
+  lectures_checked_at?: string | null; // 이 과목 강의를 LearningX에서 읽은 때
 }
 
 // GET /materials/{file_id}: 강의자료 요약(F-15 축소판, API 명세 8장). 요약은 Markdown이다.

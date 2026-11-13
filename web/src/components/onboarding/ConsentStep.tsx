@@ -9,8 +9,9 @@ export interface ConsentChoice {
 interface ConsentStepProps {
   saving: boolean;
   onAgree: (choice: ConsentChoice) => void;
-  // 이미 동의한 사람에게 바뀐 약관을 다시 물을 때(lib/consent.ts). incomeOn: 지금 소득·수급 동의가 켜져 있는지
-  renewal?: { incomeOn: boolean };
+  // 이미 동의한 사람에게 바뀐 약관을 다시 물을 때(lib/consent.ts). incomeOn: 지금 소득·수급 동의가 켜져 있는지,
+  // agreed: 전에 동의한 판(profiles.consent_version) — 그 뒤에 바뀐 점만 보여 준다
+  renewal?: { incomeOn: boolean; agreed?: string | null };
 }
 
 type ConsentKey = "age" | "terms" | "privacy" | "income";
@@ -44,8 +45,9 @@ const items: { key: ConsentKey; title: string; required: boolean; summary: strin
     required: true,
     summary: [
       "수집 항목: Google 계정(이름·이메일·프로필 사진·계정 번호), 직접 입력한 판정용 프로필(소득 정보 제외), 동의 기록, 이용 기록(판정 결과·관심·준비 일정·알림·앱을 연 날 같은 이용 이벤트), AI 처리 기록, 접속 기록(IP·브라우저)",
-      "켜거나 올릴 때만: LearningX 토큰과 과목·과제·공지·주차 자료, 올린 파일(포스터·강의계획서·강의자료), Google 캘린더 권한, 웹 푸시 구독",
-      "이용 목적: 회원 식별, 지원 자격 판정, 공고 요건 정리, 준비 일정 생성, 과제·공지 알림, 캘린더 등록, 강의자료 요약, 오류 확인·보안, 서비스 개선과 성능·비용 측정",
+      "켜거나 올릴 때만: LearningX 토큰과 과목·과제·공지·주차 자료·주차학습 강의를 다 들었는지(출결·출석 마감 포함), 올린 파일(포스터·강의계획서·강의자료), Google 캘린더 권한, 웹 푸시 구독",
+      "이용 목적: 회원 식별, 지원 자격 판정, 공고 요건 정리, 준비 일정 생성, 과제·공지 알림, 강의 수강 확인, 캘린더 등록, 강의자료 요약, 오류 확인·보안, 서비스 개선과 성능·비용 측정",
+      "주차학습은 강의를 열지 않고 수강 상태만 읽어요. 그래서 시청·출석으로 처리되지 않아요.",
       "보관 기간: 탈퇴할 때까지예요. 탈퇴하면 바로 지우고, 처리 기록처럼 누구 것인지 지운 채 남는 것은 처리방침 3장에 적었어요.",
       "동의하지 않으면 UNIPIVOT을 쓸 수 없어요.",
     ],
@@ -64,13 +66,28 @@ const items: { key: ConsentKey; title: string; required: boolean; summary: strin
   },
 ];
 
-// 다시 물을 때 보여 주는 바뀐 점(지난 버전 2026-10-07과 견줘)
-const CONSENT_CHANGES = [
-  "동의 문구에 빠져 있던 것을 처리방침(10/28)에 맞춰 채웠어요. 이번에 새로 시작하는 처리는 없어요.",
-  "외부 AI(Google Gemini)로 보내는 자료에 LearningX 과목 공지, 올린 강의계획서·강의자료, 요약한 공지 첨부, 서류 안내에 쓰는 공고 정보를 적었어요.",
-  "개인정보 수집 항목·이용 목적·보관 기간을 자세히 적었어요(동의·처리·접속 기록, 탈퇴 뒤 누구 것인지 지운 채 남는 기록).",
-  "소득·수급 정보에 본인 연 소득을 적었어요.",
-  "만 14세 이상인지 확인하는 항목을 더했어요.",
+// 다시 물을 때 보여 주는 바뀐 점. 판마다 바로 앞 판과 견줘 적고(새 판이 위), 전에 동의한 판보다 새 판의 것만 보여 준다.
+// 판 이름은 CONSENT_VERSION과 같은 날짜다 — 글자 순서가 날짜 순서다(lib/consent.ts)
+const CONSENT_CHANGES: { version: string; label: string; lines: string[] }[] = [
+  {
+    version: "2026-11-24",
+    label: "11월 24일",
+    lines: [
+      "LearningX를 연결했으면 주차학습 강의를 다 들었는지(출결·출석 마감 포함) 읽어서 과목 화면에 보여 줘요. 강의는 열지 않아서 시청·출석으로 처리되지 않아요.",
+      "이 처리는 다시 동의한 사람만, 바뀐 처리방침이 시행되는 날부터 해요. 다른 처리는 그대로예요.",
+    ],
+  },
+  {
+    version: "2026-11-03",
+    label: "11월 3일",
+    lines: [
+      "동의 문구에 빠져 있던 것을 처리방침(10/28)에 맞춰 채웠어요. 이번에 새로 시작하는 처리는 없어요.",
+      "외부 AI(Google Gemini)로 보내는 자료에 LearningX 과목 공지, 올린 강의계획서·강의자료, 요약한 공지 첨부, 서류 안내에 쓰는 공고 정보를 적었어요.",
+      "개인정보 수집 항목·이용 목적·보관 기간을 자세히 적었어요(동의·처리·접속 기록, 탈퇴 뒤 누구 것인지 지운 채 남는 기록).",
+      "소득·수급 정보에 본인 연 소득을 적었어요.",
+      "만 14세 이상인지 확인하는 항목을 더했어요.",
+    ],
+  },
 ];
 
 const nothingChecked: Record<ConsentKey, boolean> = { age: false, terms: false, privacy: false, income: false };
@@ -89,6 +106,8 @@ export default function ConsentStep({ saving, onAgree, renewal }: ConsentStepPro
   const requiredDone = items.every((item) => !item.required || checked[item.key]);
   const all = items.every((item) => checked[item.key]);
   const dropsIncome = Boolean(renewal?.incomeOn) && !checked.income;
+  // 전에 동의한 판을 모르면(옛 api) 모두 보여 준다
+  const changes = CONSENT_CHANGES.filter((change) => change.version > (renewal?.agreed ?? ""));
 
   return (
     <div>
@@ -101,11 +120,17 @@ export default function ConsentStep({ saving, onAgree, renewal }: ConsentStepPro
       {renewal && (
         <div className="mt-5 rounded-[14px] border border-[#dfe5ff] bg-[#f5f7ff] p-4">
           <p className="text-[13px] font-semibold text-[#344054]">바뀐 점</p>
-          <ul className="mt-2 list-disc pl-5 text-[12px] leading-5 text-[#475467]">
-            {CONSENT_CHANGES.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
+          {changes.map((change) => (
+            <div key={change.version}>
+              {/* 두 판 넘게 건너뛰고 다시 동의할 때만 판을 나눠 적는다 */}
+              {changes.length > 1 && <p className="mt-2 text-[12px] font-semibold text-[#475467]">{change.label}</p>}
+              <ul className="mt-2 list-disc pl-5 text-[12px] leading-5 text-[#475467]">
+                {change.lines.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
       )}
       <label className="mt-6 flex cursor-pointer items-center gap-3 rounded-[14px] border border-[#e5e7eb] p-4 text-[15px] font-bold">

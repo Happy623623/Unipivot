@@ -22,7 +22,7 @@ from app.agent_log import using
 from app.background import InlineRunner
 from app.calendar import GoogleCalendarClient
 from app.clock import current_time
-from app.config import Settings, get_settings
+from app.config import LECTURE_CONSENT_VERSION, Settings, get_settings
 from app.crypto import encrypt
 from app.db import get_log_connect
 from app.eligibility import KST
@@ -32,7 +32,9 @@ from app.lms.announce import AnnouncementService
 from app.lms.announcements import CanvasAnnouncement
 from app.lms.assignments import CanvasAssignment
 from app.lms.client import LearningXClient
+from app.lms.lectures import Lecture
 from app.lms.sync import (
+    ALWAYS,
     LmsSyncService,
     Repos,
     SyncJob,
@@ -60,6 +62,7 @@ from app.repositories.notifications import AssignmentNotice, MaterialNotice, Sch
 from app.repositories.runs import get_run_repo
 from app.schemas.calendar import CalendarEventView
 from app.schemas.lms import (
+    LECTURE_TOOL,
     AnnouncementAttachment,
     AssignmentCourse,
     AssignmentItem,
@@ -82,14 +85,22 @@ from tests.lms_samples import (
     COURSES,
     DB_ANNOUNCEMENTS,
     DB_ASSIGNMENTS,
+    DB_LECTURE_MODULES,
     DB_MODULES,
+    LAUNCH,
+    LAUNCH_VERIFIER,
+    LEARNINGX_TOKEN,
     ML_ANNOUNCEMENTS,
     ML_ASSIGNMENTS,
+    ML_LECTURE_MODULES,
     ML_MODULES,
     MODULE_WITHOUT_ITEMS,
     RESEARCH_TITLE,
     RESEARCH_TOPIC_ID,
+    TABS,
+    TABS_WITHOUT_WEEKLY,
     attachment,
+    launch_page,
 )
 from tests.prepare_fakes import FakeRunRepository, run_row
 from tests.test_lms_files import FakeFiles, FakeStorage
@@ -138,6 +149,31 @@ class FakeLms:
     rows: dict[str, Connection] = field(default_factory=dict)
     users: list[str] = field(default_factory=list)
     before: datetime | None = None
+    # 주차학습 강의(11/24). 새 동의 문구에 동의했는지와 마지막으로 읽은 때(사용자 구분 없이 하나)
+    lecture_consent: bool = True
+    lectures_checked_at: datetime | None = None
+    lecture_due_calls: list[datetime | None] = field(default_factory=list)
+    lecture_saves: list[tuple[str, list[Lecture]]] = field(default_factory=list)
+
+    async def lectures_due(self, user_id: str, *, consent: str, before: datetime | None) -> bool:
+        """실제 SQL과 같은 뜻: 새 문구에 동의했고 before 뒤에 읽지 않았으면 True(before가 None이면 시각은 안 본다)."""
+        assert user_id == USER_ID or user_id in self.users
+        assert consent == LECTURE_CONSENT_VERSION
+        self.lecture_due_calls.append(before)
+        if not self.lecture_consent:
+            return False
+        checked = self.lectures_checked_at
+        return before is None or checked is None or checked <= before
+
+    async def save_lectures(
+        self, user_id: str, course_id: str, lectures: list[Lecture], *, now: datetime
+    ) -> int:
+        assert user_id == USER_ID or user_id in self.users
+        self.lecture_saves.append((course_id, lectures))
+        return len(lectures)
+
+    async def touch_lectures(self, user_id: str, *, now: datetime) -> None:
+        self.lectures_checked_at = now
 
     def _row(self, user_id: str) -> Connection | None:
         """사용자마다 따로 둔다. 배치에서 앞사람의 claim이 뒷사람을 막지 않게."""
@@ -579,6 +615,15 @@ def attachment_files() -> FakeFiles:
 
 
 @pytest.fixture
+def lectures_from(request: pytest.FixtureRequest) -> datetime | None:
+    """주차학습 강의를 읽기 시작하는 시각(11/24). 기본은 끔이다 — 다른 시험은 주차학습을 부르지 않는다.
+
+    읽는 것을 보는 시험은 `@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)`로 켠다.
+    """
+    return getattr(request, "param", None)
+
+
+@pytest.fixture
 def client(
     settings: Settings,
     lms: FakeLms,
@@ -589,6 +634,7 @@ def client(
     log: FakeLogConnection,
     storage: FakeStorage | None,
     attachment_files: FakeFiles,
+    lectures_from: datetime | None,
 ) -> Iterator[TestClient]:
     # 배치(`/internal/jobs/lms-sync`)를 부르려면 서비스 키가 있어야 한다
     settings = Settings(**{**settings.model_dump(), "internal_api_key": INTERNAL_KEY})
@@ -632,6 +678,7 @@ def client(
         ),
         storage=storage,
         files=lambda conn: attachment_files,  # type: ignore[arg-type,return-value]
+        lectures_from=lectures_from,
     )
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_lms_sync_service] = lambda: service
@@ -1329,7 +1376,10 @@ def test_it_opens_a_course(client: TestClient, lms: FakeLms, settings: Settings)
         "announcements",
         "syllabus_items",
         "materials",
+        "lectures",  # 주차학습 강의(11/24). 읽은 적이 없으면 빈 목록이다
+        "lectures_checked_at",
     }
+    assert (body["lectures"], body["lectures_checked_at"]) == ([], None)
     # 칸 이름이 명세 9장 예시와 같아야 한다(web 타입도 이걸 보고 쓴다)
     assert set(body["course"]) == {
         "id",
@@ -2440,3 +2490,281 @@ def test_the_service_gets_a_file_store_only_when_it_is_set(settings: Settings) -
     )
     ready = lms_sync_service_for(FakeState(), settings=configured, llm=None, runner=runner)
     assert ready.storage is not None and ready.storage.ready
+
+
+def test_the_service_reads_lectures_only_when_the_setting_says_so(settings: Settings) -> None:
+    """주차학습 읽기(11/24)는 설정으로 켜고 끈다. 켜 두면 여는 시각(처리방침 v0.3 시행)부터다."""
+
+    class FakeState:
+        pool = log_pool = _FakePools()
+
+    runner = InlineRunner()
+    opens = datetime(2026, 11, 28, tzinfo=KST)
+    on = settings.model_copy(
+        update={"lecture_progress_enabled": True, "lecture_progress_opens_at": opens}
+    )
+    service = lms_sync_service_for(FakeState(), settings=on, llm=None, runner=runner)
+    assert service.lectures_from == opens
+    anytime = on.model_copy(update={"lecture_progress_opens_at": None})
+    service = lms_sync_service_for(FakeState(), settings=anytime, llm=None, runner=runner)
+    assert service.lectures_from == ALWAYS
+    off = on.model_copy(update={"lecture_progress_enabled": False})
+    assert (
+        lms_sync_service_for(FakeState(), settings=off, llm=None, runner=runner).lectures_from
+        is None
+    )
+
+
+def test_the_lecture_setting_starts_with_the_policy_and_reads_kst(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """기본값은 처리방침 v0.3 시행(11/28 0시 KST)이다. 시간대 없이 적은 값은 KST로 본다."""
+    assert Settings.model_fields["lecture_progress_enabled"].default is True
+    assert Settings.model_fields["lecture_progress_opens_at"].default == datetime(
+        2026, 11, 28, tzinfo=KST
+    )
+    monkeypatch.setenv("LECTURE_PROGRESS_OPENS_AT", "2026-11-20T09:00:00")
+    assert Settings(_env_file=None).lecture_progress_opens_at == datetime(  # type: ignore[call-arg]
+        2026, 11, 20, 9, tzinfo=KST
+    )
+
+
+# ── 주차학습 강의 (11/24) ───────────────────────────────────────────────────
+
+OPENED = NOW - timedelta(days=1)  # 처리방침 v0.3이 시행된 뒤
+NOT_YET = NOW + timedelta(days=1)  # 시행 전
+LX_MODULES = "/learningx/api/v1/courses/{course}/modules"
+
+
+@pytest.fixture
+def weekly(canvas: respx.MockRouter) -> dict[str, Any]:
+    """주차학습을 여는 길과 두 과목의 주차학습 목록. 시험이 바꿀 경로를 돌려준다."""
+    routes: dict[str, Any] = {}
+    for course in (214023, 216515):
+        routes[f"tabs/{course}"] = canvas.get(f"{BASE}/api/v1/courses/{course}/tabs").mock(
+            return_value=httpx.Response(200, json=TABS)
+        )
+        routes[f"launch/{course}"] = canvas.get(
+            f"{BASE}/api/v1/courses/{course}/external_tools/sessionless_launch"
+        ).mock(return_value=httpx.Response(200, json=LAUNCH))
+    routes["page"] = canvas.get(f"{BASE}/courses/214023/external_tools/sessionless_launch").mock(
+        return_value=httpx.Response(200, text=launch_page())
+    )
+    routes["post"] = canvas.post(f"{BASE}/learningx/lti/modulebuilder").mock(
+        return_value=httpx.Response(
+            200, text="<html></html>", headers={"Set-Cookie": f"xn_api_token={LEARNINGX_TOKEN}"}
+        )
+    )
+    routes["db"] = canvas.get(BASE + LX_MODULES.format(course=214023)).mock(
+        return_value=httpx.Response(200, json=DB_LECTURE_MODULES)
+    )
+    routes["ml"] = canvas.get(BASE + LX_MODULES.format(course=216515)).mock(
+        return_value=httpx.Response(200, json=ML_LECTURE_MODULES)
+    )
+    return routes
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_it_reads_whether_each_lecture_was_watched(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection, weekly: dict[str, Any]
+) -> None:
+    client.post(SYNC)
+    saved = {course: [one.key for one in items] for course, items in lms.lecture_saves}
+    assert saved == {
+        "course-db": ["8569302", "8570001", "8570002", "8570003", "8570005"],
+        "course-ml": ["lx:71001", "8631790"],
+    }
+    assert lms.lectures_checked_at == NOW
+    assert LECTURE_TOOL in log.tools()
+    # 10/16 12:00 KST에 아직 들을 수 있는 강의: 데이터베이스 6주차 1부(안 들음)와 기계학습 3주차(지각 인정 기간)
+    assert log.outputs()[LECTURE_TOOL] == {
+        "courses": 2,
+        "lectures": 7,
+        "todo": 2,
+        "failed_courses": 0,
+    }
+    # 주차학습은 한 번만 열고(첫 과목) 그 표로 두 과목을 읽는다
+    assert weekly["post"].call_count == 1
+    assert not weekly["tabs/216515"].called
+    assert weekly["ml"].calls[0].request.headers["Authorization"] == f"Bearer {LEARNINGX_TOKEN}"
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_the_run_log_keeps_no_pass_or_one_time_address(
+    client: TestClient, log: FakeLogConnection, weekly: dict[str, Any]
+) -> None:
+    client.post(SYNC)
+    recorded = str(log.statements)
+    assert LECTURE_TOOL in log.tools()
+    for secret in (TOKEN, LEARNINGX_TOKEN, LAUNCH_VERIFIER):
+        assert secret not in recorded
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_the_lecture_step_runs_after_everything_else_and_before_the_result(
+    client: TestClient, log: FakeLogConnection, weekly: dict[str, Any]
+) -> None:
+    client.post(SYNC)
+    tools = log.tools()
+    assert tools[-2:] == [LECTURE_TOOL, "save_lms_sync"]
+
+
+@pytest.mark.parametrize("lectures_from", [NOT_YET], indirect=True)
+def test_it_does_not_read_lectures_before_the_policy_starts(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection, weekly: dict[str, Any]
+) -> None:
+    client.post(SYNC)
+    assert not weekly["tabs/214023"].called and not lms.lecture_saves
+    assert LECTURE_TOOL not in log.tools()
+    assert lms.lecture_due_calls == []  # 동의 여부를 보러 가지도 않는다
+
+
+def test_it_does_not_read_lectures_when_the_setting_is_off(
+    client: TestClient, lms: FakeLms, weekly: dict[str, Any]
+) -> None:
+    client.post(SYNC)
+    assert not weekly["tabs/214023"].called and not lms.lecture_saves
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_it_reads_only_students_who_agreed_to_the_new_text(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection, weekly: dict[str, Any]
+) -> None:
+    lms.lecture_consent = False
+    response = client.post(SYNC)
+    assert response.status_code == 202
+    assert not weekly["tabs/214023"].called and not lms.lecture_saves
+    assert LECTURE_TOOL not in log.tools()
+    assert lms.synced_at == NOW  # 동기화는 그대로 한다
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_opening_the_academics_screen_reads_lectures_every_time(
+    client: TestClient, lms: FakeLms, weekly: dict[str, Any]
+) -> None:
+    lms.lectures_checked_at = NOW - timedelta(minutes=6)  # 배치라면 아직 차례가 아니다
+    client.post(SYNC)
+    assert lms.lecture_due_calls == [None]
+    assert lms.lecture_saves and lms.lectures_checked_at == NOW
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_the_batch_reads_lectures_once_an_hour(
+    client: TestClient, lms: FakeLms, weekly: dict[str, Any]
+) -> None:
+    lms.users = ["user-a"]
+    lms.lectures_checked_at = NOW - timedelta(minutes=59)
+    body = client.post(JOB, headers={"X-Internal-Key": INTERNAL_KEY}).json()
+    assert body["synced"] == 1
+    assert lms.lecture_due_calls == [NOW - timedelta(hours=1)]
+    assert not lms.lecture_saves and not weekly["tabs/214023"].called
+
+    # 한 시간이 지났다. 다음 배치는 읽는다(5분 안에 동기화한 사람은 배치가 건너뛰므로 시각을 돌려 둔다)
+    lms.lectures_checked_at = NOW - timedelta(hours=1)
+    assert lms.connection_row is not None
+    lms.rows["user-a"] = Connection(**{**lms.connection_row.__dict__, "last_synced_at": None})
+    client.post(JOB, headers={"X-Internal-Key": INTERNAL_KEY})
+    assert lms.lecture_saves and lms.lectures_checked_at == NOW
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_a_course_whose_lectures_fail_keeps_what_was_saved(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection, weekly: dict[str, Any]
+) -> None:
+    weekly["ml"].mock(return_value=httpx.Response(500, json={}))
+    client.post(SYNC)
+    assert [course for course, _ in lms.lecture_saves] == [
+        "course-db"
+    ]  # 기계학습은 지난 값이 남는다
+    assert log.outputs()[LECTURE_TOOL]["failed_courses"] == 1
+    assert lms.lectures_checked_at == NOW
+    assert (lms.synced_at, lms.error) == (NOW, None)
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_a_rejected_pass_does_not_blame_the_student_token(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection, weekly: dict[str, Any]
+) -> None:
+    """주차학습이 표를 거절해도(401) 학생 토큰 문제가 아니다. 연결을 error로 바꾸지 않고 다음에 다시 읽는다."""
+    weekly["db"].mock(return_value=httpx.Response(401, json={}))
+    client.post(SYNC)
+    assert not lms.lecture_saves
+    assert not weekly["ml"].called  # 표가 막혔으니 남은 과목은 부르지 않는다
+    assert log.outputs()[LECTURE_TOOL] == {
+        "courses": 0,
+        "lectures": 0,
+        "todo": 0,
+        "failed_courses": 2,
+    }
+    assert lms.lectures_checked_at is None  # 읽지 못했으니 다음 배치가 다시 읽는다
+    assert (lms.synced_at, lms.error) == (NOW, None)
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_failing_to_open_the_weekly_tab_does_not_fail_the_sync(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection, weekly: dict[str, Any]
+) -> None:
+    weekly["post"].mock(return_value=httpx.Response(500, text="error"))
+    response = client.post(SYNC)
+    assert response.status_code == 202
+    assert not lms.lecture_saves and not weekly["db"].called
+    assert log.outputs()[LECTURE_TOOL] == {"skipped": "not_opened"}
+    assert (lms.synced_at, lms.error) == (NOW, None)
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_it_opens_the_weekly_tab_from_a_course_that_has_it(
+    client: TestClient, lms: FakeLms, weekly: dict[str, Any]
+) -> None:
+    """첫 과목에 주차학습 탭이 없으면 다음 과목에서 연다. 그래도 두 과목 모두 읽는다."""
+    weekly["tabs/214023"].mock(return_value=httpx.Response(200, json=TABS_WITHOUT_WEEKLY))
+    client.post(SYNC)
+    assert weekly["tabs/216515"].called and weekly["launch/216515"].called
+    assert not weekly["launch/214023"].called
+    assert [course for course, _ in lms.lecture_saves] == ["course-db", "course-ml"]
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_no_weekly_tab_anywhere_reads_nothing(
+    client: TestClient, lms: FakeLms, log: FakeLogConnection, weekly: dict[str, Any]
+) -> None:
+    for course in (214023, 216515):
+        weekly[f"tabs/{course}"].mock(return_value=httpx.Response(200, json=TABS_WITHOUT_WEEKLY))
+    client.post(SYNC)
+    assert log.outputs()[LECTURE_TOOL] == {"skipped": "not_opened"}
+    assert not weekly["db"].called and not lms.lecture_saves
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_it_gives_up_opening_after_a_few_failures(
+    client: TestClient,
+    lms: FakeLms,
+    weekly: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """탭 목록이 계속 실패하면 과목마다 부르지 않고 멈춘다(이번에는 읽지 않는다)."""
+    monkeypatch.setattr("app.lms.sync.LAUNCH_FAILURES", 1)
+    weekly["tabs/214023"].mock(return_value=httpx.Response(503, json={}))
+    client.post(SYNC)
+    assert not weekly["tabs/216515"].called
+    assert not lms.lecture_saves and lms.error is None
+
+
+@pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
+def test_a_lecture_save_that_breaks_does_not_fail_the_sync(
+    client: TestClient,
+    lms: FakeLms,
+    log: FakeLogConnection,
+    weekly: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(*args: Any, **kwargs: Any) -> int:
+        raise RuntimeError("db went away")
+
+    monkeypatch.setattr(lms, "save_lectures", broken)
+    response = client.post(SYNC)
+    assert response.status_code == 202
+    assert (lms.synced_at, lms.error) == (NOW, None)
+    assert lms.lectures_checked_at is None
+    # 동기화는 끝까지 갔다 — 결과를 남기는 마지막 단계가 있다(`GET /runs/{id}`가 이 출력으로 결과를 만든다)
+    assert log.tools()[-1] == "save_lms_sync"

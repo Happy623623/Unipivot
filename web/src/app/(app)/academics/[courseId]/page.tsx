@@ -6,7 +6,7 @@ import { useMe } from "@/components/AppFrame";
 import { useAppNavigate } from "@/lib/routes";
 import Course from "@/screens/Course";
 
-const tabs = ["assignments", "materials", "announcements", "syllabus"] as const;
+const tabs = ["assignments", "materials", "announcements", "syllabus", "lectures"] as const;
 type CourseTab = (typeof tabs)[number];
 
 function CoursePage() {

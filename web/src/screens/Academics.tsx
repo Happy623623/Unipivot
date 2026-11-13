@@ -244,9 +244,10 @@ export default function Academics({ navigate }: AcademicsProps) {
             className="min-h-[230px] rounded-2xl border border-[#e5e7eb] bg-white p-[18px] text-left transition hover:-translate-y-0.5 hover:border-[#cfd7ff]"
           >
             <h2 className="text-[17px] font-semibold">{course.name}</h2>
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <Badge>과제 {course.open_assignments}</Badge>
               <Badge tone="yellow">새 자료 {course.new_materials}</Badge>
+              {(course.lectures_todo ?? 0) > 0 && <Badge tone="red">안 들은 강의 {course.lectures_todo}</Badge>}
             </div>
             <p className="mt-3 text-[12px] font-medium text-[#667085]">다음 일정</p>
             <p className="mt-2 text-[14px] font-semibold">

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { connectCalendar, getCourse } from "@/api/client";
 import CourseAnnouncements from "@/components/CourseAnnouncements";
 import CourseAssignments from "@/components/CourseAssignments";
+import CourseLectures, { isOpenLecture } from "@/components/CourseLectures";
 import CourseMaterials from "@/components/CourseMaterials";
 import CourseSyllabus from "@/components/CourseSyllabus";
 import Header from "@/components/Header";
@@ -29,8 +30,10 @@ interface CourseProps {
   navigate: (route: Route) => void;
 }
 
+// 강의 탭(11/24)은 주차학습 강의를 읽어 둔 과목에만 보인다(과제 다음)
 const tabs: { id: CourseTab; label: string }[] = [
   { id: "assignments", label: "과제" },
+  { id: "lectures", label: "강의" },
   { id: "materials", label: "자료" },
   { id: "announcements", label: "공지" },
   { id: "syllabus", label: "계획서" },
@@ -80,6 +83,11 @@ export default function Course({
 
   const course = loaded;
   const lmsUrl = course.course.html_url;
+  const lectures = course.lectures ?? []; // 옛 api는 주지 않는다
+  const openLectures = lectures.filter(isOpenLecture).length;
+  const shownTabs = lectures.length > 0 ? tabs : tabs.filter((item) => item.id !== "lectures");
+  // 강의가 없는 과목을 강의 탭으로 열었으면(지난 링크) 과제 탭을 보여 준다
+  const shown: CourseTab = tab === "lectures" && lectures.length === 0 ? "assignments" : tab;
 
   return (
     <>
@@ -102,8 +110,9 @@ export default function Course({
           과목 정보를 새로 받지 못해 지난 내용을 보여 주고 있어요. 잠시 후 이 화면을 다시 열어 주세요.
         </p>
       )}
-      <nav className="flex gap-2 rounded-[14px] bg-white p-2">
-        {tabs.map((item) => (
+      {/* 탭이 다섯이 되면(강의, 11/24) 좁은 화면에서 글자가 꺾인다 — 줄을 바꾸지 않고 옆으로 민다 */}
+      <nav className="flex gap-2 overflow-x-auto rounded-[14px] bg-white p-2">
+        {shownTabs.map((item) => (
           <button
             key={item.id}
             type="button"
@@ -111,28 +120,37 @@ export default function Course({
               setTab(item.id);
               if (item.id !== "materials") setSummaryFileId(null);
             }}
-            className={`rounded-[10px] px-4 py-2 text-[13px] font-semibold ${
-              tab === item.id
+            className={`shrink-0 whitespace-nowrap rounded-[10px] px-4 py-2 text-[13px] font-semibold ${
+              shown === item.id
                 ? "bg-[#eef2ff] text-[#4f6ef7]"
                 : "text-[#667085]"
             }`}
           >
             {item.label}
+            {item.id === "lectures" && openLectures > 0 && (
+              <span className="ml-1.5 rounded-full bg-[#fef2f2] px-1.5 py-0.5 text-[11px] text-[#c53030]">
+                <span className="sr-only">안 들은 강의 </span>
+                {openLectures}
+              </span>
+            )}
           </button>
         ))}
       </nav>
       <div
         className={
-          tab === "materials" && summaryFileId
+          shown === "materials" && summaryFileId
             ? "grid grid-cols-[0.9fr_1.1fr] gap-5 max-[1000px]:grid-cols-1"
             : ""
         }
       >
         <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
-          {tab === "assignments" && (
+          {shown === "assignments" && (
             <CourseAssignments assignments={course.assignments} />
           )}
-          {tab === "materials" && (
+          {shown === "lectures" && (
+            <CourseLectures lectures={lectures} checkedAt={course.lectures_checked_at ?? null} />
+          )}
+          {shown === "materials" && (
             <CourseMaterials
               course={course}
               onOpenSummary={(fileId) => {
@@ -142,14 +160,14 @@ export default function Course({
               onUploaded={reload}
             />
           )}
-          {tab === "announcements" && (
+          {shown === "announcements" && (
             <CourseAnnouncements
               announcements={course.announcements}
               navigate={navigate}
               onToast={showToast}
             />
           )}
-          {tab === "syllabus" && (
+          {shown === "syllabus" && (
             <CourseSyllabus
               course={course}
               calendarConnected={calendarConnected}
@@ -160,7 +178,7 @@ export default function Course({
             />
           )}
         </section>
-        {tab === "materials" && summaryFileId && (
+        {shown === "materials" && summaryFileId && (
           <MaterialSummaryPanel
             key={summaryFileId}
             fileId={summaryFileId}

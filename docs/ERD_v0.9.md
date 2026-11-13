@@ -81,6 +81,7 @@ erDiagram
     profiles ||--o{ push_subscriptions : "푸시 구독"
     profiles ||--o{ lms_courses : "수강 과목"
     lms_courses ||--o{ lms_assignments : "과제"
+    lms_courses ||--o{ lms_lecture_progress : "강의 수강"
     lms_courses |o--o| syllabi : "계획서 연결"
     lms_courses }o--o{ lms_module_items : "canvas_course_id"
     lms_courses }o--o{ lms_announcements : "canvas_course_id"
@@ -187,6 +188,7 @@ erDiagram
         enum status "active, error, disconnected"
         timestamptz last_synced_at
         text last_error
+        timestamptz lectures_checked_at "주차학습을 읽은 때(11/24)"
     }
     user_settings {
         uuid user_id PK, FK
@@ -266,7 +268,26 @@ erDiagram
         timestamptz retry_at "큐: 다시 집을 시각(임대·늦춤)"
         smallint attempts "큐: 집힌 횟수, 5면 빠짐"
     }
+    lms_lecture_progress {
+        uuid user_id PK, FK
+        text item_key PK "Canvas 주차 항목 번호(없으면 lx:LearningX 번호)"
+        uuid lms_course_id FK
+        bigint canvas_item_id
+        text module_name
+        text title
+        text kind "video, live, material"
+        boolean completed "null: 알 수 없음"
+        text attendance "LearningX 출결 값"
+        text period "not_open, open, late, late_after, closed"
+        timestamptz unlock_at
+        timestamptz due_at "출석 인정 마감"
+        timestamptz late_at "지각 인정 마감"
+        int duration_seconds
+        int position "주차학습 순서"
+        timestamptz checked_at "읽은 때"
+    }
     lms_courses ||--o{ lms_assignments : "has"
+    lms_courses ||--o{ lms_lecture_progress : "has"
     lms_courses }o--o{ lms_module_items : "canvas_course_id"
     lms_courses }o--o{ lms_announcements : "canvas_course_id"
 ```
@@ -572,6 +593,7 @@ erDiagram
 | LMS | lms_courses | 사용자별 수강 과목 (Canvas 과목 ID로 과목 공통 데이터와 연결, 포털 계획서 링크 생성) | F-14, F-51–F-54 |
 | LMS | lms_assignments | 사용자별 과제·마감일·제출 상태 | F-51 |
 | LMS | lms_module_items | 과목 공통 주차학습 항목, 새 항목 감지용 | F-52 |
+| LMS | lms_lecture_progress | 사용자별 주차학습 강의와 수강 상태(다 들었는지·출결·출석 마감 — LearningX에서 읽은 값) | F-55 |
 | LMS | lms_announcements | 과목 공통 공지와 분류 결과 | F-53, F-54 |
 | 공고 | sources | 수집 출처 설정 (게시판, 온통청년, 공모전 사이트, LMS) | F-10–F-12, F-53 |
 | 공고 | opportunities | 모든 출처의 공고 통합 저장, 포스터 공유·병합·숨김, 과목 한정 노출 | F-10–F-13, F-16, F-17, F-53 |
@@ -687,6 +709,7 @@ erDiagram
 - **LMS 과제 할 일(F-51·F-43)**: `planner_tasks`에는 **마감이 있는 미제출 과제**만 넣는다(`due_date`가 not null이고, 연결 첫 동기화에 들어오는 지난 과제로 할 일을 만들지 않는다). 마감이 바뀌면 아직 끝내지 않은 할 일의 날짜만 고치고, 마감이 없다가 생긴 과제는 그때 할 일을 만든다. 값에서 값으로 바뀐 마감은 할 일을 새로 만들지 않는다 — 학생이 지운 할 일을 되살리지 않으려는 것이다. 제출하면 할 일을 완료로 바꾸고 아직 보내지 않은 알림(`notifications.status = pending`)을 지운다.
 - **새 자료 감지**: 동기화 때 `canvas_item_id`가 처음 보이면 `lms_module_items`에 넣고, 그 과목 수강생에게 `new_material` 알림을 만든다(**연결을 끊은 사람과 수강을 뺀 과목은 뺀다** — 해제하면 동기화를 멈춘다). 그 과목의 첫 수집에는 만들지 않는다. 같은 제목의 항목이 여러 개인 과목이 있어서(영상·슬라이드 추정) 비교 기준은 제목이 아니라 ID다
 - **사라진 주차 항목(11/23)**: 그 과목 목록을 끝까지 받았는데 없던 항목은 지우지 않고 `lms_module_items.removed_at`을 찍는다 — 알림(`new_material`)과 학생이 올린 강의자료(`files.lms_module_item_id`)가 그 행을 가리킨다. 다시 나타나면 upsert가 지운다. 받다가 실패한 과목은 찍지 않고, **목록이 비어 오면 찍지 않는다**(한 학기 자료가 한꺼번에 사라지는 쪽이 더 아프다). 그 동기화가 시작한 뒤 처음 본 항목(같이 듣는 학생의 동기화가 방금 넣은 것)도 찍지 않는다. 사라진 항목은 자료 탭·새 학업 정보·새 자료 수에서 빠지고, 강의자료를 올린 학생에게만 자료 탭에 남는다
+- **주차학습 강의(11/24, F-55)**: 학생마다 값이 달라(다 들었는지·출결) 과제처럼 사용자별 표 `lms_lecture_progress`에 둔다. 키는 `(user_id, item_key)`이고 `item_key`는 Canvas 주차 항목 번호(LearningX `module_item_id`, 그 번호가 없으면 `lx:` + LearningX 항목 번호)다. 동기화가 한 과목의 주차학습을 끝까지 읽으면 그 과목 행을 맞추고 **목록에 없는 강의는 지운다**(빈 목록이면 모두 — 알림·할 일이 이 표를 가리키지 않아 지워도 깨지는 것이 없다). 못 읽은 과목은 지난 값을 둔다. 상태(다 들음·안 들음·지각 인정·놓침·열리기 전·모름)는 저장하지 않고 읽을 때 `period`와 마감 시각으로 정한다 — 시간이 지나면 바뀌는 값이다. `completed`가 null이면 LearningX가 판단할 수 없다고 한 것이라 안 들은 강의로 세지 않는다. `lms_connections.lectures_checked_at`은 마지막으로 주차학습을 읽은 때이고, 30분 배치는 이 시각이 1시간 안이면 건너뛴다(학생이 학업 화면을 열어 시작한 동기화는 그때마다 읽는다). 동의 문구 2026-11-24 판 이상에 동의한 학생(`profiles.consent_version`)만 읽는다. 주차학습을 열 때 받는 표(`xn_api_token`)는 저장하지 않는다. 탈퇴하면 cascade로 지워진다
 - **제출 연동**: `submission_state`가 submitted·graded로 바뀌면 연결된 `planner_tasks.is_done = true`로 바꾸고, 아직 안 보낸 마감 임박 알림을 취소한다
 - **공지 → 공고**: 기회성 공지는 `opportunities`에 `source_type = 'lms_announcement'`, `visible_canvas_course_id = 과목 ID`로 넣는다. 이 공고는 해당 과목 수강생에게만 보이고, 배치 판정도 수강생에게만 돌린다. 요건 추출은 동기화 실행의 자식 실행이고(user_id 없음) 공고의 `extraction_run_id`가 그 자식이다 — 처리 과정(F-42)에 동기화 단계가 섞이지 않는다(11/17)
 - **LMS 응답 규칙(10/16 녹화)**: `lms_assignments.due_at`은 Canvas `due_at ?? lock_at`이다(녹화 17건 중 5건이 `due_at` null). `submission_state`는 Canvas `submission.workflow_state`를 그대로 쓰고(`unsubmitted`·`submitted`·`graded` 관측, `pending_review`는 아직 못 봤지만 제출로 센다), 과목 전체 기준인 `has_submitted_submissions`는 쓰지 않는다. `lms_module_items.canvas_item_id`가 유일 키다 — 한 모듈에 제목이 같은 항목이 둘씩 있다(87건 중 15쌍). `item_type`은 `ExternalTool`·`Page`·`Quiz`·`Assignment`가 관측됐고 `File`은 0건이다. `module_name`은 `1주차`·`Week 3 : …` 꼴이 섞이고 Canvas `position`은 연속이 아니라 저장하지 않는다. `lms_courses.term`은 과목명에서 만든 `2026-2`이고, 과목명 꼴이 다르면 LearningX가 준 학기 이름(`2026년 2학기`)을 넣는다
@@ -844,6 +867,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 17 | `supabase/migrations/20261118000000_job_schedule.sql` | job_schedule(정기 작업 예약표 — 작업마다 한 줄, 다음 차례·임대·횟수·마지막 실패). RLS를 켜고 정책을 두지 않는다(백엔드만). 줄은 서버가 처음 tick할 때 넣는다. 여러 번 돌려도 같다 |
 | 18 | `supabase/migrations/20261121000000_agent_run_engine.sql` | agent_runs.engine·engine_version·model·review_codes(엔진 도장). 엔진 이름과 버전은 함께 있거나 함께 없다(검사 제약), 엔진별 부분 인덱스 하나. 여러 번 돌려도 같다 |
 | 19 | `supabase/migrations/20261123000000_lms_module_item_removed.sql` | lms_module_items.removed_at(LearningX에서 사라진 주차 항목, 11/23). 여러 번 돌려도 같다 |
+| 20 | `supabase/migrations/20261124000000_lms_lecture_progress.sql` | lms_lecture_progress(주차학습 강의와 내 수강 상태 — kind 검사 제약, 과목 색인, 본인 행 읽기 정책)·lms_connections.lectures_checked_at(11/24). 여러 번 돌려도 같다 |
 
 적용은 `supabase link` 뒤 `supabase db push`로 한다.
 
@@ -860,7 +884,7 @@ Storage는 SQL로 만들지 않는다. 대시보드에서 버킷을 비공개로
 
 | 테이블 | 읽기 (로그인 사용자) | 쓰기 |
 | --- | --- | --- |
-| profiles, push_subscriptions, lms_courses, lms_assignments, files, opportunity_reports, eligibility_results, syllabi, syllabus_items, prep_plans, planner_tasks, calendar_events, notifications, materials, material_sections, user_settings, opportunity_views, opportunity_marks | 본인 행만 | 백엔드만 |
+| profiles, push_subscriptions, lms_courses, lms_assignments, lms_lecture_progress, files, opportunity_reports, eligibility_results, syllabi, syllabus_items, prep_plans, planner_tasks, calendar_events, notifications, materials, material_sections, user_settings, opportunity_views, opportunity_marks | 본인 행만 | 백엔드만 |
 | lms_module_items, lms_announcements | 그 과목 수강생만 (분반 한정 공지는 제외) | 백엔드만 |
 | opportunities | 공개 범위 규칙(5장) | 백엔드만 |
 | requirements, opportunity_documents, opportunity_attachments | 공고를 볼 수 있으면 | 백엔드만 |
@@ -931,6 +955,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-24): lms_lecture_progress(주차학습 강의와 내 수강 상태, F-55)·lms_connections.lectures_checked_at — 동기화가 LearningX 주차학습을 한 번 열어 읽는다(강의 항목은 열지 않는다). 처리방침 v0.3(11/28 시행)과 동의 문구 2026-11-24 판
 - v0.9 보강 (2026-11-23): lms_module_items.removed_at — 그 과목 목록을 끝까지 받았는데 없던 항목에 찍고 다시 나타나면 지운다(빈 목록이면 찍지 않는다). 자료 탭·새 학업 정보·새 자료 수에서 빠지고 강의자료를 올린 항목만 남는다(사용자 피드백 2①)
 - v0.9 보강 (2026-11-21): agent_runs.engine·engine_version·model·review_codes — 엔진 도장(O2). 공지 분류가 동기화 실행의 자식 실행이 되고 lms_announcements.classified_run_id가 그 자식을 가리킨다
 - v0.9 보강 (2026-11-20): 새 공고 알림 키를 학생·알릴 날 단위로(`new_eligible:day:{날짜}`, 대표 공고는 마감이 가장 가까운 것, 지난 묶음을 만든 뒤 들어온 공고만), 정보 필요 알림은 마감까지 3일 넘게 남은 공고만. 옛 키의 pending 행은 다음 예약이 지운다. 스키마 변경 없음

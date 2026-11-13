@@ -1,6 +1,7 @@
 import type {
   Course,
   CourseDetail,
+  CourseLecture,
   LmsConnection,
   LmsUpdateGroups,
   MaterialDetail,
@@ -73,8 +74,123 @@ export const courses: Course[] = [
       title: "SQL 실습",
       due_at: "2026-10-08T23:59:00+09:00",
     },
+    lectures_todo: 2, // 주차학습 강의(11/24): 안 들음 하나 + 지각 인정 기간 하나
   },
 ];
+
+// 주차학습 강의(11/24). 목 시각(10/5 10:00) 기준으로 상태가 하나씩 보이게 데이터베이스 과목에만 둔다.
+// 선형대수는 다 들은 과목이고, 나머지 과목은 강의를 읽지 않아 강의 탭이 없다
+const lectureLink = (canvas: number, item: number) => `https://lms.example.edu/courses/${canvas}/modules/items/${item}`;
+const mockLectures: Record<string, CourseLecture[]> = {
+  database: [
+    {
+      id: "8569302",
+      module_name: "3주차",
+      title: "3주차 강의: 관계 모델",
+      kind: "video",
+      status: "done",
+      attendance: "attendance",
+      unlock_at: "2026-09-15T00:00:00+09:00",
+      due_at: "2026-09-21T23:59:59+09:00",
+      late_at: null,
+      duration_seconds: 1932,
+      html_url: lectureLink(2104, 8569302),
+    },
+    {
+      id: "8569810",
+      module_name: "4주차",
+      title: "4주차 강의: SQL 기초",
+      kind: "video",
+      status: "late",
+      attendance: "none",
+      unlock_at: "2026-09-22T00:00:00+09:00",
+      due_at: "2026-10-01T23:59:59+09:00",
+      late_at: "2026-10-08T23:59:59+09:00",
+      duration_seconds: 2710,
+      html_url: lectureLink(2104, 8569810),
+    },
+    {
+      id: "8570001",
+      module_name: "5주차",
+      title: "5주차 강의 1부: 조인",
+      kind: "video",
+      status: "todo",
+      attendance: "none",
+      unlock_at: "2026-09-29T00:00:00+09:00",
+      due_at: "2026-10-07T23:59:59+09:00",
+      late_at: "2026-10-14T23:59:59+09:00",
+      duration_seconds: 2405,
+      html_url: lectureLink(2104, 8570001),
+    },
+    {
+      id: "8570002",
+      module_name: "5주차",
+      title: "5주차 실시간 수업",
+      kind: "live",
+      status: "missed",
+      attendance: "absent",
+      unlock_at: null,
+      due_at: "2026-10-02T15:00:00+09:00",
+      late_at: null,
+      duration_seconds: null,
+      html_url: lectureLink(2104, 8570002),
+    },
+    {
+      id: "8570003",
+      module_name: "5주차",
+      title: "5주차 읽기 자료",
+      kind: "material",
+      status: "done",
+      attendance: "attendance",
+      unlock_at: null,
+      due_at: null,
+      late_at: null,
+      duration_seconds: null,
+      html_url: lectureLink(2104, 8570003),
+    },
+    {
+      id: "8570005",
+      module_name: "6주차",
+      title: "6주차 강의: 정규화",
+      kind: "video",
+      status: "upcoming",
+      attendance: "none",
+      unlock_at: "2026-10-06T00:00:00+09:00",
+      due_at: "2026-10-12T23:59:59+09:00",
+      late_at: null,
+      duration_seconds: null,
+      html_url: lectureLink(2104, 8570005),
+    },
+  ],
+  "linear-algebra": [
+    {
+      id: "8610001",
+      module_name: "4주차",
+      title: "4주차 강의: 고유값",
+      kind: "video",
+      status: "done",
+      attendance: "late",
+      unlock_at: null,
+      due_at: "2026-09-28T23:59:59+09:00",
+      late_at: "2026-10-05T23:59:59+09:00",
+      duration_seconds: 3120,
+      html_url: lectureLink(2101, 8610001),
+    },
+    {
+      id: "8610002",
+      module_name: "5주차",
+      title: "5주차 강의: 대각화",
+      kind: "video",
+      status: "done",
+      attendance: "attendance",
+      unlock_at: null,
+      due_at: "2026-10-05T23:59:59+09:00",
+      late_at: null,
+      duration_seconds: 2880,
+      html_url: lectureLink(2101, 8610002),
+    },
+  ],
+};
 
 function makeCourseDetail(course: Course, index: number): CourseDetail {
   const prefixes = ["기초 개념", "핵심 정리", "응용 문제"];
@@ -175,6 +291,8 @@ function makeCourseDetail(course: Course, index: number): CourseDetail {
         status: course.id === "database" ? "failed" : "succeeded", // 상한을 넘어 요약하지 않은 자료
       },
     ],
+    lectures: mockLectures[course.id] ?? [],
+    lectures_checked_at: mockLectures[course.id] ? "2026-10-05T09:30:00+09:00" : null,
   };
 }
 

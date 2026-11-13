@@ -136,6 +136,8 @@
 >
 > v0.4 보강(11/23, 사라진 주차 항목): 그 과목 주차 목록을 끝까지 받았는데 없던 항목에 `lms_module_items.removed_at`을 찍는다(지우지 않고, 다시 나타나면 지운다. 빈 목록이면 찍지 않는다). 사라진 항목은 과목 상세의 자료 탭·`GET /lms/updates`·과목 목록의 새 자료 수에서 빠지고, 내가 강의자료를 올려 둔 항목만 `module_items[].removed = true`로 남는다 — 요약은 다시 볼 수 있고 LMS로 가는 길은 없다(사용자 피드백 2①). 마이그레이션 하나(칸 하나 더하기)
 >
+> v0.4 보강(11/24, 주차학습 강의): 동기화가 LearningX '주차학습'을 한 번 열어(LTI) 강의마다 **내가 다 들었는지·출결·출석 마감**을 읽는다(강의 항목은 열지 않는다, F-55). `GET /lms/courses`에 `lectures_todo`, `GET /lms/courses/{id}`에 `lectures`·`lectures_checked_at`이 생겼다. 처리방침 v0.3이 시행되는 2026-11-28 0시(KST, `LECTURE_PROGRESS_OPENS_AT`)부터, 동의 문구 2026-11-24 판에 동의한 학생만 읽는다. 학업 화면을 열어 시작한 동기화는 그때마다, 배치는 1시간에 한 번 읽는다. LearningX 클라이언트에 허용 경로 둘(`tabs`·`sessionless_launch`)과 **받은 LTI 폼을 그대로 돌려보내는 POST 한 번**이 늘었다(9장). 실패해도 동기화는 성공이다. 마이그레이션 하나(새 표·칸 하나 더하기)
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1122,7 +1124,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 
 ### 클라이언트 규칙
 
-- 백엔드 LearningX 클라이언트는 GET 요청만 보낸다. 허용 경로 밖이면 요청을 보내기 전에 예외를 던진다
+- 백엔드 LearningX 클라이언트는 GET 요청만 보낸다. 허용 경로 밖이면 요청을 보내기 전에 예외를 던진다. 예외는 하나 — 주차학습을 열 때 Canvas가 준 LTI 폼을 그대로 돌려보내는 POST 한 번이다(아래 '주차학습', 11/24)
 - **10/16 녹화로 확정한 필드 규칙**(6과목·과제 17건·주차 항목 87건):
   - 과제 마감일은 `due_at ?? lock_at`이다. 녹화한 17건 중 5건은 `due_at`이 null이고 `lock_at`만 있었다
   - 제출 여부는 `submission.workflow_state`가 `submitted`·`graded`·`pending_review`인지로 본다. **`has_submitted_submissions`는 과목 전체 기준**이라 내가 안 낸 과제에도 true다(쓰지 않는다). 퀴즈는 자동 채점돼 바로 `graded`로 온다. `pending_review`는 녹화에서 못 봤지만 "냈고 손 채점만 남은" 상태라 제출로 센다 — 제출로 보지 않으면 할 일이 끝나지 않고 알림도 멈추지 않는다. 모르는 값이 오면 `unsubmitted`로 둔다(DB enum에 없는 값은 저장할 수 없다)
@@ -1131,7 +1133,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
   - `Assignment` 항목의 `content_id`는 과제 id, `Quiz` 항목의 `content_id`는 퀴즈 id(과제의 `quiz_id`)다 → 주차와 과제를 이어 "4주차 과제"로 보여줄 수 있다
   - 모듈 `position`과 항목 `position`은 연속이 아니고 1부터 시작하지도 않는다(지운 항목·재배치). 정렬에만 쓰고 주차 번호는 모듈 이름에서 읽는다. 이름은 `1주차`·`5주차 (개천절 대체휴일)`·`Week 3 : …`가 섞인다
   - 과제가 0건이고 모듈 항목이 모두 비어 있는 과목이 흔하다(녹화 6과목 중 2과목). 빈 과목은 오류가 아니다
-- 허용 경로는 10/16 녹화로 확정했다(코드 상수는 `api/app/lms/client.py`의 `ALLOWED_PATHS`). 이 여섯 개뿐이고, 쿼리는 아래 그대로 보낸다(`per_page=100`):
+- 허용 경로는 10/16 녹화로 확정했다(코드 상수는 `api/app/lms/client.py`의 `ALLOWED_PATHS`). 이 여덟 개뿐이고(주차학습 둘은 11/12 실측으로 11/24에 더했다), 쿼리는 아래 그대로 보낸다(목록은 `per_page=100`):
 
   | 쓰임 | 경로 | 쿼리 |
   | --- | --- | --- |
@@ -1141,10 +1143,14 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
   | 주차 모듈·항목 | `GET /api/v1/courses/{id}/modules` | `include[]=items` |
   | 모듈 항목(보충) | `GET /api/v1/courses/{id}/modules/{module_id}/items` | — |
   | 과목 공지 | `GET /api/v1/courses/{id}/discussion_topics` | `only_announcements=true` |
+  | 주차학습 도구 찾기 | `GET /api/v1/courses/{id}/tabs` | `include[]=external`(쪽 나눔 없음) |
+  | 주차학습 실행 주소 | `GET /api/v1/courses/{id}/external_tools/sessionless_launch` | `id={도구 번호}`(쪽 나눔 없음) |
 
   쪽이 나뉘면 `Link: rel="next"`를 따라가되 **스킴·호스트가 우리 LearningX와 같고 허용 경로일 때만** 따라간다(`https`를 `http`로 바꿔 주면 토큰이 평문으로 나가고, 남의 주소를 주면 그곳으로 토큰을 보낸다). 리다이렉트는 따라가지 않고 3xx도 오류로 본다. 한 목록은 10쪽(1,000건)·60초까지만 받고, **끝까지 받지 못하면 부분 목록을 쓰지 않고 오류로 끝낸다**(부분 목록을 전체로 쓰면 수강 과목을 지운다)
 - **공지 첨부 받기(F-54, 10/19 녹화)**: API가 아니라 웹 경로 `GET /files/{id}/download`이고, 공지 응답의 첨부 `url`을 그대로 쓴다(코드 상수는 `ALLOWED_DOWNLOADS`). 그 주소의 `verifier`가 열쇠라 **토큰을 보내지 않는다** — 토큰만 보내면 LearningX가 `/login`으로 302를 준다. 주소는 파일 저장소의 서명 주소로 302를 주고 거기서 파일이 온다. 그래서 첨부만은 리다이렉트를 따라가되 `https`로만, 세 번까지, 우리 LearningX의 다른 경로(로그인 화면)로 가면 실패다. 첨부가 HTML이 아닌데 HTML이 오면 실패이고, 20MB(업로드 상한)를 넘으면 받다가 멈춘다. 우리 LearningX의 받기 경로가 아닌 주소는 보내기 전에 거절한다
 - 첨부 주소와 저장소 서명 주소는 그 자체로 열쇠라 **저장하지도 로그에 남기지도 않는다**(`verifier=`·`X-Amz-Signature=`·`X-Amz-Credential=`는 로그에서 가린다). 받는 동안만 메모리에 둔다
+- **주차학습(11/24, 11/12 한양대 실측)**: 학생 본인의 강의 상태(다 들었는지·출결·출석 마감)는 Canvas API에 없고 LearningX '주차학습'에만 있다. 브라우저가 주차학습 탭을 열 때와 같은 길로 한 번 연다 — ① 과목 탭 목록에서 라벨이 '주차학습'(또는 '강의콘텐츠')인 외부 도구를 고른다(`(구) …` 옛 도구보다 지금 도구 먼저) ② 그 도구의 한 번 쓰는 실행 주소를 받는다 ③ 그 주소를 **토큰 없이** 열면 Canvas가 LTI 폼(숨은 값)을 준다 ④ 그 폼을 **받은 그대로** 보내면(POST) LearningX가 `xn_api_token` 쿠키를 준다 ⑤ 그 값으로 `GET /learningx/api/v1/courses/{id}/modules?include_detail=true`를 `Authorization: Bearer`로 읽는다(학생 표 하나로 모든 과목). 실행 주소는 우리 LearningX의 `/courses/{id}/external_tools/sessionless_launch`, 폼 주소는 `/learningx/lti/{이름}`일 때만 따른다(스킴·호스트가 같아야 한다). 리다이렉트는 따라가지 않는다. 학생 토큰은 ①②에만 보낸다. **강의 항목은 열지 않으므로 시청·출석으로 처리되지 않는다.** 실행 주소의 `verifier`와 주차학습 표는 그 동기화에서만 메모리에 두고 저장·기록하지 않는다(로그에서 `verifier=`를 가린다)
+- 주차학습 목록에서 강의로 보는 것은 `content_type = attendance_item`이면서 녹화 강의(`item_content_data.content_type`이 `movie`·`mp4` 등), 실시간 수업(`content_data.item_content_type = video_conference`), 출석 대상 학습자료(`content_data.use_attendance = true`)인 항목이다. 공개하지 않은 항목과 출석 대상이 아닌 PDF·파일은 뺀다. 완료 여부는 `completed`이고 `completion_determinable`이 false면 모른다고 둔다. 기간은 `lecture_period_status`(`not_open`·`open`·`late`·`late_after`·`closed`), 출석 마감 `due_at`, 지각 마감 `late_at`이다. `module_item_id`가 Canvas 주차 항목 번호와 같다(실측 한 과목 15/15)
 - 테스트는 녹화한 응답(개인정보 제거)을 재생하는 가짜 클라이언트로 돌린다
 
 ### `POST /lms/connection`
@@ -1233,6 +1239,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 - 새 주차 항목 알림(`new_material`)은 그 과목을 듣는 **수강생 모두에게** 간다(항목은 과목 공통이다, ERD 3-2). 연결을 끊은 사람과 설정에서 끈 사람은 뺀다
 - **공지 첨부는 학생 문서함에 받는다**(F-54). 이번에 받은 공지의 첨부 중 아직 저장하지 않은 것을 받아 파일 저장소에 올리고 `files`에 남긴다(`origin = lms_attachment`, `kind = lecture_material`, `external_ref` = Canvas 첨부 번호, `lms_course_id` = 그 과목). 같은 첨부는 학생마다 한 번만 받는다(교수 저작물이라 학생끼리 나누지 않는다). **20MB를 넘는 첨부는 받지 않고**(목록의 크기로 본다), 형식은 가리지 않는다. 분반 한정 공지의 첨부는 받지 않는다. 한 동기화에 **10개까지**, 최근 공지의 첨부부터 받고 남은 것은 다음 동기화가 받는다
 - 첨부를 못 받아도(로그인 화면으로 감·저장소 오류) **동기화는 성공이고 연결 상태도 그대로다** — 토큰 문제가 아니다. 그 첨부는 "저장 전"으로 남아 다음 동기화가 다시 받는다. 파일 저장소 설정(`SUPABASE_SECRET_KEY`·`SUPABASE_URL`, 예전 이름 `SUPABASE_SERVICE_ROLE_KEY`도 읽는다)이 없는 서버는 받지 않는다. 받은 수는 실행 기록의 도구 `save_lms_attachments`(`{saved, failed}`)에 남고 결과(`result`)는 바뀌지 않는다
+- **주차학습 강의를 읽는다**(F-55, 11/24). 처리방침 v0.3이 시행된 뒤(`LECTURE_PROGRESS_OPENS_AT`, 기본 2026-11-28 0시 KST), 동의 문구 2026-11-24 판 이상에 동의한 학생만이다(`profiles.consent_version`). 이 엔드포인트로 시작한 동기화는 그때마다, 30분 배치는 그 학생을 1시간 안에 읽었으면 건너뛴다(`lms_connections.lectures_checked_at`). 주차학습 탭이 있는 과목에서 주차학습을 한 번 열고(위 '주차학습') 그 표로 과목마다 목록을 읽어 `lms_lecture_progress`를 맞춘다 — 끝까지 읽은 과목은 목록에 없는 강의를 지우고, 못 읽은 과목은 지난 값을 둔다. 여는 데 세 번 실패하면 이번에는 읽지 않는다. 주차학습이 표를 거절해도(401) 학생 토큰 문제가 아니라 **연결 상태를 바꾸지 않고**, 무엇이 실패해도 **동기화는 성공이다**. 실행 기록의 도구 `fetch_learningx_lectures`(`{courses, lectures, todo, failed_courses}` 또는 `{skipped: "not_opened"}`)에 남고 결과(`result`)는 바뀌지 않는다. `LECTURE_PROGRESS_ENABLED=false`로 배포하면 새로 읽지 않는다(읽어 둔 것은 보인다)
 
 ### `GET /lms/courses`
 
@@ -1248,7 +1255,8 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
       "portal_syllabus_url": "https://portal.hanyang.ac.kr/openPop.do?header=hidden&url=/haksa/SughAct/findSuupPlanDocHyIn.do&flag=BB&year=2026&term=20&suup=23525&language=ko",
       "open_assignments": 2,
       "new_materials": 2,
-      "next_due": { "kind": "assignment", "title": "Quiz 3", "due_at": "2026-10-11T23:59:00+09:00" }
+      "next_due": { "kind": "assignment", "title": "Quiz 3", "due_at": "2026-10-11T23:59:00+09:00" },
+      "lectures_todo": 1
     }
   ]
 }
@@ -1258,6 +1266,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 - `short_name`은 과목명 `_` 뒤다. 과목명이 그 꼴이 아니면 이름 전체가 `short_name`이고 `portal_syllabus_url`은 null이다
 - `portal_syllabus_url`은 사용자 브라우저에서 여는 링크다. **서버는 이 주소에 요청하지 않는다**(포털 robots.txt)
 - `new_materials`는 `last_viewed_at` 이후 생긴 주차 항목 수다(LearningX에서 사라진 항목은 세지 않는다, 11/23). `next_due`는 미제출 과제와 확정된 강의계획서 일정 중 가장 가까운 것이고, 없으면 null이다
+- `lectures_todo`는 **아직 안 들은 주차학습 강의** 수다(F-55, 11/24) — 상태가 `todo`(출석 기간 안)·`late`(지각 인정 기간)인 것만 센다. 주차학습을 읽은 적이 없으면 0이다
 - 항목은 `short_name` 순(글자 코드 순)으로 내려준다. 순서는 서버가 정하고 DB의 정렬 규칙(collation)에 맡기지 않는다 — 환경마다 한글과 숫자의 앞뒤가 달라진다
 
 ### `GET /lms/courses/{id}`
@@ -1269,7 +1278,9 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
   "module_items": [ { "id": "uuid", "module_name": "8주차", "title": "08 - Eigenvalues", "item_type": "ExternalTool", "html_url": "https://learning.hanyang.ac.kr/...", "is_new": true, "uploaded_file_id": null, "removed": false } ],
   "announcements": [ { "id": "uuid", "title": "강의실 변경 안내", "summary": "다음 주 수업은 다른 강의실에서 한다", "category": "schedule_change", "posted_at": "2026-10-04T14:00:00+09:00", "opportunity_id": null, "attachments": [ { "name": "자리 배치도.pdf", "size_bytes": 86169, "status": "saved", "file_id": "uuid" } ] } ],
   "syllabus_items": [ { "id": "uuid", "item_type": "midterm", "title": "중간고사", "starts_at": "2026-10-20T10:30:00+09:00", "is_confirmed": true, "calendar_registered": true } ],
-  "materials": [ { "file_id": "uuid", "original_name": "08_eigen.pdf", "status": "succeeded" } ]
+  "materials": [ { "file_id": "uuid", "original_name": "08_eigen.pdf", "status": "succeeded" } ],
+  "lectures": [ { "id": "8570001", "module_name": "6주차", "title": "6주차 강의 1부", "kind": "video", "status": "todo", "attendance": "none", "unlock_at": "2026-10-13T09:00:00+09:00", "due_at": "2026-10-19T23:59:59+09:00", "late_at": "2026-10-26T23:59:59+09:00", "duration_seconds": 2405, "html_url": "https://learning.hanyang.ac.kr/courses/.../modules/items/8570001" } ],
+  "lectures_checked_at": "2026-10-16T12:00:00+09:00"
 }
 ```
 
@@ -1286,6 +1297,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 - `syllabus_items[].calendar_registered`는 그 일정이 **캘린더에 실제로 들어갔는지**다(과제 목록의 같은 이름 칸과 같은 기준: `external_event_id`가 있는 행). 화면은 이 값으로 "캘린더에 넣기" 버튼을 숨긴다 — 자리만 잡고 넣다 만 일정은 false여서 다시 넣을 수 있다. 추출 결과(8장)에서는 아직 확정하지 않은 일정이라 늘 false다
 - `materials[].status`는 요약 상태다. 파일만 올리고 아직 요약하지 않았으면 `pending`이다
 - `course.syllabus_id`는 그 과목 계획서의 번호다(없으면 null, `has_syllabus`와 같은 뜻이다). 뽑아 두고 **확인하지 않은 일정**(`is_confirmed` false)이 남았을 때, 계획서를 다시 올리지 않고 이 번호로 `POST /syllabi/{id}/confirm`을 부르라고 준다
+- `lectures`는 이 과목의 **주차학습 강의와 내 상태**다(F-55, 11/24). 주차학습 응답 순서(주차 순)이고, 읽은 적이 없거나 강의가 없는 과목은 빈 목록이다. `kind`는 `video`(녹화)·`live`(실시간)·`material`(출석 대상 학습자료), `status`는 `done`(다 들었다)·`todo`(출석 기간 안인데 아직)·`late`(지각 인정 기간)·`missed`(출석 기간이 지났다)·`upcoming`(아직 열리지 않았다)·`unknown`(LearningX가 완료 여부를 모른다고 했다)이다. 상태는 저장하지 않고 응답할 때 `period`·마감 시각으로 정한다 — LearningX가 준 기간을 먼저 믿고, 없으면 `due_at`·`late_at`·`unlock_at`으로 가늠한다. `attendance`는 LearningX 출결 값 그대로다. `id`는 Canvas 주차 항목 번호이고 그 번호가 없으면 `lx:` + LearningX 번호다. `html_url`은 'LMS에서 듣기'(과목 주소 + 주차 항목 번호)이고 번호가 없으면 null이다 — 학생이 열어야 출석이 인정된다. `lectures_checked_at`은 이 과목 강의를 LearningX에서 읽은 때다(없으면 null)
 
 ### `GET /lms/assignments`
 

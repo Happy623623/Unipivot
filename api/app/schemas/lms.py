@@ -24,6 +24,7 @@ SAVE_TOOL = "save_lms_sync"
 ATTACHMENT_TOOL = "save_lms_attachments"  # 공지 첨부를 학생 문서함에 받는 단계(F-54)
 # 기회성 공지 → 공고(F-53 1부). 이 한 줄 아래 요건 추출이 자식 실행으로 돈다(실행 트리 O1)
 EXTRACT_TOOL = "extract_announcement"
+LECTURE_TOOL = "fetch_learningx_lectures"  # 주차학습 강의를 들었는지 읽는 단계(11/24)
 
 
 class ConnectRequest(BaseModel):
@@ -64,6 +65,8 @@ class CourseItem(BaseModel):
     open_assignments: int
     new_materials: int
     next_due: NextDue | None
+    # 아직 안 들은 주차학습 강의(11/24) — 출석·지각 인정 기간 안인 것만 센다. 주차학습을 읽은 적이 없으면 0이다
+    lectures_todo: int = 0
 
 
 class CourseList(BaseModel):
@@ -282,6 +285,30 @@ class CourseMaterial(BaseModel):
     status: MaterialStatus
 
 
+# 주차학습 강의(11/24, app/lms/lectures.py). video 녹화 강의 · live 실시간 수업 · material 출석 대상 학습자료
+LectureKind = Literal["video", "live", "material"]
+# done 다 들었다 · todo 출석 기간 안인데 아직 · late 지각 인정 기간 · missed 출석 기간이 지났다 ·
+# upcoming 아직 열리지 않았다 · unknown LearningX가 완료 여부를 알 수 없다고 했다
+LectureStatus = Literal["done", "todo", "late", "missed", "upcoming", "unknown"]
+
+
+class CourseLecture(BaseModel):
+    """주차학습 강의 하나와 내 상태(11/24). LearningX에서 읽은 값이라 읽은 때(`lectures_checked_at`) 기준이다."""
+
+    id: str  # Canvas 주차 항목 번호(그 번호가 없으면 'lx:' + LearningX 항목 번호)
+    module_name: str
+    title: str
+    kind: LectureKind
+    status: LectureStatus
+    attendance: str | None  # LearningX 출결 값 그대로(attendance·late·absent·early_leave·none)
+    unlock_at: datetime | None  # 열리는 때(KST)
+    due_at: datetime | None  # 출석 인정 마감(KST)
+    late_at: datetime | None  # 지각 인정 마감(KST)
+    duration_seconds: int | None
+    # LMS에서 듣기(주차 항목 주소). 학생이 열면 그때 LearningX가 시청으로 잡는다 — 서비스는 열지 않는다
+    html_url: str | None
+
+
 class CourseDetail(BaseModel):
     course: CourseHeader
     assignments: list[CourseAssignment]
@@ -289,3 +316,6 @@ class CourseDetail(BaseModel):
     announcements: list[CourseAnnouncement]
     syllabus_items: list[CourseSyllabusItem]
     materials: list[CourseMaterial]
+    # 주차학습 강의(11/24). 주차 순이다. 읽은 적이 없거나 강의가 없는 과목은 빈 목록이다
+    lectures: list[CourseLecture] = Field(default_factory=list)
+    lectures_checked_at: datetime | None = None  # 이 과목 강의를 LearningX에서 읽은 때(KST)

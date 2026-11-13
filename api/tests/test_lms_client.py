@@ -30,6 +30,8 @@ def test_only_the_recorded_paths_are_allowed() -> None:
         "/api/v1/courses/214023/modules",
         "/api/v1/courses/214023/modules/2749846/items",
         "/api/v1/courses/214023/discussion_topics",
+        "/api/v1/courses/214023/tabs",  # 주차학습 도구 찾기(11/24)
+        "/api/v1/courses/214023/external_tools/sessionless_launch",
     ):
         assert allowed(path), path
     for path in (
@@ -40,6 +42,10 @@ def test_only_the_recorded_paths_are_allowed() -> None:
         "/api/v1/accounts",
         "/login/oauth2/token",
         "/api/v1/courses/abc/assignments",  # 번호가 아닌 과목
+        "/api/v1/courses/214023/external_tools",  # 도구 목록·설정(쓰지 않는다)
+        "/api/v1/courses/214023/external_tools/140",
+        # 주차학습 API는 LearningX의 표로만 부른다. 학생 토큰으로 부르는 경로가 아니다
+        "/learningx/api/v1/courses/214023/modules",
     ):
         assert not allowed(path), path
 
