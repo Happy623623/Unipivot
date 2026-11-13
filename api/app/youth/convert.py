@@ -125,6 +125,10 @@ CHILD_MAX = 14  # 지원 연령 상한이 이 나이 이하면 자녀 나이로 
 OPEN_MIN = 25  # 상한 없이 이 나이 이상만 적은 지원 연령은 믿지 않는다
 UNIVERSITY = frozenset({"0049005", "0049006", "0049007", "0049008"})
 GRADUATE = ["master", "doctoral", "integrated"]  # 석·박사(degree_program)
+UNDERGRADUATE = ["bachelor"]  # 학부(degree_program)
+_IN_COLLEGE = frozenset({"0049005", "0049006"})  # 대학 재학·대졸 예정: 학부 과정에 있다
+# 대학 졸업·석·박사는 대학원생도 받는다. 기타는 무엇을 받는지 모른다
+_BEYOND_COLLEGE = frozenset({"0049007", "0049008", "0049009"})
 _NAMES = {
     "mrgSttsCd": MARRIAGE,
     "jobCd": JOB,
@@ -200,6 +204,7 @@ def convert(policy: Mapping[str, Any], today: date, table: RegionTable) -> Polic
         _age(policy),
         _region(codes, registered, table),
         _school(policy),
+        _undergraduate(policy),
         _major(policy),
         _special(policy),
         _job(policy),
@@ -303,19 +308,27 @@ def _region(codes: list[str], registered: date | None, table: RegionTable) -> li
     return found
 
 
-def _school(policy: Mapping[str, Any]) -> list[Condition]:
-    """학력(최종 학력). 대학 재학은 재학·휴학·졸업유예, 대학 졸업은 졸업이거나 대학원 과정(대학을 마쳤다),
-    석·박사는 대학원 과정이다. 대졸 예정·기타는 원문 확인이다. 대학 학력을 고르고 대졸 예정은 고르지 않았는데
-    글에 졸업예정자가 있으면 대졸 예정도 고른 것으로 본다. 고교 학력만 고른 정책은 대학생에게 맞는지 몰라
-    원문 확인이다."""
+def _school_choice(policy: Mapping[str, Any]) -> tuple[list[str], str]:
+    """학력 칸에서 고른 코드와 근거. 대학 학력을 고르고 대졸 예정은 고르지 않았는데 글에 졸업예정자가 있으면
+    대졸 예정도 고른 것으로 본다."""
     chosen = _choices(policy, "schoolCd")
     if not chosen:
-        return []
+        return [], ""
     evidence = "온통청년 학력 요건: " + "·".join(SCHOOL.get(code, code) for code in chosen)
-    university = bool(UNIVERSITY & set(chosen))
-    if university and "0049006" not in chosen and _mentions(policy, _GRADUATING):
+    if UNIVERSITY & set(chosen) and "0049006" not in chosen and _mentions(policy, _GRADUATING):
         chosen = [*chosen, "0049006"]
         evidence += "(글에 졸업예정자가 있음)"
+    return chosen, evidence
+
+
+def _school(policy: Mapping[str, Any]) -> list[Condition]:
+    """학력(최종 학력). 대학 재학은 재학·휴학·졸업유예, 대학 졸업은 졸업이거나 대학원 과정(대학을 마쳤다),
+    석·박사는 대학원 과정이다. 대졸 예정·기타는 원문 확인이다. 고교 학력만 고른 정책은 대학생에게 맞는지 몰라
+    원문 확인이다. 대학 재학만 고른 정책의 학위과정 묶음은 `_undergraduate`가 따로 만든다."""
+    chosen, evidence = _school_choice(policy)
+    if not chosen:
+        return []
+    university = bool(UNIVERSITY & set(chosen))
     found: list[Condition] = []
     statuses = []
     if "0049005" in chosen:
@@ -335,6 +348,20 @@ def _school(policy: Mapping[str, Any]) -> list[Condition]:
             _other("학력: " + "·".join(SCHOOL.get(code, code) for code in unsure), evidence)
         )
     return found
+
+
+def _undergraduate(policy: Mapping[str, Any]) -> list[Condition]:
+    """대학 재학·대졸 예정만 고른 정책은 학부 과정 학생만이다 — 묶음 하나를 더한다(학력 칸과 "그리고").
+
+    학력 묶음은 학적(재학·휴학·졸업유예)만 봐서, 대학원에 재학 중인 학생도 "재학"으로 맞았다(PRD 14장). 대학
+    졸업·석·박사를 함께 골랐으면 대학원생도 받는 정책이라 더하지 않는다. 기타·모르는 코드가 섞여도 무엇을
+    받는지 몰라 더하지 않는다(학력 묶음의 원문 확인 조건이 그대로 있다). 학위과정을 비워 둔 학생에게는 정보
+    필요로 학위과정을 묻는다."""
+    chosen, evidence = _school_choice(policy)
+    picked = set(chosen)
+    if not picked & _IN_COLLEGE or picked & _BEYOND_COLLEGE or not picked <= set(SCHOOL):
+        return []
+    return [Condition("degree_program", "in", UNDERGRADUATE, None, evidence)]
 
 
 def _major(policy: Mapping[str, Any]) -> list[Condition]:
