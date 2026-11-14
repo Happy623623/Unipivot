@@ -43,7 +43,7 @@
 
     # 1. DB — Supabase 프로젝트에 마이그레이션을 적용한다
     npx supabase link --project-ref <ref>
-    npx supabase db push
+    npx supabase db push --remote   # Supabase CLI v3부터 --remote가 없으면 로컬 DB로 간다
 
     # 2. API
     cd api

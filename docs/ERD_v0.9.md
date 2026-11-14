@@ -869,7 +869,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | 19 | `supabase/migrations/20261123000000_lms_module_item_removed.sql` | lms_module_items.removed_at(LearningX에서 사라진 주차 항목, 11/23). 여러 번 돌려도 같다 |
 | 20 | `supabase/migrations/20261124000000_lms_lecture_progress.sql` | lms_lecture_progress(주차학습 강의와 내 수강 상태 — kind 검사 제약, 과목 색인, 본인 행 읽기 정책)·lms_connections.lectures_checked_at(11/24). 여러 번 돌려도 같다 |
 
-적용은 `supabase link` 뒤 `supabase db push`로 한다.
+적용은 `supabase link` 뒤 `supabase db push --remote`로 한다(Supabase CLI v3부터 `--remote`가 없으면 로컬 Docker DB로 간다).
 
 CI는 마이그레이션을 모두 적용한 뒤 스키마 점검을 돌린다.
 
