@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, connectLms, errorMessage } from "@/api/client";
 import Button from "@/components/Button";
+import LmsTokenGuide from "@/components/LmsTokenGuide";
 import Modal from "@/components/Modal";
 import Toast from "@/components/Toast";
 import useLateOutcome, { lateFailure } from "@/lib/useLateOutcome";
@@ -107,16 +108,10 @@ export default function LmsConnectModal({
             <p className="mt-2 rounded-[10px] bg-[#eef2ff] p-3 text-[13px] leading-6 text-[#344054]">
               LearningX &gt; 계정 &gt; 설정 &gt; 승인된 통합 &gt; + 새 액세스 토큰
             </p>
-            <div className="mt-4 grid grid-cols-3 gap-2">
-              {[1, 2, 3].map((item) => (
-                <div
-                  key={item}
-                  className="flex aspect-[4/3] items-center justify-center rounded-[10px] bg-[#e5e7eb] text-[12px] font-semibold text-[#667085]"
-                >
-                  안내 {item}
-                </div>
-              ))}
-            </div>
+            <LmsTokenGuide />
+            <p className="mt-3 text-[12px] leading-5 text-[#667085]">
+              만료일이 지나면 연결이 끊겨요. 그때 새 토큰을 만들어 다시 연결하면 돼요.
+            </p>
             <div className="mt-6 flex justify-end">
               <Button onClick={() => setStep(2)}>토큰 입력하기</Button>
             </div>
