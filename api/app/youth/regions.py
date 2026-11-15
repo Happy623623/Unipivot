@@ -7,7 +7,9 @@ zipCd는 법정동 코드 앞 5자리(시군구) 목록이다. 코드표는 regi
 - 시도의 끝 지역을 모두 고르면 시도 이름("경기도"), 일부면 시군구 이름("경기도 안산시 단원구")이다.
   한 시의 구를 모두 고르면 시 이름으로 줄인다("경기도 안산시").
 - 판정할 수 없는 곳은 같은 묶음의 기타 조건(원문 확인)으로 둔다. 그곳에 사는 학생은 지원 어려움이 아니라
-  원문 확인 필요가 된다.
+  원문 확인 필요가 된다. 그곳을 모두 판정 엔진이 읽는 이름으로 옮길 수 있으면 기타 조건 값에 regions로 함께
+  적어, 그 어디에도 살지 않는 학생은 지원 어려움이 된다(판정엔진_규칙.md 4-7, 11/15). 옮길 수 없는 곳(모르는
+  코드, 엔진이 모르는 시도, 오래전에 없어진 코드)이 하나라도 있으면 적지 않는다.
   - 판정 엔진이 모르는 시도(2026-07 출범한 전남광주통합특별시). 네 곳 이상이면 "전남광주통합특별시(광양시
     빼고)", "전남광주통합특별시 중 12곳"처럼 줄여 쓴다
   - 없어진 코드(2026-07 개편 전 인천 중구·동구·서구 등)와 코드표에 없는 코드
@@ -24,7 +26,7 @@ from dataclasses import dataclass
 from datetime import date
 from functools import cache
 
-from app.eligibility.regions import normalize_sido
+from app.eligibility.regions import current_sigungu, normalize_sido, parse_region
 from app.youth.region_codes import ROWS
 
 CAPITAL = ("11", "28", "41")  # 서울·인천·경기(코드 앞 2자리)
@@ -39,6 +41,8 @@ _FEW = 3  # 모르는 시도에서 고른 곳(빠진 곳)이 이만큼 이하면
 class RegionCondition:
     values: tuple[str, ...]  # 거주지역 in 값(판정할 수 있는 이름)
     uncertain: tuple[str, ...]  # 판정할 수 없는 곳. 기타 조건(원문 확인)이 된다
+    # 판정할 수 없는 곳을 판정 엔진이 읽는 지역 이름으로 옮긴 것. 모두 옮길 수 있을 때만 채운다
+    regions: tuple[str, ...] = ()
 
 
 class RegionTable:
@@ -60,6 +64,8 @@ class RegionTable:
         for code in self.leaves:
             by_sido.setdefault(code[:2], set()).add(code)
         self.by_sido = {sido: frozenset(codes) for sido, codes in sorted(by_sido.items())}
+        # 지금 있는 지역의 (시도, 시군구). 없어진 코드의 이름이 지금도 같은 곳을 가리키는지 본다
+        self._current_places = {parse_region(self.names[code]) for code in self.current} - {None}
 
     def covers_capital(self, codes: Iterable[str]) -> bool:
         """서울·인천·경기를 한 곳이라도 고른 정책(전국 포함). 없어진 코드도 센다."""
@@ -84,6 +90,8 @@ class RegionTable:
             return None
         values: list[str] = []
         uncertain: list[str] = []
+        regions: list[str] = []  # uncertain을 판정 엔진이 읽는 이름으로
+        exact = True  # uncertain을 모두 regions로 옮길 수 있다
         stale = [code for code in given if code in self.names and code not in self.current]
         for leaves in self.by_sido.values():
             hit = covered & leaves
@@ -93,18 +101,39 @@ class RegionTable:
             sido_name = self.names[min(leaves)].split()[0]
             if not normalize_sido(sido_name):
                 uncertain.append(self._unknown_sido(sido_name, hit | near, leaves))
+                exact = False
                 continue
             if hit | near == leaves:
                 values.append(sido_name)
                 continue
             values.extend(self._collapsed(hit))
-            uncertain.extend(self.names[code] for code in sorted(near))
+            places = [self.names[code] for code in sorted(near)]
             missing = leaves - hit - near
             if len(missing) <= _NEAR_MISSING and len(hit) >= _NEAR_COVERED:
-                uncertain.extend(self.names[code] for code in sorted(missing))
-        uncertain.extend(f"{self.names[code]}(없어진 지역)" for code in stale)
-        uncertain.extend(f"지역 코드 {code}" for code in given if code not in self.names)
-        return RegionCondition(tuple(dict.fromkeys(values)), tuple(dict.fromkeys(uncertain)))
+                places.extend(self.names[code] for code in sorted(missing))
+            uncertain.extend(places)
+            regions.extend(places)
+        for code in stale:
+            uncertain.append(f"{self.names[code]}(없어진 지역)")
+            if self._still_named(self.names[code]):
+                regions.append(self.names[code])
+            else:
+                exact = False
+        unknown = [code for code in given if code not in self.names]
+        uncertain.extend(f"지역 코드 {code}" for code in unknown)
+        return RegionCondition(
+            tuple(dict.fromkeys(values)),
+            tuple(dict.fromkeys(uncertain)),
+            tuple(dict.fromkeys(regions)) if exact and not unknown else (),
+        )
+
+    def _still_named(self, name: str) -> bool:
+        """없어진 코드의 이름을 판정 엔진이 지금 지역과 견줄 수 있는지. 지금도 같은 이름인 곳(시도 통합으로
+        코드만 바뀐 전라남도·광주광역시)과 2026-07 인천 개편 전 구(엔진이 지금 구로 푼다)만 된다."""
+        place = parse_region(name)
+        if place is None:
+            return False
+        return place in self._current_places or current_sigungu(*place) is not None
 
     def _unknown_sido(self, sido_name: str, chosen: set[str], leaves: frozenset[str]) -> str:
         """판정 엔진이 모르는 시도에서 고른 곳(원문 확인). 여러 곳이면 이름을 다 늘어놓지 않고 줄인다."""

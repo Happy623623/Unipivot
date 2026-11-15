@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-Verdict = Literal["match", "no", "less_specific", "unparseable"]
+# partial: 요건이 옛 구 이름이고 내 구는 그 땅을 일부만 넘겨받은 구다(2026-07 인천 개편) — 원문 확인
+Verdict = Literal["match", "no", "less_specific", "unparseable", "partial"]
 
 #: 시도 16곳. 2026-07-01에 광주광역시와 전라남도가 전남광주통합특별시로 합쳐졌다.
 #: 통합 전 이름("광주광역시"·"전라남도")은 별칭으로 받아 통합 이름으로 정규화한다. 통합 전에 올라온
@@ -42,6 +43,16 @@ SIDO_ALIASES: dict[str, str] = {
     alias: name for name, aliases in _SIDO.items() for alias in (name, *aliases)
 }
 _WHOLE_AREA = {"전체", "전역", "일원"}
+
+#: 2026-07-01 인천 개편으로 없어진 구 → (그 땅을 모두 넘겨받은 지금 구, 일부만 넘겨받은 지금 구).
+#: 옛 중구는 영종구(섬)와 제물포구 일부(내륙), 옛 동구는 제물포구 일부, 옛 서구는 서해구와 검단구다.
+#: 옛 이름으로 저장한 프로필(웹 목록이 바뀌기 전)과 옛 이름이 적힌 요건(7월 전 공고, 없어진 지역 코드)이 남아 있다.
+#: 이름은 끝의 시·군·구를 뗀 꼴로 찾는다("중구" → "중").
+_RENAMED: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] = {
+    ("인천광역시", "중"): (("영종구",), ("제물포구",)),
+    ("인천광역시", "동"): ((), ("제물포구",)),
+    ("인천광역시", "서"): (("서해구", "검단구"), ()),
+}
 
 
 def normalize_sido(name: str | None) -> str | None:
@@ -93,7 +104,27 @@ def region_verdict(entry: tuple[str, str | None] | None, sido: str, sigungu: str
         return "match"  # "안산시"는 "안산시 단원구"를 포함한다
     if len(have) < len(wanted) and wanted[: len(have)] == have:
         return "less_specific"  # 요건은 구 단위(안산시 단원구), 프로필은 시 단위(안산시)
+    renamed = _RENAMED.get((sido, wanted[0])) if len(wanted) == 1 and len(have) == 1 else None
+    if renamed is not None:  # 요건은 옛 구 이름, 프로필은 지금 구 이름
+        whole, part = renamed
+        if have[0] in {_core(name) for name in whole}:
+            return "match"
+        if have[0] in {_core(name) for name in part}:
+            return "partial"
     return "no"
+
+
+def current_sigungu(sido: str, sigungu: str | None) -> tuple[str, ...] | None:
+    """프로필 시군구가 2026-07 인천 개편으로 없어진 옛 구면 그 땅이 지금 속한 구들, 아니면 None.
+
+    옛 동구는 제물포구 하나뿐이고, 옛 중구는 제물포구·영종구, 옛 서구는 서해구·검단구 중 하나다."""
+    if sigungu is None or len(sigungu.split()) != 1:
+        return None
+    renamed = _RENAMED.get((sido, _core(sigungu)))
+    if renamed is None:
+        return None
+    whole, part = renamed
+    return (*whole, *part)
 
 
 def _core(token: str) -> str:

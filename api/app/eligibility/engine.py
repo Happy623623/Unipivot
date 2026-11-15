@@ -39,6 +39,7 @@ from app.eligibility.models import (
     index_departments,
 )
 from app.eligibility.regions import (
+    current_sigungu,
     normalize_sido,
     normalize_sigungu,
     parse_region,
@@ -143,7 +144,7 @@ def evaluate_condition(
 ) -> ConditionResult:
     """조건 하나. 우선순위: other → 모호 표시 → 값 모양 → 기준 다름 → 프로필 없음 → 비교."""
     if req.field == "other":
-        result = _Eval("unknown", "unsupported_field")
+        result = _other(req, profile, basis_date, departments)
     else:
         try:
             result = _compile(req)(profile, basis_date, departments)
@@ -175,6 +176,14 @@ def requirement_problem(req: Requirement) -> str | None:
         bad = [text for text in _string_list(req, "거주지역") if parse_region(text) is None]
         if bad:
             return f'거주지역 값은 시도로 시작해야 한다(예: "경기도 안산시"): {bad}'
+    if req.field == "other" and isinstance(req.value, Mapping) and "regions" in req.value:
+        regions = req.value["regions"]
+        if (
+            not isinstance(regions, list)
+            or not regions
+            or not all(isinstance(item, str) and parse_region(item) for item in regions)
+        ):
+            return 'other의 regions는 시도로 시작하는 지역 이름 목록이어야 한다(예: ["인천광역시 영종구"])'
     return None
 
 
@@ -294,7 +303,7 @@ def _set_result(verdicts: list[str], positive: bool, shown: Any) -> _Eval:
     """in·eq(positive)와 not_in·neq. 하나라도 일치하면 확정하고, 아니면 모를 이유가 있는지 본다."""
     if "match" in verdicts:
         return _Eval("pass" if positive else "fail", user_value=shown)
-    if "unparseable" in verdicts:
+    if "unparseable" in verdicts or "partial" in verdicts:
         return _Eval("unknown", "ambiguous", shown)
     if "less_specific" in verdicts:
         return _Eval("unknown", "missing_profile", shown)
@@ -515,9 +524,52 @@ def _region(req: Requirement) -> Evaluator:
             return _Eval("unknown", "basis_mismatch", shown)  # 실거주·출신 고교·보호자 주소
         if sido is None:
             return _Eval("unknown", "missing_profile", shown)
-        return _set_result([region_verdict(e, sido, sigungu) for e in entries], positive, shown)
+        verdicts = [region_verdict(e, sido, sigungu) for e in entries]
+        renamed = current_sigungu(sido, sigungu)
+        if renamed is None or "match" in verdicts:
+            return _set_result(verdicts, positive, shown)
+        # 프로필이 2026-07 인천 개편 전 구 이름이다. 그 땅이 지금 속한 구마다 판정해서 모두 같으면 그 결과,
+        # 갈리면 거주지역을 다시 고르게 묻는다(정보 필요) — 웹 목록에는 지금 이름만 있다.
+        # 옛 구 이름끼리는 이름으로 비교한 결과를 그대로 쓴다(옛 구들은 서로 겹치지 않았다)
+        results = [
+            _set_result(
+                [
+                    verdict if _old_name(entry) else region_verdict(entry, sido, name)
+                    for entry, verdict in zip(entries, verdicts, strict=True)
+                ],
+                positive,
+                shown,
+            )
+            for name in renamed
+        ]
+        if all((r.outcome, r.reason) == (results[0].outcome, results[0].reason) for r in results):
+            return results[0]
+        return _Eval("unknown", "missing_profile", shown)
 
     return evaluate
+
+
+def _old_name(entry: tuple[str, str | None] | None) -> bool:
+    """요건 값이 2026-07 인천 개편으로 없어진 구 이름인지."""
+    return entry is not None and current_sigungu(*entry) is not None
+
+
+def _other(
+    req: Requirement, profile: Profile, basis_date: date, departments: Mapping[str, Department]
+) -> _Eval:
+    """기타 조건은 늘 모름이다(4-7). 다만 value에 regions가 있으면 그 지역에 사는 학생에게만 해당하는 조건이라
+    (청년정책의 "거주지역 원문 확인", 11장), 그 어디에도 살지 않는 것이 확실한 학생에게는 불충족이다."""
+    regions = req.value.get("regions") if isinstance(req.value, Mapping) else None
+    if not regions or req.is_ambiguous:
+        return _Eval("unknown", "unsupported_field")
+    place = replace(req, field="region", operator="in", value=regions, basis="unspecified")
+    try:
+        found = _region(place)(profile, basis_date, departments)
+    except RequirementError:
+        return _Eval("unknown", "unsupported_field")
+    if found.outcome == "fail":
+        return _Eval("fail", user_value=found.user_value)
+    return _Eval("unknown", "unsupported_field", found.user_value)
 
 
 _LEVEL_ATTRIBUTE = {"department": "name", "college": "college", "field_group": "field_group"}

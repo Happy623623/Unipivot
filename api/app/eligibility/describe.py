@@ -98,7 +98,9 @@ def user_value_text(
     """판정표 '내 값' 칸. 프로필이 비어 있으면 None."""
     field = req.field
     if field == "other":
-        return None
+        if review_regions(req) is None:
+            return None
+        field = "region"  # 지역을 적은 기타 조건은 내 거주지역을 보여 준다
     if field == "age":
         if profile.birth_date is None or result.user_value is None:
             return None
@@ -107,10 +109,7 @@ def user_value_text(
             text += f" · 병역 {profile.military_service_months}개월"
         return text
     if field == "region":
-        sido = normalize_sido(profile.region_sido)
-        sigungu = normalize_sigungu(profile.region_sigungu, sido)
-        parts = [part for part in (sido or profile.region_sido, sigungu) if part]
-        return " ".join(parts) or None
+        return _region_text(profile)
     if field == "department":
         if profile.department is None:
             return None
@@ -149,7 +148,14 @@ def reason_text(
     if judgment.status == "ineligible":
         failed = [clause.clause_no for clause in judgment.clauses if clause.outcome == "fail"]
         members = [c for c in judgment.conditions if c.clause_no == failed[0]]
-        if len(members) == 1:
+        places = _clause_regions([by_id[c.requirement_id] for c in members])
+        if places is not None:
+            # 청년정책 거주지역 묶음(지역 조건과 지역을 적은 기타 조건)은 거주지역 하나로 쓴다
+            text = f"{FIELD_LABELS['region']}: {', '.join(places)}"
+            current = _region_text(profile)
+            if current:
+                text += f" (현재 {current})"
+        elif len(members) == 1:
             req = by_id[members[0].requirement_id]
             text = f"{label(req)}: {condition_text(req)}"
             current = user_value_text(req, members[0], profile, departments)
@@ -209,6 +215,41 @@ def clause_rows(judgment: Judgment) -> list[dict[str, Any]]:
         {"clause_no": c.clause_no, "outcome": c.outcome, "condition_count": c.condition_count}
         for c in judgment.clauses
     ]
+
+
+def review_regions(req: Requirement) -> list[str] | None:
+    """지역을 적은 기타 조건(청년정책 "거주지역 원문 확인")의 지역 이름. 아니면 None."""
+    if req.field != "other" or not isinstance(req.value, Mapping):
+        return None
+    regions = req.value.get("regions")
+    if isinstance(regions, list) and regions and all(isinstance(item, str) for item in regions):
+        return regions
+    return None
+
+
+def _clause_regions(members: Sequence[Requirement]) -> list[str] | None:
+    """묶음이 지역 조건과 지역을 적은 기타 조건만으로 되어 있으면 지역 이름 전부, 아니면 None."""
+    if not any(review_regions(req) for req in members):
+        return None
+    names: list[str] = []
+    for req in members:
+        found = review_regions(req)
+        if found is None:
+            positive = req.field == "region" and req.operator in ("eq", "in")
+            if not positive or (req.basis or "unspecified") not in COMPARABLE_REGION_BASES:
+                return None
+            found = [req.value] if req.operator == "eq" else req.value
+            if not isinstance(found, list) or not all(isinstance(item, str) for item in found):
+                return None
+        names.extend(found)
+    return list(dict.fromkeys(names))
+
+
+def _region_text(profile: Profile) -> str | None:
+    sido = normalize_sido(profile.region_sido)
+    sigungu = normalize_sigungu(profile.region_sigungu, sido)
+    parts = [part for part in (sido or profile.region_sido, sigungu) if part]
+    return " ".join(parts) or None
 
 
 def _input_label(field: str, profile: Profile) -> str:
