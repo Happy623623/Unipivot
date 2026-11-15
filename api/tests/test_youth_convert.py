@@ -506,3 +506,68 @@ def test_content_hash() -> None:
     assert record(inqCnt="99999").content_hash == first.content_hash
     assert record(plcyNm="새 이름").content_hash != first.content_hash
     assert record(sprtTrgtMaxAge="39").content_hash != first.content_hash
+
+
+@pytest.mark.parametrize(
+    ("note", "cap"),
+    [
+        ("중위소득 150% 이하", 150),
+        ("기준 중위소득 150% 이하", 150),
+        ("기준 중위소득 65% 이하", 65),
+        ("건강보험료 부과액 기준 중위소득 150% 이하", 150),
+        ("(소득) 건강보험료 부과액 기준 중위소득 150% 이하", 150),
+        ("(소득기준) 기준 중위소득 120% 이하 가구", 120),
+        ("가구당 건강보험료 부과액 기준 중위소득 150% 이하", 150),
+        ("기준중위소득 120%이하 가구 (25.7. 건강보험료 기준)", 120),
+        ("소득 : 기준 중위소득 100% 이내", 100),  # 칸 이름을 앞에 쓴 글
+        # 아래는 다른 말이 붙어 원문 확인이다
+        ("기준 중위소득 150% 이하(1인 기준 20%p 추가 가산)", None),
+        ("(청년독립가구) 기준 중위소득 60%이하 (원가구) 기준 중위소득 100% 이하", None),
+        ("건강보험료 중위소득 140% 미만", None),  # 미만은 이하로 바꾸지 않는다
+        ("기본중위소득 150% 이내", None),
+        ("건강보험료 소득판정 기준 중위소득 150%", None),
+        ("중위소득 100% 이하 가구의 청년", None),
+        ("기준 중위소득 500% 이하", None),  # 믿기 어려운 값
+        ("무관,소득별 본인부담금 차등", None),
+    ],
+)
+def test_median_income_note(note: str, cap: int | None) -> None:
+    """소득 덧글이 기준 중위소득 상한 하나뿐이면 기준 중위소득(median_income_pct)과 비교한다(11/15).
+
+    학교 공지에서 요건 추출(모델)이 같은 글을 median_income_pct로 내는 것과 맞춘다(판정엔진_규칙.md 4-5)."""
+    found = record(earnCndSeCd="0043003", earnEtcCn=note).requirements
+    if cap is None:
+        assert [(d.field, d.value["text"].startswith("소득: ")) for d in found] == [("other", True)]
+        return
+    assert [(d.clause_no, d.field, d.operator, d.value) for d in found] == [
+        (1, "median_income_pct", "lte", cap)
+    ]
+    assert found[0].evidence_text == f"온통청년 소득: {note.removeprefix('소득 : ')}"
+    # 소득 구분이 연소득이어도 금액이 없으면 같고, 금액이 있으면 두 기준이라 원문 확인이다
+    yearly = record(earnCndSeCd="0043002", earnEtcCn=note).requirements
+    assert [(d.field, d.value) for d in yearly] == [("median_income_pct", cap)]
+    both = record(earnCndSeCd="0043002", earnMaxAmt="5000", earnEtcCn=note).requirements
+    assert [d.field for d in both] == ["other"]
+
+
+def test_median_income_judgment() -> None:
+    """기준 중위소득을 넣은 학생은 판정되고, 비운 학생에게는 기준 중위소득을 묻는다(소득 동의를 먼저 받는다)."""
+    found = record(earnCndSeCd="0043003", earnEtcCn="기준 중위소득 150% 이하").requirements
+    requirements = [
+        Requirement(
+            id=str(n),
+            clause_no=d.clause_no,
+            field=d.field,
+            operator=d.operator,
+            value=d.value,
+            basis=d.basis,
+        )
+        for n, d in enumerate(found)
+    ]
+    on = date(2026, 11, 15)
+    low = check_eligibility(requirements, Profile(median_income_pct=120), basis_date=on)
+    high = check_eligibility(requirements, Profile(median_income_pct=160), basis_date=on)
+    empty = check_eligibility(requirements, Profile(), basis_date=on)
+    assert (low.status, high.status) == ("eligible", "ineligible")
+    assert high.reason_text == "기준 중위소득: 150% 이하 (현재 160%)"
+    assert (empty.display_status, empty.missing_fields) == ("missing_info", ("median_income_pct",))

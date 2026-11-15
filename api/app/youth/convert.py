@@ -45,6 +45,15 @@ _INCOME_LABEL = re.compile(
 )  # "소득 : 기준 중위소득 60% 이하"처럼 칸 이름을 앞에 쓴 글
 # 연소득 금액이 본인 소득이 아니라 다른 기준을 가리키는 덧글. 이런 글이 붙으면 금액 비교를 하지 않는다
 _OTHER_BASIS = re.compile(r"가구|중위소득|합산|부모|세대|배우자")
+# 소득 덧글이 기준 중위소득 상한 하나뿐인 글("기준 중위소득 150% 이하", "(소득) 건강보험료 부과액 기준 중위소득
+# 150% 이하", "기준중위소득 120%이하 가구 (25.7. 건강보험료 기준)"). 다른 말(가산, 두 기준, 미만, 오타)이 붙으면
+# 맞지 않아 원문 확인으로 둔다
+_MEDIAN_CAP = re.compile(
+    r"(?:\((?:소득|소득기준)\)\s*)?(?:가구당\s*)?(?:건강보험료\s*(?:부과액\s*)?(?:기준\s*)?)?"
+    r"(?:기준\s*)?중위\s*소득\s*(\d{2,3})\s*%\s*(?:이하|이내)(?:\s*가구)?"
+    r"(?:\s*\((?:\d{2}\.\s*\d{1,2}\.\s*)?건강보험료\s*기준\))?"
+)
+_MEDIAN_RANGE = range(10, 301)  # 기준 중위소득 %로 믿는 범위
 JOB_STATUS = {  # 온통청년 jobCd → 프로필 job_status (기타·제한없음은 뺀다)
     "0013001": "employed",
     "0013002": "self_employed",
@@ -423,11 +432,16 @@ def _marriage(policy: Mapping[str, Any]) -> list[Condition]:
 
 
 def _income(policy: Mapping[str, Any]) -> list[Condition]:
-    """소득. 연소득 금액(만 원)은 프로필에 없고, 기타는 글(earnEtcCn)이라 둘 다 원문 확인이다."""
+    """소득. 연소득 금액(만 원)은 프로필 연 소득(annual_income)과 비교하고, 덧글(earnEtcCn)이 기준 중위소득 상한
+    하나뿐이면 기준 중위소득(median_income_pct)과 비교한다(요건 추출과 같은 항목). 나머지 글은 원문 확인이다."""
     code = _text(policy.get("earnCndSeCd"))
     if code in (None, INCOME_ANY):
         return []
     note = _meaningful(_INCOME_LABEL.sub("", _text(policy.get("earnEtcCn")) or ""))
+    median = _median_cap(note)
+    has_amount = _whole(policy.get("earnMinAmt")) > 1 or _whole(policy.get("earnMaxAmt")) > 0
+    if median is not None and not (code == INCOME_YEARLY and has_amount):
+        return [Condition("median_income_pct", "lte", median, None, f"온통청년 소득: {note}")]
     if code == INCOME_YEARLY:
         low, high = _whole(policy.get("earnMinAmt")), _whole(policy.get("earnMaxAmt"))
         parts = [f"{low:,}만 원 이상"] if low > 1 else []
@@ -447,6 +461,14 @@ def _income(policy: Mapping[str, Any]) -> list[Condition]:
     else:
         text = f"소득: {note}" if note else "소득 조건이 있음"
     return [_other(text, f"온통청년 {text}")]
+
+
+def _median_cap(note: str | None) -> int | None:
+    """소득 덧글이 기준 중위소득 상한 하나뿐이면 그 %(이하·이내). 아니면 None."""
+    found = _MEDIAN_CAP.fullmatch(note.strip()) if note else None
+    if found is None or int(found.group(1)) not in _MEDIAN_RANGE:
+        return None
+    return int(found.group(1))
 
 
 def _free_text(policy: Mapping[str, Any], key: str, name: str) -> list[Condition]:
