@@ -1,6 +1,6 @@
 """요건 추출 에이전트 (S1-4). 설계는 PRD 6장."""
 
-from app.extraction.agent import ExtractionAgent, RunLog
+from app.extraction.agent import ExtractionAgent, Extractor, RunLog
 from app.extraction.models import (
     AttachmentInput,
     AttachmentOutcome,
@@ -17,6 +17,7 @@ __all__ = [
     "DocumentDraft",
     "ExtractionAgent",
     "ExtractionResult",
+    "Extractor",
     "Limits",
     "NoticeInput",
     "RequirementDraft",

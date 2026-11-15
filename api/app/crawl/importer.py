@@ -37,7 +37,7 @@ from app.agent_log import AgentRun, LogConnect, agent_run
 from app.crawl.hanyang import BOARD_URL, SOURCE_NAME
 from app.crawl.saved import NoticeContent
 from app.engines.review import ReviewCode
-from app.extraction.agent import ExtractionAgent
+from app.extraction.agent import Extractor
 from app.extraction.models import ExtractionResult
 from app.extraction.store import content_hash, save_extraction
 
@@ -104,7 +104,7 @@ async def import_notice(
     log_connect: LogConnect,
     source_id: str,
     saved: NoticeContent,
-    agent: ExtractionAgent,
+    agent: Extractor,
     options: ImportOptions | None = None,
 ) -> ImportResult:
     """conn은 데이터, log_connect는 실행 로그 연결 공급자(autocommit)다. LLM 호출 오류는 그대로 올라간다.
@@ -119,7 +119,7 @@ async def import_content(
     log_connect: LogConnect,
     source_id: str,
     content: NoticeContent,
-    agent: ExtractionAgent,
+    agent: Extractor,
     options: ImportOptions | None = None,
     parent: AgentRun | None = None,
 ) -> ImportResult:

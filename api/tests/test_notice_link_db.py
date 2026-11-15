@@ -20,10 +20,12 @@ import pytest
 
 from app.background import InlineRunner, TaskRunner
 from app.config import Settings, get_settings
+from app.crawl import service as service_module
 from app.crawl.hanyang import BOARD_URL
 from app.crawl.importer import ImportOptions, ensure_source
 from app.crawl.link import FILES_FAILED, LinkGate
 from app.crawl.service import (
+    CASCADE_SECONDS,
     DAILY_LINK_LIMIT,
     IMPORTS_AT_ONCE,
     OPTIONS,
@@ -36,6 +38,7 @@ from app.crawl.service import (
 from app.db import create_pools
 from app.eligibility import KST
 from app.engines import ENGINES
+from app.extraction.cascade import ESCALATE
 from app.extraction.prompt import READ_TEXT, SUBMIT
 from app.llm import ToolResultTurn
 from app.llm.deps import get_llm
@@ -377,6 +380,51 @@ async def test_a_linked_notice_becomes_a_school_notice_everyone_sees(settings: S
             (2, "poster.jpg", None),
         ]
         assert attachments[0]["source_url"] == download("1. 선발요강.hwpx", "uuid-1")
+
+
+async def test_the_cascade_climbs_inside_the_link_import(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """캐스케이드(O4)를 켜면 링크 가져오기도 Flash-Lite로 먼저 돈다. 확신이 낮으면(LOW_CONFIDENCE) Flash로 처음부터
+    한 번 더 — 두 모델 호출이 같은 자식 실행에 남고 실행의 모델은 위 모델이다. 학생이 기다리는 길이라 두 모델에 쓸
+    시간(CASCADE_SECONDS)을 넘긴다."""
+    budgets: list[Any] = []
+    real = service_module.make_extractor
+
+    def spy(*args: Any, **options: Any) -> Any:
+        budgets.append(options.get("budget_s"))
+        return real(*args, **options)
+
+    monkeypatch.setattr(service_module, "make_extractor", spy)
+    unsure = read_and_submit()
+    unsure[1].tool_calls[0].args["confidence"] = 0.4
+    cascade = settings.model_copy(update={"extraction_cascade": True})
+    lite, upper = cascade.extraction_lite_model, cascade.extraction_model
+    async with committed() as world:
+        entry = world.entry()
+        llm = ScriptedLlm(*unsure, *read_and_submit())
+        async with api(cascade, llm, school_with(entry)) as server:
+            started = await link(server.client(world.user), permalink(entry))
+            assert started.status_code == 202, started.text
+
+        row = await notice_row(entry)
+        assert row is not None and row["run_model"] == upper
+        assert "LOW_CONFIDENCE" not in row["run_review_codes"]  # 위 모델의 결과를 골랐다
+        assert [request.model for request in llm.requests] == [lite, lite, upper, upper]
+        tools = await rows(
+            "select tool_name, input, output from tool_calls where run_id = %s order by seq",
+            str(row["extraction_run_id"]),
+        )
+        assert [tool["tool_name"] for tool in tools] == [
+            READ_TEXT,
+            SUBMIT,
+            ESCALATE,
+            READ_TEXT,
+            SUBMIT,
+        ]
+        assert tools[2]["input"] == {"from": lite, "to": upper, "codes": ["LOW_CONFIDENCE"]}
+        assert tools[2]["output"]["chosen"] == "second"
+    assert budgets == [CASCADE_SECONDS]
 
 
 async def test_seoul_notices_stop_before_files(settings: Settings) -> None:

@@ -27,7 +27,7 @@ from app.attachments import html_text
 from app.config import Settings
 from app.crawl import WebFetcher
 from app.eligibility import KST
-from app.extraction.agent import ExtractionAgent
+from app.extraction.agent import Extractor
 from app.extraction.models import AttachmentInput, ExtractionResult, NoticeInput
 from app.extraction.setup import build_agent
 from app.pricing import cost_usd
@@ -135,7 +135,7 @@ def _plain(value: Any) -> Any:
     raise TypeError(type(value))
 
 
-AgentFactory = Callable[..., ExtractionAgent]
+AgentFactory = Callable[..., Extractor]
 
 
 async def main(argv: Sequence[str], *, make_agent: AgentFactory = build_agent) -> int:

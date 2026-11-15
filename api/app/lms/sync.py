@@ -44,8 +44,8 @@ from app.config import LECTURE_CONSENT_VERSION, Settings, get_settings
 from app.crypto import decrypt
 from app.eligibility import KST, Department
 from app.errors import ApiError
-from app.extraction.agent import ExtractionAgent
-from app.extraction.models import Limits
+from app.extraction.agent import Extractor
+from app.extraction.setup import make_extractor
 from app.llm import LlmClient
 from app.llm.deps import LlmDep
 from app.lms.announce import AnnouncementOutcome, AnnouncementService
@@ -873,17 +873,9 @@ def _material(course: CourseRow, saved: SavedItem) -> MaterialNotice:
 
 def extraction_agent(
     llm: LlmClient, settings: Settings, departments: Sequence[Department]
-) -> ExtractionAgent:
-    """기회성 공지의 요건을 뽑는 에이전트. 학교 공지 가져오기와 같은 모델·상한을 쓴다."""
-    return ExtractionAgent(
-        llm,
-        model=settings.extraction_model,
-        vision_model=settings.vision_model,
-        departments=departments,
-        limits=Limits(
-            max_reads=settings.extraction_max_reads, max_tokens=settings.extraction_max_tokens
-        ),
-    )
+) -> Extractor:
+    """기회성 공지의 요건을 뽑는 에이전트. 학교 공지 가져오기와 같은 모델·상한·캐스케이드(O4)를 쓴다."""
+    return make_extractor(llm, settings, departments)
 
 
 def lms_sync_service_for(

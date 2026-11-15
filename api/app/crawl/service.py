@@ -55,8 +55,7 @@ from app.crawl.link import (
     root_cause,
 )
 from app.errors import ApiError
-from app.extraction.agent import ExtractionAgent
-from app.extraction.models import Limits
+from app.extraction.setup import make_extractor
 from app.extraction.store import load_departments
 from app.llm import LlmClient
 from app.llm.deps import LlmDep
@@ -68,6 +67,8 @@ Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
 TRIGGER = "notice_link"
 DAILY_LINK_LIMIT = 10  # 사용자당 KST 하루. 이미 가져온 공지를 다시 붙이는 것은 세지 않는다
 MODEL_SECONDS = 120  # 요건 추출(모델)을 기다리는 초. 화면은 2분 30초까지 기다린다
+# 캐스케이드(O4)가 두 모델에 쓰는 초. 위 상한에 걸려 이미 받은 첫 결과까지 잃지 않게 조금 짧게 둔다
+CASCADE_SECONDS = MODEL_SECONDS - 5
 IMPORTS_AT_ONCE = 2  # 첨부를 받아 정리하는 실행 수. 한 공지에서 60MB까지 쥔다(서버 메모리 1GiB)
 # 학생이 붙인 공지는 학생이 ERICA 공지로 보고 고른 것이라 캠퍼스 표시가 없어도 가져온다. 못 받은 첨부는 실패로
 # 둔다. 요건을 정리하지 못한 공지는 넣지 않는다 — 넣으면 다시 붙여도 다시 읽지 않는다(같은 공지는 한 번만)
@@ -315,16 +316,7 @@ class NoticeLinkService:
             departments = await load_departments(conn)
         async with self.desk.source(), self.transaction() as conn:
             source_id = await ensure_source(conn)
-        agent = ExtractionAgent(
-            self.llm,
-            model=self.settings.extraction_model,
-            vision_model=self.settings.vision_model,
-            departments=departments,
-            limits=Limits(
-                max_reads=self.settings.extraction_max_reads,
-                max_tokens=self.settings.extraction_max_tokens,
-            ),
-        )
+        agent = make_extractor(self.llm, self.settings, departments, budget_s=CASCADE_SECONDS)
         try:
             result = await import_content(
                 self.transaction,

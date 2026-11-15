@@ -13,9 +13,11 @@ from psycopg.rows import dict_row
 
 from app.config import Settings
 from app.eligibility import Profile
+from app.engines import MODEL_CAUSED
 from app.eval import compare
 from app.eval.compare_metrics import Confusion, Match, condition_key, conditions, judge, percentile
 from app.extraction import ExtractionAgent
+from app.extraction.cascade import CascadeAgent
 from app.extraction.models import NoticeInput
 from app.extraction.prompt import SUBMIT
 from app.posters.prompt import SUBMIT as POSTER_SUBMIT
@@ -493,3 +495,124 @@ async def test_the_real_supabase_db_is_refused(
         monkeypatch.setenv("PGHOST", host)
         with pytest.raises(SystemExit):
             await compare.main(argv, settings=Settings(database_url=url))
+
+
+def submit_low(value: float) -> Any:
+    """확신이 낮은 제출(confidence 0.4 < 0.6) — 원문 확인 이유 LOW_CONFIDENCE, 캐스케이드가 위로 올린다."""
+    reply = submit(value)
+    reply.tool_calls[0].args["confidence"] = 0.4
+    return reply
+
+
+LITE, STANDARD = "gemini-3.5-flash-lite", "gemini-3.8-flash"
+
+
+async def run_cascade(
+    tmp_path: Path, replies: dict[str, list[Any]], extra: list[str]
+) -> tuple[int, dict[str, Any], list[Any]]:
+    """두 모델 줄 + 캐스케이드 줄. 캐스케이드는 운영처럼 설정의 두 모델(Flash-Lite → Flash)로 만든다."""
+    folder = notice_folder(tmp_path / "공지")
+    llms = {model: ScriptedLlm(*answers) for model, answers in replies.items()}
+    made: list[Any] = []
+
+    def make_agent(settings: Settings, **options: Any) -> Any:
+        model = options.get("model")
+        if model is not None:
+            return ExtractionAgent(llms[model], model=model)
+        assert settings.extraction_cascade  # 캐스케이드 줄은 스위치를 켠 설정으로 만든다
+        agent = CascadeAgent(
+            ExtractionAgent(llms[settings.extraction_lite_model], model=LITE),
+            ExtractionAgent(llms[settings.extraction_model], model=STANDARD),
+            on=MODEL_CAUSED,
+        )
+        made.append(agent)
+        return agent
+
+    out = tmp_path / "compare.json"
+    argv = [str(folder), "--out", str(out), "--today", "2026-10-15", "--cascade", *extra]
+    code = await compare.main(argv, make_agent=make_agent, settings=Settings())
+    return code, json.loads(out.read_text(encoding="utf-8")), made
+
+
+def gpa_answers(tmp_path: Path, value: float) -> Path:
+    path = tmp_path / f"answers_{value}.json"
+    answer = {"deadline": "2026-10-24", "requirements": [{**GPA, "value": value}]}
+    path.write_text(json.dumps({"notices": {"1 장학": answer}}), encoding="utf-8")
+    return path
+
+
+async def test_the_cascade_row_climbs_on_a_model_caused_code_and_reports_the_cost(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    replies = {STANDARD: [submit(3.0), submit(3.0)], LITE: [submit(3.5), submit_low(3.5)]}
+    md = tmp_path / "compare.md"
+    answers = gpa_answers(tmp_path, 3.0)
+    code, data, made = await run_cascade(
+        tmp_path, replies, ["--answers", str(answers), "--md", str(md)]
+    )
+
+    assert code == 0 and len(made) == 1
+    runs = data["outcomes"]
+    assert [o["model"] for o in runs] == [STANDARD, LITE, compare.CASCADE]
+    assert [o["escalated"] for o in runs] == [None, None, True]
+    cascade = runs[2]
+    assert cascade["llm_calls"] == 2 and cascade["requirements"][0]["value"] == 3.0
+    assert cascade["cost_usd"] == pytest.approx(runs[0]["cost_usd"] + runs[1]["cost_usd"])
+    rows = data["summary"]["models"]
+    assert rows[compare.CASCADE]["f1"] == 1.0 and rows[LITE]["f1"] == 0.0
+    assert (rows[compare.CASCADE]["escalations"], rows[compare.CASCADE]["cascade_runs"]) == (1, 1)
+    assert rows[compare.CASCADE]["escalation_rate"] == 1.0
+    assert rows[STANDARD]["escalation_rate"] is None
+    assert data["summary"]["cascade"] == data["cascade"] == {"first": LITE, "second": STANDARD}
+    table = md.read_text(encoding="utf-8")
+    assert f"캐스케이드({LITE} → {STANDARD}): 위 모델로 올린 실행 1/1(100%)" in table
+    assert f"— {STANDARD}만 쓸 때" in table
+    assert "| cascade | 1 | 1 |" in capsys.readouterr().out
+
+
+async def test_a_confident_lite_answer_stays_on_the_lite_model(tmp_path: Path) -> None:
+    replies = {STANDARD: [submit(3.0)], LITE: [submit(3.5), submit(3.0)]}
+    code, data, _ = await run_cascade(tmp_path, replies, [])
+    cascade = data["outcomes"][2]
+    assert code == 0 and cascade["escalated"] is False and cascade["llm_calls"] == 1
+    assert data["summary"]["models"][compare.CASCADE]["escalation_rate"] == 0.0
+
+
+async def test_rescore_counts_a_saved_run_again_without_calling_models(tmp_path: Path) -> None:
+    replies = {STANDARD: [submit(3.0), submit(3.0)], LITE: [submit(3.5), submit_low(3.5)]}
+    _, first, _ = await run_cascade(
+        tmp_path, replies, ["--answers", str(gpa_answers(tmp_path, 3.0))]
+    )
+    saved = tmp_path / "compare.json"
+    again, md = tmp_path / "again.json", tmp_path / "again.md"
+
+    def no_models(*_args: Any, **_options: Any) -> Any:
+        raise AssertionError("다시 셀 때는 모델을 부르지 않는다")
+
+    # 정답을 고쳤다(3.0 → 3.5): 이제 Flash-Lite 줄이 맞고 나머지가 틀린다
+    argv = ["--rescore", str(saved), "--answers", str(gpa_answers(tmp_path, 3.5))]
+    argv += ["--out", str(again), "--md", str(md)]
+    assert await compare.main(argv, make_agent=no_models, settings=Settings()) == 0
+
+    data = json.loads(again.read_text(encoding="utf-8"))
+    rows = data["summary"]["models"]
+    assert list(rows) == [STANDARD, LITE, compare.CASCADE]  # 파일에 나온 순서
+    assert (rows[STANDARD]["f1"], rows[LITE]["f1"], rows[compare.CASCADE]["f1"]) == (0.0, 1.0, 0.0)
+    assert rows[compare.CASCADE]["escalations"] == 1  # 올린 기록도 파일에서 읽는다
+    assert data["outcomes"] == first["outcomes"] and data["today"] == "2026-10-15"
+    assert data["summary"]["cascade"] == {"first": LITE, "second": STANDARD}
+    assert data["rescored_from"] == str(saved)
+    assert "캐스케이드(" in md.read_text(encoding="utf-8")
+
+
+def test_rescore_takes_no_folders_or_new_runs(tmp_path: Path) -> None:
+    saved = str(tmp_path / "compare.json")
+    for extra in (
+        [str(tmp_path)],
+        ["--posters", str(tmp_path)],
+        ["--cascade"],
+        ["--template", "t.json"],
+    ):
+        with pytest.raises(SystemExit):
+            compare.parse_args(["--rescore", saved, *extra])
+    assert compare.parse_args(["--rescore", saved]).rescore == Path(saved)

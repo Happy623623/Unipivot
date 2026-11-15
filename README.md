@@ -66,6 +66,7 @@
 | `DATABASE_URL` · `SUPABASE_URL` · `SUPABASE_JWT_SECRET` | DB, 로그인 토큰 검증 |
 | `TOKEN_ENCRYPTION_KEY` | Google·LMS 토큰 암호화 |
 | `GOOGLE_CLOUD_PROJECT` | Gemini(요건 추출·공지 분류). 없으면 모델이 필요한 일만 실패한다 |
+| `EXTRACTION_CASCADE` · `EXTRACTION_LITE_MODEL` | 요건 추출 캐스케이드(O4, 기본 false). 켜면 Flash-Lite로 먼저 돌리고 모델 탓 이유가 나오면 `EXTRACTION_MODEL`로 다시. 켤지는 정답셋 비교로 정한다(`docs/LLM_모델_선정.md`) |
 | `GOOGLE_OAUTH_CLIENT_ID` · `GOOGLE_OAUTH_CLIENT_SECRET` | Google 캘린더(증분 승인) |
 | `SUPABASE_SECRET_KEY` · 버킷 | 포스터·공지 첨부 파일 저장. 값은 API Keys의 Secret keys(`sb_secret_…`). 예전 이름 `SUPABASE_SERVICE_ROLE_KEY`도 읽는다 |
 | `YOUTH_API_KEY` | 온통청년 수집 |
