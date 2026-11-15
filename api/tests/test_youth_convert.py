@@ -156,9 +156,22 @@ def test_region() -> None:
     # 2026-07-01에 합쳐진 전남광주통합특별시도 판정할 수 있는 이름이라 한 조건으로 묶인다
     mixed = conditions(zipCd="11110,12110")
     assert mixed == [(1, "region", "in", ["서울특별시 종로구", "전남광주통합특별시 목포시"])]
-    # 원문 확인할 곳이 많으면 판정표에는 앞부분만, 근거(공고 원문)에는 전체 목록
+    # 원문 확인할 곳을 판정 엔진이 읽는 이름으로 옮길 수 있으면 regions도 적는다 — 그 밖에 사는 학생은
+    # 지원 어려움이다(판정엔진_규칙.md 4-7, 11/15)
+    split = conditions(zipCd="28125", frstRegDt="2026-05-04 10:00:00")
+    assert split == [
+        (1, "region", "in", ["인천광역시 제물포구"]),
+        (
+            1,
+            "other",
+            "eq",
+            {"text": "거주지역 원문 확인: 인천광역시 영종구", "regions": ["인천광역시 영종구"]},
+        ),
+    ]
+    # 원문 확인할 곳이 많으면 판정표에는 앞부분만, 근거(공고 원문)에는 전체 목록. 모르는 코드라 regions는 없다
     unknown = ",".join(["11110"] + [f"999{n:02d}" for n in range(20)])
     (_, many) = record(zipCd=unknown).requirements
+    assert set(many.value) == {"text"}
     assert len(many.value["text"]) == 150 and many.value["text"].endswith("…")
     assert many.evidence_text is not None
     assert many.evidence_text.startswith("온통청년 거주지역 원문 확인: 지역 코드 99900")

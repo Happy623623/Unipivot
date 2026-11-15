@@ -54,9 +54,9 @@ def test_incheon_2026_split() -> None:
     after = TABLE.condition(codes, AFTER_JULY)  # 7월 뒤 등록이면 보정하지 않는다
     assert after is not None and "인천광역시 영종구" in after.uncertain
     assert "인천광역시 서해구" in after.uncertain and len(after.values) == 9
-    # 일부만 고른 7월 전 정책: 영종구는 원문 확인
+    # 일부만 고른 7월 전 정책: 영종구는 원문 확인(그 밖에 사는 학생은 지원 어려움 — regions)
     assert TABLE.condition(["28125"], BEFORE_JULY) == RegionCondition(
-        ("인천광역시 제물포구",), ("인천광역시 영종구",)
+        ("인천광역시 제물포구",), ("인천광역시 영종구",), ("인천광역시 영종구",)
     )
     # 전국 + 인천 보정 = 전국
     nationwide = [code for code in NATIONWIDE.split(",") if code not in ("28155", "28275")]
@@ -76,7 +76,7 @@ def test_merged_sido_is_judgeable() -> None:
     gwangyang = next(code for code in south if TABLE.names[code].endswith(" 광양시"))
     almost = TABLE.condition(["11110", *[code for code in south if code != gwangyang]])
     assert almost is not None
-    assert almost.uncertain == ("전남광주통합특별시 광양시",)
+    assert almost.uncertain == almost.regions == ("전남광주통합특별시 광양시",)
     assert "서울특별시 종로구" in almost.values and "전남광주통합특별시 목포시" in almost.values
 
 
@@ -105,15 +105,38 @@ def test_unknown_sido_is_uncertain() -> None:
 def test_uncertain_places() -> None:
     """없어진 코드, 모르는 코드, 거의 다 고르고 빠진 곳은 원문 확인이다."""
     assert TABLE.condition(["28110", "28177"]) == RegionCondition(
-        ("인천광역시 미추홀구",), ("인천광역시 중구(없어진 지역)",)
+        ("인천광역시 미추홀구",), ("인천광역시 중구(없어진 지역)",), ("인천광역시 중구",)
     )
     assert TABLE.condition(["99999"]) == RegionCondition((), ("지역 코드 99999",))
     seoul = leaves("11")
     almost = TABLE.condition([code for code in seoul if code not in ("11500", "11710")])
     assert almost is not None and almost.uncertain == ("서울특별시 강서구", "서울특별시 송파구")
+    assert almost.regions == almost.uncertain
     assert len(almost.values) == 23
     few = TABLE.condition(seoul[:3])  # 세 곳만 고르면 빠진 곳은 그냥 대상이 아니다
     assert few is not None and few.uncertain == ()
+
+
+def test_review_regions() -> None:
+    """원문 확인할 곳을 판정 엔진이 읽는 이름으로 모두 옮길 수 있을 때만 regions를 채운다(11/15).
+
+    채우면 그 밖에 사는 학생이 지원 어려움이 되므로, 하나라도 옮길 수 없으면 비워서 예전처럼 원문 확인에 둔다."""
+    # 통합으로 코드만 바뀐 옛 전라남도 코드: 이름이 지금도 같은 곳을 가리킨다(엔진이 별칭으로 맞춘다)
+    mokpo = TABLE.condition(["11110", "46110"])
+    assert mokpo is not None and mokpo.uncertain == ("전라남도 목포시(없어진 지역)",)
+    assert mokpo.regions == ("전라남도 목포시",)
+    assert all(parse_region(name) is not None for name in mokpo.regions)
+    # 옛 인천 동구·서구: 엔진이 지금 구로 푼다
+    assert TABLE.condition(["28140", "28260"]) == RegionCondition(
+        (),
+        ("인천광역시 동구(없어진 지역)", "인천광역시 서구(없어진 지역)"),
+        ("인천광역시 동구", "인천광역시 서구"),
+    )
+    # 오래전에 없어진 코드(일산구는 2005년에 둘로 나뉘었다)는 지금 이름과 견줄 수 없다 → 모두 비운다
+    assert TABLE.condition(["41283", "28140"]).regions == ()
+    assert TABLE.condition(["23110"]).regions == ()  # 인천직할시: 엔진이 모르는 시도 이름
+    # 모르는 코드가 하나라도 섞이면 비운다
+    assert TABLE.condition(["28125", "99999"], BEFORE_JULY).regions == ()
 
 
 def test_covers_capital() -> None:

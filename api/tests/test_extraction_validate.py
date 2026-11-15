@@ -344,3 +344,13 @@ def test_lenient_inputs_from_the_model() -> None:
     )
     assert (submission.easy_summary, submission.review_note) == (None, None)
     assert submission.confidence == Decimal("0.80")
+
+
+def test_model_cannot_scope_an_other_condition_to_regions() -> None:
+    """기타 조건의 regions(그 밖에 사는 학생은 지원 어려움)는 청년정책 변환만 쓴다. 모델이 적으면 뺀다."""
+    scoped = json.dumps({"text": "인천 영종구 거주자 우대", "regions": ["인천광역시 영종구"]})
+    submission, problems = check(
+        requirements=[{**GPA, "field": "other", "operator": "eq", "value_json": scoped}]
+    )
+    assert problems == []
+    assert [r.value for r in submission.requirements] == [{"text": "인천 영종구 거주자 우대"}]

@@ -4,7 +4,7 @@
 실행 기록의 agent_runs.engine·engine_version이 이 표의 id·version이고, 엔진별 지표·평가(O3)가 그 값으로 묶는다.
 
 - **버전**은 프롬프트·도구 스키마·검증 규칙·상한이 바뀌면 1 올린다. 이 표가 처음 생긴 판(O2)은 모두 1이고,
-  판정만 이미 있던 ENGINE_VERSION(6)을 그대로 쓴다.
+  판정만 이미 있던 ENGINE_VERSION(그때 6)을 그대로 쓴다.
 - **모델 이름은 여기 적지 않는다.** 등급(tier)과 그 모델을 정하는 설정 이름(model_setting)만 적는다 —
   비교 실험이 설정만 바꿔 끼울 수 있게(model_name).
 - **입출력 타입**은 "모듈:이름" 글자다. 이 모듈이 엔진 모듈을 가져오지 않아야 실행 기록(agent_log)이 이 표를 써도
@@ -247,7 +247,7 @@ ENGINES: dict[str, EngineSpec] = dict(
         ),
         _spec(
             id="judge.eligibility",
-            version=6,  # app.eligibility.ENGINE_VERSION
+            version=7,  # app.eligibility.ENGINE_VERSION
             layer="judge",
             kind="code",
             tier="none",

@@ -304,7 +304,10 @@ def _region(codes: list[str], registered: date | None, table: RegionTable) -> li
     if condition.values:
         found.append(Condition("region", "in", list(condition.values), "unspecified", evidence))
     if condition.uncertain:
-        found.append(_other("거주지역 원문 확인: " + ", ".join(condition.uncertain), evidence))
+        review = _other("거주지역 원문 확인: " + ", ".join(condition.uncertain), evidence)
+        if condition.regions:  # 그곳에 살지 않는 학생은 지원 어려움이다(판정엔진_규칙.md 4-7)
+            review = review._replace(value={**review.value, "regions": list(condition.regions)})
+        found.append(review)
     return found
 
 

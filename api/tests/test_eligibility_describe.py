@@ -151,3 +151,25 @@ def test_region_shown_without_repeated_sido():
         rows = condition_rows(judgment, requirements, profile, DEPARTMENTS)
         shown += [(row["user_value_text"], row["outcome"]) for row in rows]
     assert shown == [("서울특별시 중랑구", "pass"), ("서울특별시 중랑구", "unknown")]
+
+
+def test_region_review_row_shows_my_region():
+    """지역을 적은 기타 조건(청년정책 "거주지역 원문 확인") 행은 내 거주지역을 보여 준다. 다른 기타 조건은 비운다."""
+    review = {"text": "거주지역 원문 확인: 인천광역시 영종구", "regions": ["인천광역시 영종구"]}
+    requirements = [
+        req("region", "in", ["인천광역시 제물포구"], basis="unspecified", rid="region"),
+        req("other", "eq", review, rid="review"),
+        req("other", "eq", {"text": "면접 통과자"}, rid="interview", clause_no=2),
+    ]
+    profile = Profile(region_sido="서울특별시", region_sigungu="성북구")
+    judgment = check_eligibility(
+        requirements, profile, basis_date=date(2026, 11, 15), departments=DEPARTMENTS
+    )
+    rows = {r["requirement_id"]: r for r in condition_rows(judgment, requirements, profile)}
+    assert (rows["review"]["user_value_text"], rows["review"]["outcome"]) == (
+        "서울특별시 성북구",
+        "fail",
+    )
+    assert rows["review"]["condition_text"] == "거주지역 원문 확인: 인천광역시 영종구"
+    assert rows["interview"]["user_value_text"] is None
+    assert judgment.status == "ineligible"

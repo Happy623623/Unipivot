@@ -683,3 +683,114 @@ def test_region_merged_sido_from_youth_api():
     judgment = judge(requirement, region_sido="전남광주통합특별시", region_sigungu="목포시")
     assert judgment.status == "eligible"
     assert judgment.conditions[0].unknown_reason is None
+
+
+# 청년정책 "거주지역 원문 확인"(11장): 지역 조건 + 지역을 적은 기타 조건이 한 묶음이다(11/15)
+YEONGJONG_REVIEW = [
+    req(1, "region", "in", ["인천광역시 제물포구"], basis="unspecified"),
+    req(
+        1,
+        "other",
+        "eq",
+        {"text": "거주지역 원문 확인: 인천광역시 영종구", "regions": ["인천광역시 영종구"]},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("sido", "sigungu", "status", "other"),
+    [
+        ("인천광역시", "제물포구", "eligible", "fail"),  # 묶음의 다른 조건(지역)이 충족
+        ("인천광역시", "영종구", "undetermined", "unknown"),  # 그곳에 살면 원문 확인
+        ("인천광역시", "미추홀구", "ineligible", "fail"),  # 그 밖에 살면 지원 어려움
+        ("서울특별시", "성북구", "ineligible", "fail"),
+        ("인천광역시", None, "undetermined", "unknown"),  # 구를 모르면 묻는다
+        (None, None, "undetermined", "unknown"),
+    ],
+)
+def test_region_review_applies_only_to_residents(sido, sigungu, status, other):
+    judgment = judge(YEONGJONG_REVIEW, region_sido=sido, region_sigungu=sigungu)
+    assert judgment.status == status
+    assert judgment.conditions[1].outcome == other
+    if other == "unknown":
+        assert judgment.conditions[1].unknown_reason == "unsupported_field"
+
+
+def test_region_review_texts():
+    outside = judge(YEONGJONG_REVIEW, region_sido="서울특별시", region_sigungu="성북구")
+    assert outside.reason_text == (
+        "거주지역: 인천광역시 제물포구, 인천광역시 영종구 (현재 서울특별시 성북구)"
+    )
+    inside = judge(YEONGJONG_REVIEW, region_sido="인천광역시", region_sigungu="영종구")
+    assert inside.reason_text == "원문 확인 필요: 거주지역 원문 확인: 인천광역시 영종구"
+    assert inside.display_status == "needs_review"
+    missing = judge(YEONGJONG_REVIEW, region_sido="인천광역시")
+    assert (missing.display_status, missing.missing_fields) == ("missing_info", ("region",))
+    alone = judge([YEONGJONG_REVIEW[1]], region_sido="경기도", region_sigungu="안산시 단원구")
+    assert alone.reason_text == "거주지역: 인천광역시 영종구 (현재 경기도 안산시 단원구)"
+
+
+def test_other_without_regions_never_fails():
+    """지역이 없거나 틀린 모양의 기타 조건, 모호 표시가 붙은 기타 조건은 예전처럼 늘 모름이다."""
+    for value in (
+        {"text": "거주지역 원문 확인: 지역 코드 99999"},
+        {"text": "거주지역 원문 확인", "regions": []},
+        {"text": "거주지역 원문 확인", "regions": "인천광역시 영종구"},
+        {"text": "거주지역 원문 확인", "regions": ["영종구"]},  # 시도가 없다
+    ):
+        judgment = judge([req(1, "other", "eq", value)], region_sido="서울특별시")
+        assert judgment.conditions[0].outcome == "unknown", value
+    flagged = req(1, "other", "eq", YEONGJONG_REVIEW[1].value, ambiguous=True)
+    assert judge([flagged], region_sido="서울특별시").conditions[0].outcome == "unknown"
+    assert requirement_problem(YEONGJONG_REVIEW[1]) is None
+    bad = req(1, "other", "eq", {"text": "x", "regions": ["영종구"]})
+    assert "regions" in requirement_problem(bad)
+
+
+@pytest.mark.parametrize(
+    ("value", "sigungu", "outcome", "reason"),
+    [
+        # 프로필이 옛 구 이름(2026-07 인천 개편 전): 그 땅이 지금 속한 구로 풀어 보고, 갈리면 다시 묻는다
+        (["인천광역시 제물포구"], "동구", "pass", None),  # 옛 동구는 모두 제물포구
+        (["인천광역시 제물포구"], "중구", "unknown", "missing_profile"),  # 제물포구 또는 영종구
+        (["인천광역시 제물포구", "인천광역시 영종구"], "중구", "pass", None),
+        (["인천광역시 서해구"], "서구", "unknown", "missing_profile"),
+        (["인천광역시 서해구", "인천광역시 검단구"], "서구", "pass", None),
+        (["인천광역시 연수구"], "서구", "fail", None),
+        (["인천광역시"], "중구", "pass", None),
+        (["인천광역시 중구"], "중구", "pass", None),  # 옛 이름끼리는 이름으로
+        (["인천광역시 중구"], "동구", "fail", None),  # 옛 구끼리는 겹치지 않았다
+        # 요건이 옛 구 이름, 프로필은 지금 구 이름
+        (["인천광역시 중구"], "영종구", "pass", None),  # 영종구는 모두 옛 중구
+        (["인천광역시 중구"], "제물포구", "unknown", "ambiguous"),  # 제물포구 일부만 옛 중구
+        (["인천광역시 동구"], "제물포구", "unknown", "ambiguous"),
+        (["인천광역시 서구"], "검단구", "pass", None),
+        (["인천광역시 서구"], "연수구", "fail", None),
+        (["인천광역시 동구"], "영종구", "fail", None),
+    ],
+)
+def test_region_incheon_2026_renamed(value, sigungu, outcome, reason):
+    judgment = judge(
+        [req(1, "region", "in", value, basis="unspecified")],
+        region_sido="인천광역시",
+        region_sigungu=sigungu,
+    )
+    condition = judgment.conditions[0]
+    assert (condition.outcome, condition.unknown_reason) == (outcome, reason)
+
+
+def test_region_renamed_only_in_incheon():
+    """옛 이름 풀기는 인천에만 쓴다 — 서울·부산·대구 중구는 지금도 있는 구다."""
+    seoul = [req(1, "region", "in", ["서울특별시 중구"], basis="unspecified")]
+    assert judge(seoul, region_sido="서울특별시", region_sigungu="중구").status == "eligible"
+    # 서울 중구 요건을 인천의 지금 구 이름과 견주지 않는다(시도가 다르면 옛 이름이 아니다)
+    assert judge(seoul, region_sido="서울특별시", region_sigungu="영종구").status == "ineligible"
+    busan = [req(1, "region", "in", ["부산광역시 영도구"], basis="unspecified")]
+    assert judge(busan, region_sido="부산광역시", region_sigungu="중구").status == "ineligible"
+    daegu = [req(1, "region", "in", ["대구광역시 중구 동인동"], basis="unspecified")]
+    narrower = judge(daegu, region_sido="대구광역시", region_sigungu="중구")
+    assert (narrower.status, narrower.missing_fields) == ("undetermined", ("region",))
+    excluded = [req(1, "region", "not_in", ["인천광역시 검단구"], basis="unspecified")]
+    legacy = judge(excluded, region_sido="인천광역시", region_sigungu="서구")
+    assert (legacy.status, legacy.missing_fields) == ("undetermined", ("region",))
+    assert judge(excluded, region_sido="인천", region_sigungu="중구").status == "eligible"

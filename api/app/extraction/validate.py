@@ -277,6 +277,9 @@ def _requirement(
         ambiguous = True
     if field == "department" and not _known_departments(value, basis, context.departments):
         ambiguous = True  # 규칙 4: 학과 목록에 없는 이름은 원문 그대로 두고 모호 조건
+    if field == "other":
+        # 기타 조건의 regions는 코드(청년정책 변환)만 쓴다 — 판정 엔진이 그 밖에 사는 학생을 지원 어려움으로 낸다
+        value = {"text": value["text"]}
     return RequirementDraft(
         clause_no=clause_no,
         field=field,
