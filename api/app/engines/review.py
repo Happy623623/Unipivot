@@ -37,6 +37,18 @@ class ReviewCode(StrEnum):
     MISSING_FILE = "MISSING_FILE"
 
 
+# 원인이 모델인 코드(위 표의 "모델"). 캐스케이드(O4)는 이 코드가 나올 때만 위 등급 모델로 다시 돈다 —
+# 상한·원문·파일·수집 탓은 모델을 바꿔도 풀리지 않는다
+MODEL_CAUSED = frozenset(
+    {
+        ReviewCode.NO_SUBMISSION,
+        ReviewCode.REPAIRED,
+        ReviewCode.LOW_CONFIDENCE,
+        ReviewCode.NOT_READ,
+    }
+)
+
+
 @dataclass(frozen=True)
 class ReviewReason:
     code: ReviewCode  # 기계가 세는 이유

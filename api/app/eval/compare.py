@@ -15,6 +15,9 @@
   항목마다 모델을 번갈아 돌린다(시간대에 따른 흔들림이 한 모델에 몰리지 않게)
 - --today: 포스터를 올린 날(포스터의 연도 없는 날짜·지난 날짜를 이 날로 가린다)이자, 기준일·마감일·게시일이
   모두 없는 공지의 판정 기준일(앱도 오늘로 판정한다). 같은 자료로 다시 잴 때 고정한다
+- --cascade: 운영과 같은 캐스케이드(O4 — EXTRACTION_LITE_MODEL로 먼저, 모델 탓 이유가 나오면 EXTRACTION_MODEL로
+  처음부터)를 공지마다 `cascade` 한 줄로 더 돌린다. 표 아래에 위로 올린 비율과 위 모델만 쓸 때와의 비용을 적는다
+- --rescore: 모델을 부르지 않고, 전에 --out으로 쓴 결과 파일로 다시 센다(정답을 고친 뒤). 폴더는 주지 않는다
 
 공고 글은 모델에만 보내고 결과 파일에는 요건·마감일·토큰·비용만 남긴다(근거 문장도 남기지 않는다). 결과 파일은
 레포에 넣지 않는다. 모델 실행이 끝나면 결과를 먼저 쓰고 셈을 한다 — 셈이 실패해도 돈 들인 실행은 남는다.
@@ -28,7 +31,7 @@ import sys
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -39,7 +42,8 @@ from app.crawl.saved import load_folder, notice_folders
 from app.eligibility import KST, Department, Profile, to_kst_date
 from app.eval.compare_metrics import Confusion, Match, conditions, judge, percentile
 from app.eval.world import managed_database
-from app.extraction.agent import ExtractionAgent
+from app.extraction.agent import Extractor
+from app.extraction.cascade import ESCALATE
 from app.extraction.models import NoticeInput
 from app.extraction.prompt import SUBMIT
 from app.extraction.setup import build_agent
@@ -51,7 +55,8 @@ from app.runtime import event_loop_factory, utf8_output
 from app.uploads import sniff
 
 DEFAULT_MODELS = ("gemini-3.8-flash", "gemini-3.5-flash-lite")
-SHORT = {"gemini-3.8-flash": "F38", "gemini-3.5-flash-lite": "FL35"}
+CASCADE = "cascade"  # --cascade 줄의 이름(모델 자리)
+SHORT = {"gemini-3.8-flash": "F38", "gemini-3.5-flash-lite": "FL35", CASCADE: "CAS"}
 POSTER_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".pdf"}
 REQUIREMENT_KEYS = ("clause_no", "field", "operator", "value", "basis", "is_ambiguous")
 # 가상 프로필(PRD 정답셋 규칙: 경계값 포함). --profiles로 바꾼다. 날짜는 판정 기준일과 견주므로 고정해 둔다
@@ -196,9 +201,10 @@ class Outcome:
     requirements: list[dict[str, Any]] = field(default_factory=list)
     basis: str | None = None  # 판정 기준일(공고 기준일 → 마감일 → 게시일)
     error: str | None = None
+    escalated: bool | None = None  # 캐스케이드 줄만: 위 모델까지 돌았나
 
 
-AgentFactory = Callable[..., ExtractionAgent]
+AgentFactory = Callable[..., Extractor]
 LogScope = Callable[[str], AbstractAsyncContextManager[Any]]
 
 
@@ -219,10 +225,23 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--db", action="store_true", help="학과 목록을 읽고 실행 로그를 DB에 남긴다"
     )
+    parser.add_argument(
+        "--cascade",
+        action="store_true",
+        help="운영과 같은 캐스케이드(O4)를 공지마다 한 줄 더 돌린다",
+    )
+    parser.add_argument(
+        "--rescore", type=Path, help="모델을 부르지 않고 이 결과 파일(--out)로 다시 센다"
+    )
     parser.add_argument("--out", type=Path, default=Path("compare.json"))
     parser.add_argument("--md", type=Path, help="요약 표(Markdown)를 쓸 파일")
     args = parser.parse_args(argv)
-    if not args.folders and args.posters is None:
+    if args.rescore is not None:
+        if args.folders or args.posters is not None or args.cascade or args.template:
+            parser.error(
+                "--rescore에는 폴더·--posters·--cascade·--template를 주지 않아요(결과 파일로만 센다)"
+            )
+    elif not args.folders and args.posters is None:
         parser.error("공지 폴더나 --posters 중 하나는 있어야 해요")
     if args.repeat < 1:
         parser.error("--repeat는 1 이상이어야 해요")
@@ -284,25 +303,38 @@ def _requirements(items: Sequence[Any]) -> list[dict[str, Any]]:
 
 
 async def run_notice(
-    agent: ExtractionAgent,
+    agent: Extractor,
     notice: NoticeInput,
     log: Collector,
     *,
     item: str,
     attempt: int,
     today: date,
+    label: str | None = None,
 ) -> Outcome:
+    """label을 주면 결과의 모델 자리에 그 이름을 쓴다(캐스케이드 줄은 CASCADE — 위로 올렸는지도 적는다)."""
     started = time.perf_counter()
+    model = label or agent.model
+    escalated = (lambda: log.tools.get(ESCALATE, 0) > 0) if label == CASCADE else (lambda: None)
     try:
         result = await agent.run(notice, log)
     except Exception as exc:  # 한 공고가 실패해도 비교는 이어 간다
-        return _outcome("notice", item, agent.model, attempt, started, log, error=repr(exc)[:200])
+        return _outcome(
+            "notice",
+            item,
+            model,
+            attempt,
+            started,
+            log,
+            error=repr(exc)[:200],
+            escalated=escalated(),
+        )
     deadline = to_kst_date(result.deadline_at) if result.deadline_at else None
     basis = result.eligibility_basis_date or deadline or notice.posted_on or today
     return _outcome(
         "notice",
         item,
-        agent.model,
+        model,
         attempt,
         started,
         log,
@@ -311,6 +343,7 @@ async def run_notice(
         deadline=deadline.isoformat() if deadline else None,
         requirements=_requirements(result.requirements),
         basis=basis.isoformat(),
+        escalated=escalated(),
     )
 
 
@@ -453,6 +486,8 @@ def summarize(
         notice_runs = [o for o in mine if o.kind == "notice"]
         poster_runs = [o for o in mine if o.kind == "poster"]
         cost = sum(o.cost_usd for o in mine)
+        cascaded = [o for o in notice_runs if o.escalated is not None]
+        escalations = sum(bool(o.escalated) for o in cascaded) if cascaded else None
         rows[model] = {
             "runs": len(mine),
             "succeeded": sum(o.ok for o in mine),
@@ -481,6 +516,10 @@ def summarize(
             "notice_p95_ms": percentile([o.wall_ms for o in notice_runs], 0.95),
             "poster_p50_ms": percentile([o.wall_ms for o in poster_runs], 0.5),
             "poster_p95_ms": percentile([o.wall_ms for o in poster_runs], 0.95),
+            # 캐스케이드 줄만: 위 모델까지 돈 실행 수와 비율(반복 실행도 한 번씩 센다)
+            "escalations": escalations,
+            "cascade_runs": len(cascaded) if cascaded else None,
+            "escalation_rate": _rate(escalations, len(cascaded)) if cascaded else None,
         }
     return {
         "reference": "answers" if answers else f"model:{reference_model}",
@@ -582,6 +621,19 @@ def markdown(summary: dict[str, Any]) -> str:
             f" {_sec(row['notice_p50_ms'])} · {_sec(row['notice_p95_ms'])} |"
             f" {_sec(row['poster_p50_ms'])} · {_sec(row['poster_p95_ms'])} |"
         )
+    cascade, upper = rows.get(CASCADE), summary.get("cascade", {}).get("second")
+    if cascade and cascade.get("escalation_rate") is not None:
+        line = (
+            f"\n캐스케이드({summary['cascade']['first']} → {upper}): 위 모델로 올린 실행"
+            f" {cascade['escalations']}/{cascade['cascade_runs']}"
+            f"({_pct(cascade['escalation_rate'])}), 공지 1건 {_usd(cascade['cost_per_notice_usd'])}"
+        )
+        base = rows.get(upper or "", {}).get("cost_per_notice_usd")
+        if base and cascade["cost_per_notice_usd"] is not None:
+            line += (
+                f" — {upper}만 쓸 때 {_usd(base)}의 {_pct(cascade['cost_per_notice_usd'] / base)}"
+            )
+        head.append(line)
     return "\n".join(head) + "\n"
 
 
@@ -605,6 +657,8 @@ async def main(
     models = _models(args.models)
     profiles = load_profiles(args.profiles)
     answers = load_answers(args.answers)
+    if args.rescore is not None:
+        return await rescore(args, settings, profiles, answers)
     today = args.today or datetime.now(KST).date()
     folders = notice_folders(args.folders) if args.folders else []
     names = [folder.name for folder in folders]
@@ -627,6 +681,14 @@ async def main(
             )
             for model in models
         }
+        # 캐스케이드 줄은 운영과 같은 조합이다(설정의 두 모델, 그림 읽기는 VISION_MODEL)
+        cascade = (
+            make_agent(
+                settings.model_copy(update={"extraction_cascade": True}), departments=departments
+            )
+            if args.cascade
+            else None
+        )
         # 항목마다 모델을 번갈아 돈다(시간대에 따라 느려져도 한 모델에만 몰리지 않게)
         for attempt in range(1, args.repeat + 1):
             for number, (item, notice) in enumerate(notices, 1):
@@ -639,6 +701,22 @@ async def main(
                             run_notice(
                                 agents[model], notice, log, item=item, attempt=attempt, today=today
                             )
+                        ),
+                    )
+                    outcomes.append(outcome)
+                    _print(outcome)
+                if cascade is not None:
+                    outcome = await _logged(
+                        scope,
+                        f"CMP-{SHORT[CASCADE]}-N{number:02d}",
+                        lambda log, item=item, notice=notice, attempt=attempt: run_notice(
+                            cascade,
+                            notice,
+                            log,
+                            item=item,
+                            attempt=attempt,
+                            today=today,
+                            label=CASCADE,
                         ),
                     )
                     outcomes.append(outcome)
@@ -670,13 +748,54 @@ async def main(
     _write(args.out, result)  # 셈이 실패해도 돈 들인 실행 결과는 남긴다
     if args.template:
         _write(args.template, template(outcomes, models[0]))
-    summary = summarize(outcomes, models, answers, profiles, departments, today=today)
+    rows = [*models, CASCADE] if cascade is not None else models
+    summary = summarize(outcomes, rows, answers, profiles, departments, today=today)
+    if cascade is not None:
+        summary["cascade"] = _cascade_models(settings)
+        result["cascade"] = summary["cascade"]
+    _finish(args, summary, result)
+    return 0 if outcomes and all(one.ok for one in outcomes) else 1
+
+
+def _cascade_models(settings: Settings) -> dict[str, str]:
+    return {"first": settings.extraction_lite_model, "second": settings.extraction_model}
+
+
+def _finish(args: argparse.Namespace, summary: dict[str, Any], result: dict[str, Any]) -> None:
     _write(args.out, {"summary": summary, **result})
     table = markdown(summary)
     print(table)
     if args.md:
         args.md.write_text(table, encoding="utf-8")
-    return 0 if outcomes and all(one.ok for one in outcomes) else 1
+
+
+async def rescore(
+    args: argparse.Namespace,
+    settings: Settings,
+    profiles: Sequence[tuple[str, Profile]],
+    answers: dict[str, Any] | None,
+) -> int:
+    """모델을 부르지 않고 전에 쓴 결과 파일로 다시 센다(정답을 고친 뒤). 모델 순서는 파일에 나온 순서다."""
+    saved = json.loads(args.rescore.read_text(encoding="utf-8"))
+    names = {f.name for f in fields(Outcome)}
+    outcomes = [
+        Outcome(**{key: value for key, value in one.items() if key in names})
+        for one in saved.get("outcomes", [])
+    ]
+    if not outcomes:
+        raise SystemExit(f"결과 파일에 실행이 없어요: {args.rescore}")
+    today = args.today or date.fromisoformat(
+        saved.get("today") or datetime.now(KST).date().isoformat()
+    )
+    models = list(dict.fromkeys(one.model for one in outcomes))
+    async with _logging(args, settings) as (departments, _scope):
+        summary = summarize(outcomes, models, answers, profiles, departments, today=today)
+    if "cascade" in saved:
+        summary["cascade"] = saved["cascade"]
+    result = {key: value for key, value in saved.items() if key != "summary"}
+    result["rescored_from"] = str(args.rescore)
+    _finish(args, summary, result)
+    return 0
 
 
 class _RunFailed(Exception):

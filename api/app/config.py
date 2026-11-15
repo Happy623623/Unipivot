@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     google_cloud_project: str = ""
     google_cloud_location: str = "global"
     extraction_model: str = "gemini-3.8-flash"
+    # 요건 추출 캐스케이드(O4, 오케스트레이션 명세 4.3). 켜면 extraction_lite_model로 먼저 돌리고, 모델 탓인
+    # 원문 확인 이유가 나올 때만 extraction_model로 처음부터 한 번 더 돈다. 정답셋 비교로 켤지 정한다
+    extraction_cascade: bool = False
+    extraction_lite_model: str = "gemini-3.5-flash-lite"
     vision_model: str = "gemini-3.8-flash"
     guide_model: str = "gemini-3.5-flash-lite"  # 준비하기의 서류 안내(짧은 구조화 답)
     classify_model: str = "gemini-3.5-flash-lite"  # 과목 공지 갈래 나누기(F-53, 짧은 구조화 답)

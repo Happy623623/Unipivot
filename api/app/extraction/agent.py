@@ -90,6 +90,14 @@ class RunLog(Protocol):
     ) -> None: ...
 
 
+class Extractor(Protocol):
+    """요건 추출을 하는 것 — ExtractionAgent와 캐스케이드(app.extraction.cascade)가 같은 모양이다."""
+
+    model: str
+
+    async def run(self, notice: NoticeInput, log: RunLog) -> ExtractionResult: ...
+
+
 @dataclass
 class _State:
     reads: int = 0

@@ -4,11 +4,26 @@
 engine_version·model·review_codes)과 엔진별 지표·평가가 등록부의 id로 묶인다.
 """
 
-from app.engines.registry import ENGINES, EngineSpec, RetryPolicy, get_engine, model_name
-from app.engines.review import ReviewCode, ReviewReason, review_codes, review_texts
+from app.engines.registry import (
+    ENGINES,
+    Cascade,
+    EngineSpec,
+    RetryPolicy,
+    get_engine,
+    model_name,
+)
+from app.engines.review import (
+    MODEL_CAUSED,
+    ReviewCode,
+    ReviewReason,
+    review_codes,
+    review_texts,
+)
 
 __all__ = [
     "ENGINES",
+    "MODEL_CAUSED",
+    "Cascade",
     "EngineSpec",
     "RetryPolicy",
     "ReviewCode",

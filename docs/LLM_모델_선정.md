@@ -100,6 +100,14 @@ print(
 
 3.5 Flash-Lite가 정확도에서 밀리지 않으면 작업 비용이 1/2–1/4로 준다. 결과는 W6 베이스라인과 W9–10 개선 전후 비교표의 첫 줄이 된다.
 
+### 캐스케이드 (O4, 11/16)
+
+- **무엇**: 요건 추출을 3.5 Flash-Lite로 먼저 돌리고, 원인이 모델인 원문 확인 이유(`NO_SUBMISSION`·`REPAIRED`·`LOW_CONFIDENCE`·`NOT_READ` — `app/engines/review.py`의 `MODEL_CAUSED`)가 나올 때만 3.8 Flash로 **처음부터** 한 번 더 돈다(첫 대화를 넘기지 않는다). 받은 제출이 있는 쪽 → 원인이 모델인 이유가 적은 쪽 → 위 모델 순으로 고른다. 두 실행은 같은 실행 기록에 남고(비용이 더해진다) 실행의 model은 마지막 모델이다. 올리면 도구 기록 `escalate_model`(무엇에서 무엇으로·이유 코드·고른 쪽)이 남는다. 첨부 이미지 읽기는 두 단계 모두 `VISION_MODEL`이다. 엔진 등록부의 `extract.requirements`에 `cascade`로 적혀 있다(`app/extraction/cascade.py`)
+- **설정**: `EXTRACTION_CASCADE`(기본 false) · `EXTRACTION_LITE_MODEL`(기본 gemini-3.5-flash-lite). 끄면 지금처럼 `EXTRACTION_MODEL` 하나로 돈다. 학교 공지 링크(학생이 기다림)는 두 모델에 115초를 넘기지 않는다 — 첫 실행 뒤 남은 시간이 20초보다 적으면 올리지 않고, 위 모델이 그 안에 답하지 않으면 첫 결과를 쓴다
+- **켤지 정하는 법**: 정답셋 2차와 같은 자료·정답·`--today`로 `--cascade`를 붙여 한 번 더 돌린다(`--answers …`, `--repeat 3`). 표에 `cascade` 줄이 생기고, 표 아래 한 줄이 위로 올린 실행 비율과 3.8 Flash만 쓸 때 대비 공지 1건 비용을 적는다. 켜는 조건: ① `cascade` 줄의 적격→부적격 0건 ② 위로 올리지 않았는데 틀린 공고가 3.8 Flash만 쓸 때보다 많지 않음 ③ 공지 1건 비용이 3.8 Flash만 쓸 때보다 싸다 — 올리는 비율 p < 1 − r(r은 두 모델 단가 비, 2026년 0.49 · 2027년 0.24)
+- **켜는 법**: `api/.env`에 `EXTRACTION_CASCADE=true`를 넣고 deploy를 다시 돈다(deploy가 이 값을 옮긴다). 끌 때는 false로 deploy
+- 정답을 고친 뒤에는 모델을 다시 부르지 않고 `--rescore <전 결과 파일> --answers <새 정답>`으로 다시 센다
+
 ## 자금이 생기면
 
 - Claude Haiku 4.5를 요건 추출의 비교 상대로 더한다. 10/7에 정리한 혼합안(요건 추출·서류 안내·강의계획서는 Haiku 4.5, 이미지는 Gemini 3.8 Flash)이 그때의 후보다. 생각 토큰이 없어 응답시간과 비용이 일정하고, strict 도구로 도구 입력이 스키마를 따르고, 2027년에도 단가가 그대로다

@@ -81,6 +81,8 @@ COPIED = (
     "google_cloud_project",
     "google_cloud_location",
     "extraction_model",
+    "extraction_cascade",
+    "extraction_lite_model",
     "vision_model",
     "guide_model",
     "classify_model",

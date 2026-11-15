@@ -13,6 +13,7 @@ from app.crawl import service as notice_service
 from app.eligibility import ENGINE_VERSION
 from app.engines import (
     ENGINES,
+    MODEL_CAUSED,
     ReviewCode,
     ReviewReason,
     get_engine,
@@ -100,7 +101,25 @@ def test_llm_engines_name_a_priced_model_setting_that_matches_their_tier() -> No
         if not spec.uses_llm:
             assert (spec.tier, spec.model_setting, spec.tools) == ("none", None, ()), spec.id
             assert model_name(spec, settings) is None
-        assert spec.escalate_to is None  # 캐스케이드는 O4에서 켠다
+        if spec.id != "extract.requirements":
+            assert spec.cascade is None, spec.id  # 캐스케이드(O4)는 요건 추출만
+
+
+def test_the_cascade_starts_lower_and_climbs_on_model_caused_codes_only() -> None:
+    """캐스케이드(O4): 먼저 도는 모델은 단가표의 Flash-Lite, 위는 엔진의 등급(standard). 켜는 설정은 기본으로 꺼져 있고,
+    위로 올리는 코드는 원인이 모델인 넷뿐이다(상한·원문·파일 탓은 모델을 바꿔도 풀리지 않는다)."""
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    spec = ENGINES["extract.requirements"]
+    cascade = spec.cascade
+    assert cascade is not None
+    assert (cascade.first_tier, spec.tier) == ("lite", "standard")
+    first = getattr(settings, cascade.first_model_setting)
+    assert ("google", first) in PRICES and "lite" in first
+    assert first != model_name(spec, settings)
+    assert getattr(settings, cascade.switch) is False
+    assert set(cascade.on) == {"NO_SUBMISSION", "REPAIRED", "LOW_CONFIDENCE", "NOT_READ"}
+    assert set(cascade.on) == {str(code) for code in MODEL_CAUSED}
+    assert set(cascade.on) <= {str(code) for code in ReviewCode}
 
 
 def test_the_tools_the_model_sees_are_the_ones_in_the_registry() -> None:

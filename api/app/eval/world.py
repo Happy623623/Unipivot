@@ -56,8 +56,7 @@ from app.eval.fakes import (
     Reply,
 )
 from app.eval.models import Check, CheckFailed, plain
-from app.extraction.agent import ExtractionAgent
-from app.extraction.models import Limits
+from app.extraction.setup import make_extractor
 from app.extraction.store import load_departments
 from app.llm.deps import get_llm
 from app.lms.announce import AnnouncementService
@@ -468,16 +467,7 @@ class EvalWorld:
         실행, batch_crawl)에는 시나리오 번호를 붙이고 extra_runs에 넣는다 — 그래야 그 모델 호출이 시나리오
         비용에 들어간다(러너는 사용자의 실행과 extra_runs만 센다). 공고 번호와 가져오기 결과를 돌려준다.
         """
-        agent = ExtractionAgent(
-            self.llm,
-            model=self.settings.extraction_model,
-            vision_model=self.settings.vision_model,
-            departments=await load_departments(self.conn),
-            limits=Limits(
-                max_reads=self.settings.extraction_max_reads,
-                max_tokens=self.settings.extraction_max_tokens,
-            ),
-        )
+        agent = make_extractor(self.llm, self.settings, await load_departments(self.conn))
         result = await import_notice(
             self.conn,
             using(self.conn),

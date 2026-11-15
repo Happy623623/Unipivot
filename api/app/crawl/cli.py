@@ -56,14 +56,14 @@ from app.crawl.saved import (
     notice_folders,
 )
 from app.eligibility import KST
-from app.extraction.agent import ExtractionAgent
+from app.extraction.agent import Extractor
 from app.extraction.models import Limits
 from app.extraction.setup import build_agent
 from app.extraction.sources import Library
 from app.extraction.store import load_departments
 from app.runtime import event_loop_factory, utf8_output
 
-AgentFactory = Callable[..., ExtractionAgent]
+AgentFactory = Callable[..., Extractor]
 CONNECT_TIMEOUT = 10  # DB 연결을 기다리는 초. DATABASE_URL에 connect_timeout이 있으면 그 값을 쓴다
 _SCOPE = {"erica": "가져올 대상", "seoul": "건너뜀(서울)", "unmarked": "건너뜀(캠퍼스 표시 없음)"}
 # B안은 학생이 ERICA 공지로 보고 붙인 것이라 캠퍼스 표시가 없어도 가져온다(app/crawl/service.py)

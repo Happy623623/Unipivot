@@ -10,12 +10,16 @@
 - **입출력 타입**은 "모듈:이름" 글자다. 이 모듈이 엔진 모듈을 가져오지 않아야 실행 기록(agent_log)이 이 표를 써도
   순환 import가 없다. 아직 고정한 타입이 없는 경계(인자 여러 개·dict 묶음)는 None이다 — 흐름 실행기(O5)에서 만든다.
 - **shared_output**이 참인 엔진의 실행은 user_id를 남기지 않는다(명세 6장 5번) — 결과를 여러 학생이 본다.
+- **cascade**가 있는 엔진은 설정(switch)을 켜면 싼 등급(first_tier)으로 먼저 돌고, 원인이 모델인 원문 확인 이유
+  (on)가 나올 때만 이 엔진의 등급(tier)으로 처음부터 한 번 더 돈다(명세 4.3, O4). 끄면 tier로 한 번만 돈다.
 - 이 표가 코드와 같은지(도구 이름·시간 상한·판정 버전·모델 설정·타입·모듈)는 tests/test_engines.py가 본다.
   엔진 코드를 고치면 그 시험이 이 표를 같이 고치라고 알려 준다.
 """
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
+
+from app.engines.review import MODEL_CAUSED
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -45,6 +49,16 @@ class RetryPolicy:
 
 
 @dataclass(frozen=True)
+class Cascade:
+    """싼 등급으로 먼저 돌리고 원인이 모델인 이유가 나오면 위 등급(엔진의 tier)으로 처음부터(명세 4.3, O4)."""
+
+    first_tier: Tier  # 먼저 돌릴 등급 — 엔진의 tier보다 아래
+    first_model_setting: str  # 그 모델 이름을 정하는 Settings 칸
+    switch: str  # 켜고 끄는 Settings 칸(bool). 정답셋 비교로 켤지 정한다
+    on: tuple[str, ...]  # 위로 올리는 원문 확인 이유 코드(ReviewCode)
+
+
+@dataclass(frozen=True)
 class EngineSpec:
     id: str  # "extract.requirements" — 실행 기록·지표·평가의 키
     version: int
@@ -59,7 +73,7 @@ class EngineSpec:
     shared_output: bool  # 결과를 여러 학생이 보는가(공고·요건·공지 갈래). 참이면 실행에 user_id를 남기지 않는다
     eval_suite: EvalSuite  # 명세 7장 평가 세트
     code: str  # 지금 코드(모듈)
-    escalate_to: Tier | None = None  # 캐스케이드 위 등급(명세 5.4, O4). 지금은 모두 없다
+    cascade: Cascade | None = None  # 캐스케이드(O4). 요건 추출만 있다
     retry: RetryPolicy = RetryPolicy()
 
     @property
@@ -154,6 +168,12 @@ ENGINES: dict[str, EngineSpec] = dict(
             shared_output=True,
             eval_suite="EV-EXTRACT",
             code="app.extraction.agent",
+            cascade=Cascade(
+                first_tier="lite",
+                first_model_setting="extraction_lite_model",
+                switch="extraction_cascade",
+                on=tuple(sorted(MODEL_CAUSED)),
+            ),
         ),
         _spec(
             id="read.vision",

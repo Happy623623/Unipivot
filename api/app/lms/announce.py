@@ -38,7 +38,7 @@ from psycopg import AsyncConnection
 from app.agent_log import AgentRun
 from app.eligibility import KST, Department
 from app.engines.review import ReviewCode
-from app.extraction.agent import ExtractionAgent
+from app.extraction.agent import Extractor
 from app.extraction.models import NoticeInput
 from app.extraction.store import load_departments
 from app.llm import LlmClient
@@ -54,7 +54,7 @@ from app.schemas.opportunities import Category
 
 logger = logging.getLogger(__name__)
 Connect = Callable[[], AbstractAsyncContextManager[AsyncConnection]]
-AgentFor = Callable[[Sequence[Department]], ExtractionAgent]
+AgentFor = Callable[[Sequence[Department]], Extractor]
 RepoFor = Callable[[AsyncConnection], AnnouncementRepository]
 NotesFor = Callable[[AsyncConnection], NotificationRepository]
 DepartmentsFor = Callable[[AsyncConnection], Awaitable[Sequence[Department]]]
