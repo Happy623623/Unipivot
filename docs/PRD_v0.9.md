@@ -71,6 +71,8 @@
 > v0.9 보강 (2026-11-27): F-33·F-55 주차학습 강의 출석 마감 전날 알림(P1, 설정에서 끌 수 있다)
 >
 > v0.9 보강 (2026-11-28): F-11b 청년정책 서술형 자격 요건화(설정으로 켠다, 14장 미결 하나를 닫음), 6장 도구
+>
+> v0.9 보강 (2026-11-29): 6장 — 과목 공지 처리를 흐름 실행기(O5)로 옮겼다(동작은 그대로)
 
 ---
 
@@ -348,9 +350,11 @@ flowchart LR
 | 포스터 업로드 | 이미지 → 공고 생성 → 판정 | extract_from_image, extract_requirements, check_eligibility |
 | 준비하기 버튼 | 서류 안내 → 역산 일정 → 마감일 등록 | get_document_guide, build_prep_plan, create_calendar_event |
 | 강의계획서 업로드 | 일정 추출 → 확인 → 등록 | parse_syllabus, create_calendar_event |
-| LMS 동기화 (정기) | 과제·제출 여부 갱신 → 새 주차학습 항목 감지 → 새 공지 분류 → 캘린더·플래너·알림 반영 | fetch_lms_assignments, fetch_lms_modules, fetch_lms_announcements, classify_announcement, create_calendar_event |
+| LMS 동기화 (정기) | 과제·제출 여부 갱신 → 새 주차학습 항목 감지 → 새 공지 분류(흐름 실행기 — 집기 → 공지마다 분류 → 갈래 적기 → 기회성이면 공고, 11/29) → 캘린더·플래너·알림 반영 | fetch_lms_assignments, fetch_lms_modules, fetch_lms_announcements, classify_announcement, create_calendar_event |
 | 강의자료 업로드 (P1) | 텍스트 추출 → 전체 요약 1회 | extract_pdf_text, summarize_document |
 | 알림 스케줄러 | 알림 대상 선정 → 발송 | send_web_push |
+
+과목 공지 처리는 흐름 실행기(`app/engines/flows.py`, O5, 11/29)가 돈다. 흐름을 노드·가지로 적고(`app/lms/announce.py`의 `ANNOUNCEMENTS`·`ONE_ANNOUNCEMENT`) 진입 차수를 세는 위상 정렬로 노드마다 한 번, 부모가 모두 끝난 뒤에 돌린다. 들어오는 가지가 모두 거짓이면 건너뛰고(건너뜀은 아래로 전해진다), map 노드는 항목마다 작은 흐름을 돌린다. 동작은 전과 같다 — 공지는 차례로, 실패한 공지는 늦춰 다시 집는다.
 
 전체 사용자 판정은 S1-5부터 사용자가 피드를 읽을 때 낡은 판정만 다시 계산하는 방식으로 한다. 새 적격 공고 알림(F-33)을 만들 때는 알림 작업이 사용자마다 같은 판정 함수를 부른다.
 
@@ -621,6 +625,7 @@ LLM이 필요 없는 연동은 Dev 2가 맡는다. Dev 1은 정확도 지표가 
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-29): 6장 흐름 실행기(O5) — 흐름을 노드·가지 데이터로 적고 위상 정렬(Kahn)로 돌린다. 과목 공지 처리(집기 → 공지마다 분류 → 갈래 적기 → 기회성이면 공고)를 먼저 옮겼다. 동작·실행 기록은 그대로
 - v0.9 보강 (2026-11-28): F-11b 청년정책 서술형 자격(추가 자격·참여 제한)을 모델 한 번으로 판정할 수 있는 조건으로 옮긴다 — 근거 검사·판정 엔진 검사·빠짐없이 옮긴 글만 원문 확인을 뺀다. `YOUTH_TEXT_ENABLED`(기본 꺼짐), 견주기 명령 `python -m app.youth.cli refine`
 - v0.9 보강 (2026-11-27): F-33·F-55 주차학습 강의 출석 마감 전날 알림 — 출석 기간 안인데 아직 안 들은 강의가 있으면 마감 전날 KST 09:00에 과목마다 한 건, 누르면 그 과목의 강의 탭. 알림 종류 `lecture_due`(설정에서 끌 수 있다)
 - v0.9 보강 (2026-11-26): F-33 정보 필요 알림 — 판정 불가 원인이 프로필 공백뿐인 공고만 묻는다(원문 확인 조건이 함께 모름이면 묻지 않는다, 14장), 보낸 항목은 7일 동안 다시 묻지 않고 그 뒤 그 항목을 묻는 공고가 남아 있으면 다시 묻는다
