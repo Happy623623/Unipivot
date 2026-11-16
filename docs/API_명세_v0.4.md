@@ -142,6 +142,8 @@
 >
 > v0.4 보강(11/27, 출석 마감 알림): 알림 종류 `lecture_due`가 생겼다 — 주차학습 강의를 읽은 동기화가, 출석 기간 안인데 아직 안 들은 강의가 있으면 **출석 인정 마감 전날 KST 09:00**에 과목마다 한 건을 예약한다(F-55). 링크 종류 `lms_course`(`id`·`course_id` = 내 과목 ID, 누르면 그 과목의 강의 탭)가 생겼고 `muted_notification_types`에 `lecture_due`를 넣을 수 있다. 마이그레이션 하나(`notifications.lms_course_id` 칸·종류 check 더하기)
 >
+> v0.4 보강(11/28, 청년정책 서술형 자격): `POST /internal/jobs/fetch-policies`(04:00 수집)가 `YOUTH_TEXT_ENABLED`를 켰을 때 바뀐 정책의 "추가 자격"·"참여 제한" 글을 모델로 판정할 수 있는 조건으로 옮겨 저장한다(F-11b). 정책마다 수집 실행의 자식 실행(엔진 `extract.youth_text`)이 생기고, 켠 다음 수집은 그 글이 있는 정책을 한 번씩 다시 저장한다(`updated`가 는다). 응답 모양은 그대로다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1536,7 +1538,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 - 토큰 수·비용은 사용자 응답에 넣지 않고 내부 지표로만 쓴다
 - 실패 시 `status: "failed"`, `error: { "code": "LLM_TIMEOUT", "message": "..." }`
 - `error`는 서버가 정한 에러(13장 코드)만 그대로 보여 준다. 그 밖의 예외는 `INTERNAL_ERROR`와 정해진 문구로 바꿔 내부 내용이 나가지 않게 한다
-- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다. 준비하기는 get_document_guide → 필요 서류 확인, build_prep_plan → 마감일에서 거꾸로 일정 짜기다(둘 다 pipeline). 마감일 캘린더 등록은 준비하기 단계가 아니라 따로 부르는 API다(7장). 포스터 추출은 submit_poster → 포스터에서 글자·날짜 읽기 한 줄이다(pipeline). 학교 공지 링크는 fetch_notice_page → 공지 페이지 읽기, fetch_notice_files → 첨부 파일 받기, import_notice → AI로 지원 자격 정리다(모두 pipeline. 요건 추출 단계는 공고 상세의 처리 과정에 있다). LMS 동기화의 extract_announcement → 기회성 공지에서 지원 자격 정리다(pipeline. 요건 추출 단계는 공고 상세의 처리 과정에 있다).
+- label: read_attachment_text → 첨부 '파일명' 읽기, read_attachment_image → 첨부 '파일명' 이미지로 읽기, fetch_original → 공고 원문 페이지 읽기, submit_requirements → 지원 자격 정리, fetch_youth_policies → 온통청년에서 정책 정보 받기, build_youth_requirements → 온통청년 항목으로 지원 자격 정리(둘 다 pipeline. 서술형 자격 요건화를 켜면 정책마다 자식 실행 `submit_youth_conditions`가 생기고 공고 상세에는 수집 실행이 그대로 보인다, 11/28), 그 밖은 도구 이름. 번호로 첨부를 못 찾으면 "첨부 N번"이다. 준비하기는 get_document_guide → 필요 서류 확인, build_prep_plan → 마감일에서 거꾸로 일정 짜기다(둘 다 pipeline). 마감일 캘린더 등록은 준비하기 단계가 아니라 따로 부르는 API다(7장). 포스터 추출은 submit_poster → 포스터에서 글자·날짜 읽기 한 줄이다(pipeline). 학교 공지 링크는 fetch_notice_page → 공지 페이지 읽기, fetch_notice_files → 첨부 파일 받기, import_notice → AI로 지원 자격 정리다(모두 pipeline. 요건 추출 단계는 공고 상세의 처리 과정에 있다). LMS 동기화의 extract_announcement → 기회성 공지에서 지원 자격 정리다(pipeline. 요건 추출 단계는 공고 상세의 처리 과정에 있다).
 - 앞에서 읽은 곳의 뒷부분을 읽은 호출(시작 위치가 0보다 큼, Vision은 PDF 2쪽부터)은 "이어 읽기"다(예: 첨부 '파일명' 이어 읽기).
 - 도구가 오류를 돌려줬거나 제출이 거절된 호출은 status failed다. tool_calls.status에는 succeeded로 남는다.
 - note는 주소를 지우고 공백을 한 칸으로 줄인 한 줄이고 최대 200자다.

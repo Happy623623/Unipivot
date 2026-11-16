@@ -35,6 +35,7 @@ from app.pricing import PRICES
 from app.syllabi import service as syllabus_service
 from app.syllabi.extract import TIMEOUT_SECONDS as SYLLABUS_SECONDS
 from app.syllabi.prompt import EXTRACT_SPEC
+from app.youth import refine as youth_refine
 
 # 실행 기록에 엔진 도장을 찍는 곳(O2). 엔진이 여럿인 흐름은 자식, 엔진 하나뿐인 흐름은 뿌리에 찍는다
 STAMPED = {
@@ -45,11 +46,12 @@ STAMPED = {
     syllabus_service.ENGINE,
     material_service.ENGINE,
     prepare_service.ENGINE,
+    youth_refine.ENGINE,  # 청년정책 수집의 서술형 자격 요건화(자식, F-11b)
 }
 
 
-def test_the_registry_lists_the_sixteen_engines_of_the_spec_in_order() -> None:
-    """명세 v1 2장 표와 같은 엔진, 같은 순서(수집 → 이해 → 검증 → 판정 → 실행)다."""
+def test_the_registry_lists_the_engines_of_the_spec_in_order() -> None:
+    """명세 v1 2장 표와 같은 엔진(열여섯 + 청년정책 서술형 자격 F-11b), 같은 순서(수집 → 이해 → 검증 → 판정 → 실행)다."""
     assert list(ENGINES) == [
         "collect.notice",
         "collect.youth",
@@ -58,6 +60,7 @@ def test_the_registry_lists_the_sixteen_engines_of_the_spec_in_order() -> None:
         "extract.requirements",
         "read.vision",
         "extract.youth",
+        "extract.youth_text",
         "extract.poster",
         "extract.syllabus",
         "summarize.material",
@@ -87,11 +90,12 @@ def test_llm_engines_name_a_priced_model_setting_that_matches_their_tier() -> No
         "classify.announcement",
         "extract.requirements",
         "read.vision",
+        "extract.youth_text",
         "extract.poster",
         "extract.syllabus",
         "summarize.material",
         "guide.documents",
-    ]  # 명세 v1 2장: LLM을 쓰는 엔진은 7개, 모델이 도구를 고르는 것은 하나
+    ]  # 명세 v1 2장의 7개 + 청년정책 서술형 자격(F-11b). 모델이 도구를 고르는 것은 하나
     assert [spec.id for spec in llm if spec.kind == "llm_loop"] == ["extract.requirements"]
     for spec in llm:
         model = model_name(spec, settings)
@@ -130,6 +134,7 @@ def test_the_tools_the_model_sees_are_the_ones_in_the_registry() -> None:
     assert ENGINES["extract.poster"].tools == (SUBMIT_POSTER.name,)
     assert ENGINES["extract.syllabus"].tools == (EXTRACT_SPEC.name,)
     assert ENGINES["guide.documents"].tools == (guide.TOOL.name,)
+    assert ENGINES["extract.youth_text"].tools == (youth_refine.submit_spec(["추가 자격"]).name,)
     assert ENGINES["summarize.material"].tools == ()  # 도구 없이 글로 답한다
 
 
@@ -141,6 +146,8 @@ def test_the_time_limits_are_the_ones_in_the_code() -> None:
     assert ENGINES["extract.syllabus"].timeout_s == SYLLABUS_SECONDS
     assert ENGINES["summarize.material"].timeout_s == SUMMARY_SECONDS
     assert ENGINES["guide.documents"].timeout_s == guide.TIMEOUT_SECONDS
+    assert ENGINES["extract.youth_text"].timeout_s == youth_refine.TIMEOUT_SECONDS
+    assert ENGINES["extract.youth_text"].version == youth_refine.VERSION
 
 
 def test_the_contract_types_and_the_code_modules_exist() -> None:

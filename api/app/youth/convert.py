@@ -624,6 +624,11 @@ def _last_section(raw_text: str | None, name: str) -> str | None:
     return text or None
 
 
+def meaningful(value: Any) -> str | None:
+    """빈 값·"-"·"해당없음" 같은 글은 None이다. 공백·줄바꿈은 한 칸으로 줄인다(서술형 요건화도 쓴다)."""
+    return _meaningful(value)
+
+
 def _meaningful(value: Any) -> str | None:
     """빈 값·"-"·"해당없음" 같은 글은 None이다. 공백·줄바꿈은 한 칸으로 줄인다."""
     text = _text(value)

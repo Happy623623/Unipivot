@@ -16,7 +16,7 @@ READ_TEXT, READ_IMAGE, FETCH_ORIGINAL, SUBMIT = (
 READ_TOOLS = frozenset({READ_TEXT, READ_IMAGE, FETCH_ORIGINAL})
 _OPERATOR_ORDER = ("eq", "neq", "in", "not_in", "gte", "lte", "between")
 
-_VALUE_EXAMPLES = {
+VALUE_EXAMPLES = {  # 항목마다 값 예시. 청년정책 서술형 요건화(app/youth/refine.py)도 쓴다
     "department": '["소프트웨어융합대학"] (basis: college)',
     "grade": '4 · [1, 2] · {"min": 2, "max": 4}',
     "enrollment_status": '"enrolled" · ["enrolled", "on_leave"]',
@@ -81,7 +81,7 @@ def requirement_rules(
     모델이 연도를 지어낸다).
     """
     fields = "\n".join(
-        f"- {name}({label}) · {_operators(name)} · 예: {_VALUE_EXAMPLES[name]}"
+        f"- {name}({label}) · {_operators(name)} · 예: {VALUE_EXAMPLES[name]}"
         for name, label in FIELD_LABELS.items()
     )
     form = (
