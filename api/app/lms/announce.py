@@ -17,6 +17,10 @@
    알림을 만든다(F-53 2부). 갈래를 적는 것과 **한 트랜잭션**이다 — 할 일·알림 쓰기가 터지면 갈래도
    적히지 않아 공지가 다시 집힌다. 날짜를 못 읽었거나 이미 지난 날이면 갈래만 적고 넘어간다
 
+순서는 흐름 실행기(`app/engines/flows.py`, O5)가 돈다 — 집기 → 공지마다(map) 작은 흐름 하나:
+`classify`(이미 분류한 공지면 건너뜀) → `record`(갈래 + 일정 변경 할 일·알림, 한 트랜잭션) → `opportunity`(기회성일 때).
+흐름은 이 파일 끝의 `ANNOUNCEMENTS`·`ONE_ANNOUNCEMENT`이고, 그림은 오케스트레이션 명세 3단계 4.2와 같다.
+
 지키는 것:
 - **동기화는 실패하지 않는다.** 분류가 터져도 과제·주차 자료는 이미 저장했고, 그 공지는 분류 전으로
   남아 늦춘 시각(30분 × 2^(시도 − 1)) 뒤의 동기화에서 다시 집힌다. 모델 오류·시간 초과는 로그만 남기고 넘어간다
@@ -37,6 +41,7 @@ from psycopg import AsyncConnection
 
 from app.agent_log import AgentRun
 from app.eligibility import KST, Department
+from app.engines.flows import Edge, FlowSpec, FlowState, Node, run_flow
 from app.engines.review import ReviewCode
 from app.extraction.agent import Extractor
 from app.extraction.models import NoticeInput
@@ -119,20 +124,23 @@ class AnnouncementService:
         """
         if self.llm is None or not courses:
             return AnnouncementOutcome()
-        # 집는 문장만 담아 바로 확정한다 — 그래야 임대가 다른 동기화에 보인다
+        state = await run_flow(ANNOUNCEMENTS, _Batch(self, run, now, courses))
+        outcome = AnnouncementOutcome()
+        for one in state.results["each"] if state.ran("each") else ():
+            outcome = _add(outcome, one)
+        return outcome
+
+    async def _claim(
+        self, *, now: datetime, courses: Mapping[int, str]
+    ) -> list[PendingAnnouncement]:
+        """분류할 공지를 집는다. 집는 문장만 담아 바로 확정한다 — 그래야 임대가 다른 동기화에 보인다."""
         async with self.transaction() as conn:
-            pending = await self.repo_for(conn).claim(
+            return await self.repo_for(conn).claim(
                 courses=list(courses),
                 recent_from=now - timedelta(days=self.recent_days),
                 now=now,
                 limit=self.limit,
             )
-        if not pending:
-            return AnnouncementOutcome()
-        outcome = AnnouncementOutcome()
-        for one in pending:
-            outcome = _add(outcome, await self._one(run, one, now=now, courses=courses))
-        return outcome
 
     async def _one(
         self,
@@ -177,10 +185,24 @@ class AnnouncementService:
         now: datetime,
         courses: Mapping[int, str],
     ) -> AnnouncementOutcome:
-        if announcement.classified:
-            # 분류는 끝났고 공고만 못 만든 공지다. 모델을 다시 부르지 않는다
-            made = await self._opportunity(run, announcement, category_hint=None, now=now)
+        """공지 하나의 흐름(`ONE_ANNOUNCEMENT`)을 돌려 결과를 센다. 터지면 그대로 올린다(`_one`이 늦춘다)."""
+        state = await run_flow(ONE_ANNOUNCEMENT, _One(self, run, announcement, now, courses))
+        made = state.results.get("opportunity") is True
+        # 분류는 끝났고 공고만 못 만든 공지(모델을 다시 부르지 않았다)
+        if state.results["classify"] is ALREADY:
             return AnnouncementOutcome(classified=0, opportunities=1 if made else 0)
+        recorded: _Recorded = state.results["record"]
+        if not recorded.written:
+            # 그새 다른 동기화가 먼저 분류했다(임대가 끝난 뒤 겹친 경우). 다음 일은 그쪽 갈래로 한다
+            return AnnouncementOutcome()
+        if recorded.scheduled is not None:
+            return recorded.scheduled
+        return AnnouncementOutcome(classified=1, opportunities=1 if made else 0)
+
+    async def _classify(
+        self, run: AgentRun, announcement: PendingAnnouncement, *, now: datetime
+    ) -> "_Classification":
+        """모델 한 번으로 갈래를 정한다(자식 실행). 아직 아무것도 쓰지 않는다."""
         async with run.tool(CLASSIFY_TOOL, {"announcement_id": announcement.id}) as call:
             assert self.llm is not None
             # 공지 분류는 동기화 실행의 자식 실행이다(엔진 등록부 O2). 모델 호출은 자식에 남고 동기화 실행에는
@@ -207,30 +229,34 @@ class AnnouncementService:
                 "summary": result.summary,
                 "classify_run_id": child.id,
             }
+        return _Classification(result=result, run_id=child.id)
+
+    async def _record(
+        self,
+        announcement: PendingAnnouncement,
+        classified: "_Classification",
+        *,
+        now: datetime,
+        courses: Mapping[int, str],
+    ) -> "_Recorded":
+        """갈래와 일정 변경 할 일·알림을 한 트랜잭션에 쓴다. 할 일·알림 쓰기가 터지면 갈래도 되돌아가 공지가 분류
+        전으로 남고 다시 집힌다(갈래만 남아 할 일·알림이 영영 빠지는 일이 없다)."""
+        result = classified.result
         on = _schedule_day(result, now)
         scheduled: AnnouncementOutcome | None = None
-        # 갈래와 일정 변경 할 일·알림을 한 트랜잭션에 쓴다. 할 일·알림 쓰기가 터지면 갈래도 되돌아가
-        # 공지가 분류 전으로 남고 다시 집힌다(갈래만 남아 할 일·알림이 영영 빠지는 일이 없다)
         async with self.transaction() as conn:
+            # run_id는 갈래를 정한 엔진 실행이다(어느 엔진 버전·모델이 정했는지 거슬러 간다)
             written = await self.repo_for(conn).save_classification(
                 announcement.id,
                 category=result.category,
                 summary=result.summary,
-                run_id=child.id,  # 갈래를 정한 엔진 실행(어느 엔진 버전·모델이 정했는지 거슬러 간다)
+                run_id=classified.run_id,
             )
             if written and on is not None:
                 scheduled = await self._schedule(
                     conn, announcement, result, on=on, now=now, courses=courses
                 )
-        if not written:
-            # 그새 다른 동기화가 먼저 분류했다(임대가 끝난 뒤 겹친 경우). 다음 일은 그쪽 갈래로 한다
-            return AnnouncementOutcome()
-        if scheduled is not None:
-            return scheduled
-        if not result.is_opportunity:  # 일반·자료, 날짜를 못 읽었거나 지난 일정 변경
-            return AnnouncementOutcome(classified=1)
-        made = await self._opportunity(run, announcement, category_hint=result, now=now)
-        return AnnouncementOutcome(classified=1, opportunities=1 if made else 0)
+        return _Recorded(result=result, written=written, scheduled=scheduled)
 
     async def _schedule(
         self,
@@ -350,3 +376,104 @@ def _posted_on(announcement: PendingAnnouncement, now: datetime) -> date:
     """연도 없는 날짜("10. 24.까지")를 읽는 기준. 게시일이 없으면 지금(KST)으로 둔다."""
     moment = announcement.posted_at or now
     return moment.astimezone(KST).date()
+
+
+# ── 흐름 (O5, app/engines/flows.py) ─────────────────────────────────────────
+
+ALREADY = object()  # classify의 결과: 이미 분류한 공지(공고만 못 만든 기회성 공지)
+
+
+@dataclass(frozen=True)
+class _Batch:
+    service: AnnouncementService
+    run: AgentRun
+    now: datetime
+    courses: Mapping[int, str]
+
+
+@dataclass(frozen=True)
+class _One:
+    service: AnnouncementService
+    run: AgentRun
+    announcement: PendingAnnouncement
+    now: datetime
+    courses: Mapping[int, str]
+
+
+@dataclass(frozen=True)
+class _Classification:
+    result: Classified
+    run_id: str  # 분류 자식 실행
+
+
+@dataclass(frozen=True)
+class _Recorded:
+    result: Classified
+    written: bool  # 갈래를 먼저 적었다(늦은 쪽이면 False)
+    scheduled: AnnouncementOutcome | None  # 일정 변경 할 일·알림을 썼으면 그 수
+
+
+async def _claim_node(state: FlowState) -> list[PendingAnnouncement]:
+    batch: _Batch = state.refs
+    return await batch.service._claim(now=batch.now, courses=batch.courses)
+
+
+async def _each_node(state: FlowState, announcement: PendingAnnouncement) -> AnnouncementOutcome:
+    batch: _Batch = state.refs
+    return await batch.service._one(batch.run, announcement, now=batch.now, courses=batch.courses)
+
+
+async def _classify_node(state: FlowState) -> object:
+    one: _One = state.refs
+    if one.announcement.classified:
+        return ALREADY
+    return await one.service._classify(one.run, one.announcement, now=one.now)
+
+
+async def _record_node(state: FlowState) -> _Recorded:
+    one: _One = state.refs
+    return await one.service._record(
+        one.announcement, state.results["classify"], now=one.now, courses=one.courses
+    )
+
+
+async def _opportunity_node(state: FlowState) -> bool:
+    one: _One = state.refs
+    classified = state.results["classify"]
+    hint = classified.result if isinstance(classified, _Classification) else None
+    return await one.service._opportunity(
+        one.run, one.announcement, category_hint=hint, now=one.now
+    )
+
+
+def _fresh_opportunity(recorded: _Recorded) -> bool:
+    """갈래를 먼저 적었고 기회성이다(일정 변경으로 할 일을 쓴 공지는 갈래가 일정 변경이라 여기 오지 않는다)."""
+    return recorded.written and recorded.result.is_opportunity
+
+
+# 동기화 한 번의 공지: 집기 → 공지마다 작은 흐름(차례로 — 동시에 돌리면 모델 호출이 몰린다)
+ANNOUNCEMENTS = FlowSpec(
+    id="lms_announcements",
+    entry="claim",
+    nodes=(
+        Node("claim", run=_claim_node),
+        Node("each", items=lambda state: state.results["claim"], each=_each_node, concurrency=1),
+    ),
+    edges=(Edge("claim", "each", when=bool, label="집은 공지가 있음"),),
+)
+
+# 공지 하나: 분류 → 갈래 적기(+ 일정 변경 할 일·알림) → 기회성이면 공고. 이미 분류한 공지는 공고만 다시 만든다
+ONE_ANNOUNCEMENT = FlowSpec(
+    id="lms_announcement",
+    entry="classify",
+    nodes=(
+        Node("classify", run=_classify_node),
+        Node("record", run=_record_node),
+        Node("opportunity", run=_opportunity_node),
+    ),
+    edges=(
+        Edge("classify", "record", when=lambda result: result is not ALREADY, label="새로 분류함"),
+        Edge("classify", "opportunity", when=lambda result: result is ALREADY, label="이미 기회성"),
+        Edge("record", "opportunity", when=_fresh_opportunity, label="기회성"),
+    ),
+)
