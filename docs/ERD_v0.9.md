@@ -751,7 +751,7 @@ erDiagram
 ### 알림함 · 설정 · 조회 기록
 
 - **알림함**: 알림 행 하나가 푸시 발송(`status`)과 알림함 표시(`read_at`)를 함께 담는다. `scheduled_at`이 지난 행만 알림함에 보이고, 푸시를 끈 사용자도 행은 만들되 발송 배치가 푸시만 건너뛴다. 설정에서 끈 종류는 행을 만들지 않는다.
-- **프로필 정보 필요 알림**: 사용자당 같은 `dedupe_key` 1행이 물어볼 항목당 1회를 보장한다(11/19 — 전에는 공고당 1회라 같은 항목을 공고 수만큼 되물었다. 11/11 대기 490건이 묶으면 학생 × 항목 6건). 묶인 공고 수가 바뀌면 아직 보내지 않은 행의 `opportunity_id`(대표 공고)·`body`만 고친다. 하루 1건 제한은 발송 배치가 건다. 한도를 넘은 행은 다음 날 KST 09:00으로 미룬다 — pending으로 남겨 두면 발송 묶음을 채워 다른 알림이 나가지 못한다. 알림함에도 미룬 시각에 나온다(11/06).
+- **프로필 정보 필요 알림**: 사용자당 같은 `dedupe_key` 1행이 물어볼 항목당 한 알림을 보장한다(11/19 — 전에는 공고당 1회라 같은 항목을 공고 수만큼 되물었다. 11/11 대기 490건이 묶으면 학생 × 항목 6건). 보낸 지 7일(KST 날짜)이 지나도 그 항목을 묻는 공고가 남아 있으면 같은 행을 다시 연다 — `status` pending, `scheduled_at` 알릴 날 09:00, `sent_at`·`read_at` 비움(11/26). 판정 불가 원인이 프로필 공백뿐인 공고(`condition_results`에서 결과가 모름인 묶음 안의 모름 조건이 모두 `missing_profile`)만 묻는다(PRD F-33, 11/26). 묶인 공고 수가 바뀌면 아직 보내지 않은 행의 `opportunity_id`(대표 공고)·`body`만 고친다. 하루 1건 제한은 발송 배치가 건다. 한도를 넘은 행은 다음 날 KST 09:00으로 미룬다 — pending으로 남겨 두면 발송 묶음을 채워 다른 알림이 나가지 못한다. 알림함에도 미룬 시각에 나온다(11/06).
 - **새 공고**: 등록 7일 이내, 판정 eligible, `opportunity_views`에 행이 없는 공고다. 상세 조회 API가 upsert하며 `first_viewed_at`은 유지한다.
 - opportunity_views는 공고 상세를 열 때 upsert한다. first_viewed_at은 처음 연 시각 그대로이고 last_viewed_at은 늦은 쪽을 남긴다. 피드의 새 공고 표시와 홈 요약의 new_eligible은 행이 있는지만 본다.
 - **서류 체크**: 상세의 서류 체크는 `planner_tasks`(prep_plan_id, document_id) 행의 `is_done`을 그대로 쓴다. 준비하기 전에는 행이 없어 체크할 수 없고, 부분 유니크 인덱스가 서류당 할 일 1개를 보장한다.
@@ -771,7 +771,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | new_eligible | `new_eligible:day:{알릴 날(KST)}` | 학생마다 하루 1행 — 그날 알릴 공고를 한 행으로 묶고 마감이 가장 가까운 공고를 잇는다. 묶음에 넣는 공고는 지난 묶음을 만든 뒤(`created_at`) 들어온 것(11/20, 전에는 `new_eligible:opp:{opportunity_id}` 공고당 1회) |
 | deadline_soon (공고) | `deadline_soon:opp:{opportunity_id}:D-3`, `…:D-1` | 공고당 2행 |
 | deadline_soon (LMS 과제) | `deadline_soon:asg:{lms_assignment_id}:D-3`, `…:D-1` | 제출하면 pending 행 삭제 |
-| profile_needed | `profile_needed:field:{물어볼 항목}` | 항목당 1회 — 같은 항목을 묻는 공고는 한 행으로 묶고 마감이 가장 가까운 공고를 잇는다(11/19, 전에는 `profile_needed:opp:{opportunity_id}` 공고당 1회). 하루 1건 제한은 발송 배치 |
+| profile_needed | `profile_needed:field:{물어볼 항목}` | 항목당 한 행, 보낸 지 7일이 지나면 다시 연다(11/26) — 같은 항목을 묻는 공고는 한 행으로 묶고 마감이 가장 가까운 공고를 잇는다(11/19, 전에는 `profile_needed:opp:{opportunity_id}` 공고당 1회). 하루 1건 제한은 발송 배치 |
 | new_assignment | `new_assignment:asg:{lms_assignment_id}` | |
 | new_material | `new_material:mod:{lms_module_item_id}` | |
 | schedule_change | `schedule_change:ann:{lms_announcement_id}` | P1 |
@@ -955,6 +955,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-26): 정보 필요 알림은 판정 불가 원인이 프로필 공백뿐인 공고만(condition_results의 모름 이유로 본다), 보낸 행은 7일이 지나면 그 항목을 묻는 공고가 남아 있을 때 다시 연다. 스키마 변경 없음
 - v0.9 보강 (2026-11-24): lms_lecture_progress(주차학습 강의와 내 수강 상태, F-55)·lms_connections.lectures_checked_at — 동기화가 LearningX 주차학습을 한 번 열어 읽는다(강의 항목은 열지 않는다). 처리방침 v0.3(11/28 시행)과 동의 문구 2026-11-24 판
 - v0.9 보강 (2026-11-23): lms_module_items.removed_at — 그 과목 목록을 끝까지 받았는데 없던 항목에 찍고 다시 나타나면 지운다(빈 목록이면 찍지 않는다). 자료 탭·새 학업 정보·새 자료 수에서 빠지고 강의자료를 올린 항목만 남는다(사용자 피드백 2①)
 - v0.9 보강 (2026-11-21): agent_runs.engine·engine_version·model·review_codes — 엔진 도장(O2). 공지 분류가 동기화 실행의 자식 실행이 되고 lms_announcements.classified_run_id가 그 자식을 가리킨다

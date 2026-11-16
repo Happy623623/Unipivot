@@ -8,18 +8,21 @@
 | --- | --- | --- |
 | new_eligible | `new_eligible:day:{알릴 날}` | 등록 7일 이내 + 적격 + 아직 상세를 열지 않음 + 지난 묶음 뒤에 들어옴. **학생마다 하루 한 행** |
 | deadline_soon | `deadline_soon:opp:{id}:D-3`·`:D-1` | 적격이거나 준비한 공고. 마감일이 있어야 한다 |
-| profile_needed | `profile_needed:field:{항목}` | 판정 불가 + 물어볼 항목이 있음 + 마감까지 3일 넘게 남음. **학생 × 물어볼 첫 항목마다 한 행** |
+| profile_needed | `profile_needed:field:{항목}` | 판정 불가 원인이 프로필 공백뿐 + 마감까지 3일 넘게 남음. **학생 × 물어볼 첫 항목마다 한 행** |
 
 새 공고 알림은 **학생마다 하루 한 건으로 묶는다**(11/20). 그날 알릴 공고가 여럿이면 마감이 가장 가까운 공고를
 대표로 잇고 "대표 제목 외 N개"라고 쓴다. 묶음에 넣는 공고는 **지난 묶음을 만든 뒤에 들어온 것**이다(처음이면 7일
 그대로) — 묶음을 만든 시각(`created_at`)이 다음 묶음의 기준이다. 전에는 공고마다 한 행이라, 청년정책이 한꺼번에
 들어온 날 아침에 학생마다 열 몇 건이 갔다(11/12: 학생 6명에게 96건).
 
-정보 필요 알림은 **항목 단위로 묶는다**(11/19). 마감까지 3일 넘게 남은 공고만 묻는다(PRD F-33, 11/20). 같은 항목(예: 거주지역)을 묻는 공고가 여럿이면 알림은 하나이고,
+정보 필요 알림은 **항목 단위로 묶는다**(11/19). 마감까지 3일 넘게 남은 공고만 묻는다(PRD F-33, 11/20). **판정 불가
+원인이 프로필 공백뿐인 공고만** 묻는다(PRD F-33, 11/26) — 원문 확인 조건(모호·판정할 수 없는 항목·기준 다름)이 함께
+모름인 공고는 정보를 넣어도 판정이 원문 확인으로 남는다. 같은 항목(예: 거주지역)을 묻는 공고가 여럿이면 알림은 하나이고,
 마감이 가장 가까운 공고(없으면 새 공고)를 대표로 잇는다 — 누르면 그 공고 상세의 즉석 입력으로 가고, 한 번 넣으면
-묶인 공고가 함께 판정된다. 공고 수가 바뀌면 아직 보내지 않은 행의 대표·문구만 고친다. 보낸 항목은 다시 묻지
-않는다(항목당 1회). 전에는 공고마다 한 행이라 같은 항목을 공고 수만큼 하루 1건씩 되물었다(11/11: 한 학생에게
-"거주지역" 187건).
+묶인 공고가 함께 판정된다. 공고 수가 바뀌면 아직 보내지 않은 행의 대표·문구만 고친다. 보낸 항목은 **7일 동안**
+다시 묻지 않는다 — 7일이 지나도 그 항목을 묻는 공고가 남아 있으면 같은 행을 새 알림처럼 다시 연다(11/26, 그 전에는
+항목당 1회라 무시한 항목을 다시 묻지 않았다). 전에는 공고마다 한 행이라 같은 항목을 공고 수만큼 하루 1건씩
+되물었다(11/11: 한 학생에게 "거주지역" 187건).
 
 예약은 저장된 판정(`eligibility_results`)을 본다. 판정은 학생이 피드·상세를 열 때 계산되므로, 예약
 작업(`app/jobs.py`)이 예약하기 전에 `alert_users`(동의를 마친 사용자)의 낡은 판정을 사용자마다 다시
@@ -75,6 +78,7 @@ DEADLINE_TITLE = "마감이 가까워요"
 PROFILE_TITLE = "프로필 정보가 필요해요"
 PROFILE_KEY = "profile_needed:field:"  # 정보 필요 알림 키의 앞부분. 뒤에 물어볼 항목 이름이 붙는다
 PROFILE_MIN_DAYS = 3  # 정보 필요 알림은 마감까지 이 날수보다 많이 남은 공고만 묻는다(PRD F-33)
+PROFILE_REASK_DAYS = 7  # 보낸 정보 필요 알림은 이 날수가 지나면 다시 묻는다
 NEW_KEY = "new_eligible:day:"  # 새 공고 알림 키의 앞부분. 뒤에 알릴 날(KST 날짜)이 붙는다
 LEGACY_NEW_KEY = "new_eligible:opp:"  # 공고마다 한 행이던 옛 새 공고 알림 키(11/20 전)
 ASSIGNMENT_TYPE = "new_assignment"  # notifications.type·user_settings.muted_notification_types
@@ -106,6 +110,15 @@ _UNEXPIRED = " (o.deadline_at is null or o.deadline_at >= %(now)s)"
 _AT_HOUR = f"((%s)::date + time '{NOTIFY_HOUR:02d}:00') at time zone 'Asia/Seoul'"
 _DEADLINE_DAY = "(o.deadline_at at time zone 'Asia/Seoul')::date - d.days"
 _NEXT_DAY = "%(next_day)s"
+# 판정 불가 원인이 프로필 공백뿐이다(PRD F-33): 결과가 모름인 묶음(통과한 조건이 없는 묶음) 안의 모름 조건이 모두
+# 프로필이 비어서 모름이다. 원문 확인 조건(모호·판정할 수 없는 항목·기준 다름)이 그런 묶음에 함께 있으면 정보를 넣어도
+# 판정이 원문 확인으로 남는다. 묶음 번호가 없는 옛 판정은 묻지 않는 쪽으로 본다(예약 앞에서 다시 계산된다)
+_ONLY_PROFILE = (
+    " not exists (select 1 from jsonb_array_elements(e.condition_results) c"
+    " where c->>'outcome' = 'unknown' and c->>'unknown_reason' is distinct from 'missing_profile'"
+    " and not exists (select 1 from jsonb_array_elements(e.condition_results) d"
+    " where d->'clause_no' = c->'clause_no' and d->>'outcome' = 'pass'))"
+)
 
 
 def needed_phrases() -> dict[str, str]:
@@ -200,7 +213,11 @@ class NotificationRepository:
             (
                 "profile_needed",
                 _PROFILE_NEEDED,
-                {"needed": Jsonb(needed_phrases()), "profile_key": PROFILE_KEY},
+                {
+                    "needed": Jsonb(needed_phrases()),
+                    "profile_key": PROFILE_KEY,
+                    "reask": PROFILE_REASK_DAYS,
+                },
             ),
         ):
             rows = await self._rows(query, {**common, **params, "type": kind})
@@ -611,10 +628,11 @@ _DEADLINE_SOON = (
     " and notifications.scheduled_at <> excluded.scheduled_at" + _INSERTED
 )
 
-# 정보 필요: 판정 불가 + 물어볼 항목이 있음 + 알릴 때 마감까지 3일 넘게 남음(PRD F-33). **학생 × 물어볼 첫
-# 항목마다 한 행**으로 묶는다. 대표 공고는 마감이 가장 가까운 것(없으면 새 공고)이고, 문구는 "대표 제목 외 N개 ·
-# 항목을 입력하면 판정할 수 있어요"다(항목 이름은 조사까지 붙여 넘긴다). 공고 수가 바뀌면 아직 보내지 않은 행의
-# 대표·문구만 고친다
+# 정보 필요: 판정 불가 원인이 프로필 공백뿐 + 물어볼 항목이 있음 + 알릴 때 마감까지 3일 넘게 남음(PRD F-33).
+# **학생 × 물어볼 첫 항목마다 한 행**으로 묶는다. 대표 공고는 마감이 가장 가까운 것(없으면 새 공고)이고, 문구는
+# "대표 제목 외 N개 · 항목을 입력하면 판정할 수 있어요"다(항목 이름은 조사까지 붙여 넘긴다). 공고 수가 바뀌면 아직
+# 보내지 않은 행의 대표·문구만 고친다. 보낸 지 7일이 지난 행(알릴 날 기준)은 새 알림처럼 다시 연다 — 시각은 알릴
+# 날 09:00, 읽음·보낸 때는 비운다. 아직 보내지 않은 행의 시각(하루 한도로 미룬 것)과 읽음은 그대로 둔다
 _PROFILE_NEEDED = (
     f"{_COLUMNS} select g.user_id, %(type)s, g.opportunity_id, '{PROFILE_TITLE}',"
     " g.title || case when g.waiting > 1 then ' 외 ' || (g.waiting - 1) || '개' else '' end"
@@ -626,18 +644,27 @@ _PROFILE_NEEDED = (
     " order by o.deadline_at nulls last, o.created_at desc, o.id) as pick"
     f"{_JOINS} where{_ACTIVE} and{_UNEXPIRED} and{_NOT_DISMISSED} and{_VISIBLE} and{_NOT_MUTED}"
     " and e.status = 'undetermined' and coalesce(array_length(e.missing_fields, 1), 0) > 0"
-    " and %(needed)s::jsonb ? e.missing_fields[1]"
+    f" and %(needed)s::jsonb ? e.missing_fields[1] and{_ONLY_PROFILE}"
     f" and (o.deadline_at is null or o.deadline_at > {_AT_HOUR % _NEXT_DAY}"
     f" + make_interval(days => {PROFILE_MIN_DAYS}))) g"
     f" where g.pick = 1 and {_AT_HOUR % _NEXT_DAY} > %(now)s"
     " on conflict (user_id, dedupe_key) do update"
-    " set opportunity_id = excluded.opportunity_id, body = excluded.body"
-    " where notifications.status = 'pending'"
+    " set opportunity_id = excluded.opportunity_id, body = excluded.body,"
+    " scheduled_at = case when notifications.status = 'pending'"
+    " then notifications.scheduled_at else excluded.scheduled_at end,"
+    " read_at = case when notifications.status = 'pending' then notifications.read_at end,"
+    " sent_at = case when notifications.status = 'pending' then notifications.sent_at end,"
+    " status = 'pending'"
+    " where (notifications.status = 'pending'"
     " and (notifications.body is distinct from excluded.body"
-    " or notifications.opportunity_id is distinct from excluded.opportunity_id)" + _INSERTED
+    " or notifications.opportunity_id is distinct from excluded.opportunity_id))"
+    " or (notifications.status <> 'pending' and notifications.sent_at is not null"
+    " and (notifications.sent_at at time zone 'Asia/Seoul')::date"
+    " <= %(next_day)s::date - %(reask)s::int)" + _INSERTED
 )
 
-# 보낼 이유가 없어진 pending 행: 숨김·준비 취소·마감 지남·숨겨진 공고·이미 본 새 공고·마감 3일 안의 정보 필요
+# 보낼 이유가 없어진 pending 행: 숨김·준비 취소·마감 지남·숨겨진 공고·이미 본 새 공고·마감 3일 안의 정보 필요·
+# 원문 확인 조건이 함께 모름이 된 정보 필요
 _STALE = (
     # 지우는 대상(n)은 USING의 조인 조건에서 볼 수 없다. 그래서 과목 공개 범위는 exists로 본다
     "delete from notifications n using opportunities o"
@@ -665,12 +692,13 @@ _STALE = (
     # 판정이 바뀌어 적격이 아니게 되면 "지원할 수 있는 공고"가 아니다
     "      or not exists (select 1 from eligibility_results e where e.user_id = n.user_id"
     "        and e.opportunity_id = o.id and e.status = 'eligible')))"
-    # 정보 필요는 대표 공고가 아직 그 항목(키 끝)을 먼저 묻는지 본다(예약이 방금 대표를 고쳤다). 공고마다 한
-    # 행이던 옛 키(profile_needed:opp:…)는 끝이 항목 이름이 아니라 여기서 함께 지워진다(11/19)
+    # 정보 필요는 대표 공고가 아직 그 항목(키 끝)을 먼저 묻고 원인이 프로필 공백뿐인지 본다(예약이 방금 대표를
+    # 고쳤다). 공고마다 한 행이던 옛 키(profile_needed:opp:…)는 끝이 항목 이름이 아니라 여기서 함께 지워진다(11/19)
     "   or (n.type = 'profile_needed' and not exists ("
     "        select 1 from eligibility_results e where e.user_id = n.user_id"
     "        and e.opportunity_id = o.id and e.status = 'undetermined'"
-    "        and e.missing_fields[1] = substr(n.dedupe_key, length(%(profile_key)s) + 1)))"
+    "        and e.missing_fields[1] = substr(n.dedupe_key, length(%(profile_key)s) + 1)"
+    f"        and{_ONLY_PROFILE}))"
     # 마감까지 3일 넘게 남지 않았다(예약과 같은 기준: 알릴 날 09:00 + 3일, PRD F-33)
     "   or (n.type = 'profile_needed' and o.deadline_at is not null"
     f"      and o.deadline_at <= {_AT_HOUR % _NEXT_DAY}"

@@ -22,6 +22,7 @@ from app.eval.world import connect
 from app.repositories.notifications import (
     NOTIFY_HOUR,
     PROFILE_DAILY,
+    PROFILE_REASK_DAYS,
     NotificationRepository,
 )
 from app.repositories.opportunities import OpportunityRepository, Refresh
@@ -94,14 +95,21 @@ class World:
         return str(row["id"])
 
     async def judge(
-        self, user_id: str, opportunity_id: str, status: str, missing: Sequence[str] = ()
+        self,
+        user_id: str,
+        opportunity_id: str,
+        status: str,
+        missing: Sequence[str] = (),
+        conditions: Sequence[dict[str, Any]] = (),
     ) -> None:
+        """저장된 판정 하나. conditions는 condition_results(조건마다 묶음·결과·모름 이유)다."""
         await self.conn.execute(
             "insert into eligibility_results (user_id, opportunity_id, status, condition_results,"
-            " missing_fields) values (%s, %s, %s, '[]'::jsonb, %s)"
+            " missing_fields) values (%s, %s, %s, %s, %s)"
             " on conflict (user_id, opportunity_id) do update set status = excluded.status,"
+            " condition_results = excluded.condition_results,"
             " missing_fields = excluded.missing_fields",
-            (user_id, opportunity_id, status, list(missing)),
+            (user_id, opportunity_id, status, Jsonb(list(conditions)), list(missing)),
         )
 
     async def requirement(
@@ -921,8 +929,8 @@ async def test_answering_one_field_moves_the_question_to_the_next_one() -> None:
         assert await built.bodies(student) == ["두 항목 장학 · 나이를 입력하면 판정할 수 있어요"]
 
 
-async def test_a_field_is_asked_once_even_when_new_opportunities_need_it() -> None:
-    """보낸 항목은 다시 묻지 않는다(항목당 1회) — 같은 항목을 묻는 공고가 새로 들어와도 알림을 만들지 않는다."""
+async def test_a_field_is_not_asked_again_within_a_week() -> None:
+    """보낸 항목은 7일 동안 다시 묻지 않는다 — 같은 항목을 묻는 공고가 새로 들어와도 알림을 만들지 않는다."""
     async with world() as built:
         student = await built.user()
         first = await built.opportunity("첫 공고", days=10)
@@ -965,6 +973,142 @@ async def test_old_per_opportunity_profile_notices_are_cleared() -> None:
         lines = await built.keys(student)
         assert "profile_needed|옛 알림 0|10-14 08:00|succeeded" in lines  # 보낸 것은 그대로
         assert sum("pending" in line for line in lines) == 1  # 항목 단위 새 행 하나
+
+
+def condition(clause: int, outcome: str, reason: str | None = None) -> dict[str, Any]:
+    """condition_results 한 줄(app/eligibility/models.py의 storage_row 모양)."""
+    return {
+        "requirement_id": str(uuid.uuid4()),
+        "clause_no": clause,
+        "outcome": outcome,
+        "unknown_reason": reason,
+        "user_value": None,
+    }
+
+
+MISSING = condition(1, "unknown", "missing_profile")  # 거주지역이 비어 모름
+
+
+async def test_profile_notices_only_ask_when_the_profile_is_the_only_cause() -> None:
+    """원문 확인 조건(모호·판정할 수 없는 항목·기준 다름)이 함께 모름이면 정보를 넣어도 판정이 남아 묻지 않는다(PRD F-33).
+    그 조건이 이미 통과한 묶음에 있으면 원인은 프로필뿐이다."""
+    async with world() as built:
+        student = await built.user()
+        cases = {
+            # 다른 묶음의 원문 확인 조건 — 거주지역을 넣어도 판정할 수 없다
+            "다른 묶음 모호": (5, [MISSING, condition(2, "unknown", "ambiguous")]),
+            # 같은 묶음(또는) — 거주지역이 맞지 않으면 남는다
+            "같은 묶음 판정 불가 항목": (
+                6,
+                [MISSING, condition(1, "unknown", "unsupported_field")],
+            ),
+            "기준 다름": (7, [MISSING, condition(2, "unknown", "basis_mismatch")]),
+            # 모호한 조건의 묶음은 다른 조건이 통과했다 — 남는 원인은 거주지역뿐
+            "통과한 묶음의 모호": (
+                8,
+                [MISSING, condition(2, "unknown", "ambiguous"), condition(2, "pass")],
+            ),
+            "프로필뿐": (9, [MISSING, condition(2, "pass")]),
+        }
+        for title, (days, conditions) in cases.items():
+            opportunity = await built.opportunity(title, days=days)
+            await built.judge(student, opportunity, "undetermined", ["region"], conditions)
+
+        result = await built.repo.schedule(now=NOW)
+
+        assert result.by_type["profile_needed"] == 1
+        # 대표는 원인이 프로필뿐인 공고 중 마감이 가장 가까운 것이고, 묶인 수에도 그 공고만 센다
+        assert await built.bodies(student) == [
+            "통과한 묶음의 모호 외 1개 · 거주지역을 입력하면 판정할 수 있어요"
+        ]
+
+
+async def test_a_pending_profile_notice_leaves_when_the_cause_is_no_longer_only_the_profile() -> (
+    None
+):
+    """요건이 다시 정리돼 원문 확인 조건이 함께 모름이 되면, 아직 보내지 않은 알림을 지운다."""
+    async with world() as built:
+        student = await built.user()
+        opportunity = await built.opportunity("다시 정리된 장학", days=10)
+        await built.judge(student, opportunity, "undetermined", ["region"], [MISSING])
+        assert (await built.repo.schedule(now=NOW)).created == 1
+
+        await built.judge(
+            student,
+            opportunity,
+            "undetermined",
+            ["region"],
+            [MISSING, condition(2, "unknown", "ambiguous")],
+        )
+        moved = await built.repo.schedule(now=NOW)
+
+        assert (moved.created, moved.rescheduled, moved.removed) == (0, 0, 1)
+        assert await built.keys(student) == []
+
+
+async def test_a_sent_field_is_asked_again_after_a_week() -> None:
+    """보낸 지 7일이 지나도 그 항목을 묻는 공고가 남아 있으면 같은 행을 새 알림처럼 다시 연다(알릴 날 09:00,
+    읽지 않음). 7일이 되기 전에는 그대로이고, 다시 연 알림도 하루 한도·대표 고치기를 그대로 따른다."""
+    async with world() as built:
+        student = await built.user()
+        first = await built.opportunity("첫 공고", days=30)
+        await built.judge(student, first, "undetermined", ["region"], [MISSING])
+        await built.repo.schedule(now=NOW)
+        await built.repo.send(now=NOW + timedelta(hours=2))  # 10-15 10:00에 보냈다
+        await built.repo.read(student, now=NOW + timedelta(hours=3))
+
+        early = await built.repo.schedule(now=NOW + timedelta(days=PROFILE_REASK_DAYS - 1))
+        assert (early.created, early.rescheduled) == (0, 0)
+        assert await built.keys(student) == ["profile_needed|첫 공고|10-15 09:00|succeeded"]
+
+        nearer = await built.opportunity("새 공고", days=20)  # 그새 같은 항목을 묻는 공고가 왔다
+        await built.judge(student, nearer, "undetermined", ["region"], [MISSING])
+        again = await built.repo.schedule(now=NOW + timedelta(days=PROFILE_REASK_DAYS))
+
+        assert (again.created, again.rescheduled) == (0, 1)  # 같은 행을 다시 열었다
+        assert await built.keys(student) == ["profile_needed|새 공고|10-22 09:00|pending"]
+        assert await built.bodies(student) == [
+            "새 공고 외 1개 · 거주지역을 입력하면 판정할 수 있어요"
+        ]
+        row = await (
+            await built.conn.execute(
+                "select read_at, sent_at from notifications where user_id = %s", (student,)
+            )
+        ).fetchone()
+        assert row == {"read_at": None, "sent_at": None}
+        # 다시 연 알림도 그날 한 번 간다
+        sent = await built.repo.send(now=NOW + timedelta(days=PROFILE_REASK_DAYS, hours=2))
+        assert sent.result.sent == 1
+
+
+async def test_a_reopened_question_keeps_a_deferred_time_until_it_is_sent() -> None:
+    """아직 보내지 않은 행은 다시 열지 않는다 — 대표·문구를 고쳐도 하루 한도로 미룬 시각과 읽음은 그대로 둔다."""
+    async with world() as built:
+        student = await built.user()
+        opportunity = await built.opportunity("미룬 장학", days=30)
+        await built.judge(student, opportunity, "undetermined", ["region"], [MISSING])
+        await built.repo.schedule(now=NOW)
+        await built.conn.execute(
+            "update notifications set scheduled_at = scheduled_at + interval '9 days',"
+            " read_at = %s where user_id = %s",
+            (NOW, student),
+        )
+        joined = await built.opportunity("함께 묻는 장학", days=25)  # 문구가 "외 1개"로 바뀐다
+        await built.judge(student, joined, "undetermined", ["region"], [MISSING])
+
+        later = await built.repo.schedule(now=NOW + timedelta(days=PROFILE_REASK_DAYS + 1))
+
+        assert later.rescheduled == 1
+        assert await built.bodies(student) == [
+            "함께 묻는 장학 외 1개 · 거주지역을 입력하면 판정할 수 있어요"
+        ]
+        row = await (
+            await built.conn.execute(
+                "select scheduled_at, read_at from notifications where user_id = %s", (student,)
+            )
+        ).fetchone()
+        assert row is not None and row["read_at"] is not None
+        assert row["scheduled_at"].astimezone(KST).strftime("%m-%d %H:%M") == "10-24 09:00"
 
 
 # ── 알림함 ─────────────────────────────────────────────────────────────────
