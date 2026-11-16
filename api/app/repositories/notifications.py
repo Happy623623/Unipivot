@@ -32,6 +32,10 @@
 KST 09:00이고, **그 시점이 이미 지났으면 만들지 않는다** — 마감 이틀 전에 들어온 공고가 D-3·D-1을
 한꺼번에 받으면 안 된다.
 
+**출석 마감**(F-55 뒤, 11/27): LMS 동기화가 주차학습 강의를 읽을 때마다 `set_lecture_notices`로 맞춘다. 아직 안
+들은 강의(출석 기간 안)가 있으면 출석 인정 마감 전날 KST 09:00에 학생 × 과목 × 마감 날짜마다 한 건(키
+`lecture_due:{과목}:{마감 날짜}`) — 다 들으면 아직 보내지 않은 알림을 지운다. 누르면 그 과목의 강의 탭으로 간다.
+
 **발송**(5분마다): `scheduled_at`이 지난 pending 행을 닫는다. 보내기 전에 숨김을 다시 보고,
 profile_needed는 사용자당 KST 하루 1건까지만 보낸다(ERD). 넘는 행은 다음 날 09:00으로 미룬다 — 그대로
 두면 계속 보낼 때가 된 행으로 남아 발송 묶음(`SEND_LIMIT`)을 차지하고, 그런 행이 묶음보다 많아지면 다른
@@ -45,7 +49,7 @@ profile_needed는 사용자당 KST 하루 1건까지만 보낸다(ERD). 넘는 �
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -84,6 +88,8 @@ LEGACY_NEW_KEY = "new_eligible:opp:"  # 공고마다 한 행이던 옛 새 공�
 ASSIGNMENT_TYPE = "new_assignment"  # notifications.type·user_settings.muted_notification_types
 MATERIAL_TYPE = "new_material"  # 새 주차 항목(F-52). 과목 수강생 모두에게 간다
 SCHEDULE_TYPE = "schedule_change"  # 일정 변경 공지(F-53 2부). 과목 수강생 모두에게 간다
+LECTURE_TYPE = "lecture_due"  # 주차학습 강의 출석 마감 하루 전(F-55 뒤, 11/27). 키 lecture_due:{과목}:{마감 날짜}
+LECTURE_TITLE = "내일 출석 마감인 강의가 있어요"
 _NEEDED = " 입력하면 판정할 수 있어요"
 
 # 공고 하나를 사용자 한 명에게 보일지 보는 조건. opportunities.VISIBLE과 같은 뜻이다
@@ -123,10 +129,10 @@ _ONLY_PROFILE = (
 
 def needed_phrases() -> dict[str, str]:
     """물어볼 항목 이름 + 목적격 조사. SQL에서 문구를 만들 수 있게 미리 붙여 둔다."""
-    return {field: f"{label}{_particle(label)}" for field, label in INPUT_LABELS.items()}
+    return {field: f"{label}{object_particle(label)}" for field, label in INPUT_LABELS.items()}
 
 
-def _particle(word: str) -> str:
+def object_particle(word: str) -> str:
     """목적격 조사: 받침이 있으면 "을", 없으면 "를"."""
     last = word[-1]
     if "가" <= last <= "힣":
@@ -166,6 +172,15 @@ class ScheduleNotice:
 
     announcement_id: str
     title: str
+    body: str
+
+
+@dataclass(frozen=True)
+class LectureNotice:
+    """출석 마감 알림 하나(학생 × 과목 × 마감 날짜). 문구는 과목 이름을 아는 쪽(app/lms/sync.py)에서 만든다."""
+
+    course_id: str  # 내 과목 행(lms_courses.id)
+    day: date  # 출석 인정 마감 날짜(KST). 알림은 그 전날 09:00이다
     body: str
 
 
@@ -341,6 +356,59 @@ class NotificationRepository:
             },
         )
         return max(cursor.rowcount, 0)
+
+    async def set_lecture_notices(
+        self,
+        user_id: str,
+        course_ids: Sequence[str],
+        notices: Sequence[LectureNotice],
+        *,
+        now: datetime,
+    ) -> int:
+        """방금 주차학습을 읽은 과목들의 출석 마감 알림을 맞춘다. 남긴 알림 수를 돌려준다(F-55 뒤, 11/27).
+
+        알림 시각은 마감 전날 KST 09:00이고 **그 시각이 지났으면 만들지 않는다**(공고 마감 알림과 같다). 같은 키의
+        아직 보내지 않은 행은 문구만 고치고(남은 강의 수가 바뀜), 그 과목들에서 이번에 남지 않은 pending 행은 지운다 —
+        다 들었거나 마감이 옮겨졌다. 읽지 못한 과목의 알림은 건드리지 않는다. 끈 종류(F-45)면 만들지 않고 남은 것도 지운다.
+        """
+        if not course_ids:
+            return 0
+        muted = await self._row(
+            "select 1 from user_settings s where s.user_id = %(uid)s"
+            " and %(type)s = any(coalesce(s.muted_notification_types, '{}'))",
+            {"uid": user_id, "type": LECTURE_TYPE},
+        )
+        keys: list[str] = []
+        for notice in () if muted else notices:
+            at = datetime.combine(notice.day - timedelta(days=1), time(NOTIFY_HOUR), tzinfo=KST)
+            if at <= now:
+                continue
+            key = f"{LECTURE_TYPE}:{notice.course_id}:{notice.day.isoformat()}"
+            keys.append(key)
+            await self.conn.execute(
+                "insert into notifications (user_id, type, lms_course_id, title, body,"
+                " scheduled_at, dedupe_key)"
+                " values (%(uid)s, %(type)s, %(course)s::uuid, %(title)s, %(body)s, %(at)s, %(key)s)"
+                " on conflict (user_id, dedupe_key) do update set body = excluded.body"
+                " where notifications.status = 'pending'"
+                " and notifications.body is distinct from excluded.body",
+                {
+                    "uid": user_id,
+                    "type": LECTURE_TYPE,
+                    "course": notice.course_id,
+                    "title": LECTURE_TITLE,
+                    "body": notice.body,
+                    "at": at,
+                    "key": key,
+                },
+            )
+        await self.conn.execute(
+            "delete from notifications where user_id = %(uid)s and type = %(type)s"
+            " and status = 'pending' and lms_course_id = any(%(courses)s::uuid[])"
+            " and dedupe_key <> all(%(keys)s::text[])",
+            {"uid": user_id, "type": LECTURE_TYPE, "courses": list(course_ids), "keys": keys},
+        )
+        return len(keys)
 
     async def drop_assignment_notices(self, user_id: str, assignment_ids: Sequence[str]) -> int:
         """제출한 과제의 **아직 보내지 않은** 알림을 지운다(명세 10장). 보낸 알림은 알림함에 남는다."""
@@ -570,6 +638,7 @@ _LINKS: tuple[tuple[str, str], ...] = (
     ("lms_assignment", "lms_assignment_id"),
     ("lms_module_item", "lms_module_item_id"),
     ("lms_announcement", "lms_announcement_id"),
+    ("lms_course", "lms_course_id"),  # 과목의 강의 탭(출석 마감 알림, 11/27)
 )
 _KINDS: tuple[str, ...] = ("new_eligible", "deadline_soon", "profile_needed")
 
@@ -723,9 +792,10 @@ _DUE = (
 _LIST = (
     "select n.id, n.type, n.title, n.body, n.scheduled_at, n.read_at, n.opportunity_id,"
     " n.planner_task_id, n.lms_assignment_id, n.lms_module_item_id, n.lms_announcement_id,"
-    # lms_* 링크에는 과목 id를 함께 내려준다(명세 10장). 과제는 과목을 바로 가리키고,
+    " n.lms_course_id,"
+    # lms_* 링크에는 과목 id를 함께 내려준다(명세 10장). 과목 알림·과제는 과목을 바로 가리키고,
     # 자료·공지는 Canvas 과목 번호라서 내 과목 행을 찾아야 한다
-    " coalesce("
+    " coalesce(n.lms_course_id,"
     "   (select a.lms_course_id from lms_assignments a where a.id = n.lms_assignment_id"
     "    and a.user_id = n.user_id),"
     "   (select lc.id from lms_module_items mi join lms_courses lc on lc.user_id = n.user_id"

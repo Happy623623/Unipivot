@@ -10,7 +10,7 @@ interface NotificationRowProps {
 
 // 알림 종류별 점 색. 급한 것은 빨강, 입력이 필요한 것은 노랑, 안내는 회색이다
 function dotColor(type: NotificationType): string {
-  if (type === "deadline_soon" || type === "task_due") return "bg-[#c53030]";
+  if (type === "deadline_soon" || type === "task_due" || type === "lecture_due") return "bg-[#c53030]";
   if (type === "profile_needed") return "bg-[#b7791f]";
   if (type === "schedule_change") return "bg-[#a0a4ab]";
   return "bg-[#4f6ef7]";

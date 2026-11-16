@@ -29,8 +29,8 @@ _UPSERT = (
 # 보낸 알림 + 그 사용자의 구독. 링크 칸은 알림함(_LIST)과 같은 규칙으로 풀어 준다
 _TARGETS = (
     "select n.id, n.type, n.title, n.body, n.opportunity_id, n.planner_task_id,"
-    " n.lms_assignment_id, n.lms_module_item_id, n.lms_announcement_id,"
-    " coalesce("
+    " n.lms_assignment_id, n.lms_module_item_id, n.lms_announcement_id, n.lms_course_id,"
+    " coalesce(n.lms_course_id,"
     "   (select a.lms_course_id from lms_assignments a where a.id = n.lms_assignment_id"
     "    and a.user_id = n.user_id),"
     "   (select lc.id from lms_module_items mi join lms_courses lc on lc.user_id = n.user_id"
@@ -51,6 +51,7 @@ _LINKS: tuple[tuple[str, str], ...] = (
     ("lms_assignment", "lms_assignment_id"),
     ("lms_module_item", "lms_module_item_id"),
     ("lms_announcement", "lms_announcement_id"),
+    ("lms_course", "lms_course_id"),
 )
 
 

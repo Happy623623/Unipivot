@@ -506,6 +506,7 @@ erDiagram
         uuid lms_assignment_id FK
         uuid lms_module_item_id FK
         uuid lms_announcement_id FK
+        uuid lms_course_id FK "과목(출석 마감 알림)"
         timestamptz scheduled_at
         timestamptz sent_at
         enum status
@@ -775,9 +776,11 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | new_assignment | `new_assignment:asg:{lms_assignment_id}` | |
 | new_material | `new_material:mod:{lms_module_item_id}` | |
 | schedule_change | `schedule_change:ann:{lms_announcement_id}` | P1 |
+| lecture_due | `lecture_due:{lms_course_id}:{출석 인정 마감 날짜(KST)}` | P1 — 학생 × 과목 × 마감 날짜 1행, 마감 전날 KST 09:00. 다 들었거나 마감이 옮겨지면 pending 행 삭제(11/27) |
 | task_due | `task_due:task:{planner_task_id}` | |
 
 - 마감이 바뀌면 같은 키의 pending 행에서 `scheduled_at`만 고친다. 과제를 제출했거나 준비를 취소하면 pending 행을 지운다.
+- **출석 마감 알림(lecture_due, 11/27)**: LMS 동기화가 주차학습 강의를 읽을 때마다 그 과목들의 행을 맞춘다 — 같은 키의 pending 행은 `body`만 고치고, 남지 않은 pending 행은 지운다(읽지 못한 과목은 그대로). `notifications.lms_course_id`(내 과목 행, 과목이 지워지면 함께 지워짐)가 링크이고, LMS 연결을 끊거나 토큰이 막히면(`lms_connections.status = 'error'`) pending 행을 지운다.
 
 ### 플래너 제약
 
@@ -830,7 +833,7 @@ v0.8은 7개 컬럼 유니크가 "공고당 1회"를 보장한다고 적었다. 
 | syllabus_item_type | midterm, final, presentation, assignment, etc |
 | job_status | pending, running, succeeded, failed |
 | run_trigger → text + check (`agent_runs.trigger_type`) | batch_crawl, poster_upload, prepare, syllabus_upload, material_upload, material_translate, lms_sync, notify, eval, notice_link |
-| notification_type → text + check (`notifications.type`, `user_settings.muted_notification_types`) | new_eligible, new_assignment, new_material, schedule_change, task_due, deadline_soon, profile_needed |
+| notification_type → text + check (`notifications.type`, `user_settings.muted_notification_types`) | new_eligible, new_assignment, new_material, schedule_change, task_due, deadline_soon, profile_needed, lecture_due(11/27) |
 | opportunity_mark → text + check (`opportunity_marks.mark`) | interested, not_interested |
 | report_reason | wrong_info, duplicate, expired, inappropriate |
 | lms_connection_status | active, error, disconnected |
@@ -955,6 +958,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-27): notifications.lms_course_id(과목으로 가는 알림 — 출석 마감), 알림 종류 lecture_due(`notifications.type`·`user_settings.muted_notification_types` check)
 - v0.9 보강 (2026-11-26): 정보 필요 알림은 판정 불가 원인이 프로필 공백뿐인 공고만(condition_results의 모름 이유로 본다), 보낸 행은 7일이 지나면 그 항목을 묻는 공고가 남아 있을 때 다시 연다. 스키마 변경 없음
 - v0.9 보강 (2026-11-24): lms_lecture_progress(주차학습 강의와 내 수강 상태, F-55)·lms_connections.lectures_checked_at — 동기화가 LearningX 주차학습을 한 번 열어 읽는다(강의 항목은 열지 않는다). 처리방침 v0.3(11/28 시행)과 동의 문구 2026-11-24 판
 - v0.9 보강 (2026-11-23): lms_module_items.removed_at — 그 과목 목록을 끝까지 받았는데 없던 항목에 찍고 다시 나타나면 지운다(빈 목록이면 찍지 않는다). 자료 탭·새 학업 정보·새 자료 수에서 빠지고 강의자료를 올린 항목만 남는다(사용자 피드백 2①)

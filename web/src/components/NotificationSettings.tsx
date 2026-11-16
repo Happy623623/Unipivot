@@ -16,6 +16,7 @@ const notificationOptions: { type: NotificationType; label: string }[] = [
   { type: "new_material", label: "새 강의자료" },
   { type: "task_due", label: "할 일 마감" },
   { type: "schedule_change", label: "수업 일정 변경" },
+  { type: "lecture_due", label: "강의 출석 마감" },
   { type: "profile_needed", label: "프로필 정보 필요" },
 ];
 

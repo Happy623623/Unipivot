@@ -18,5 +18,9 @@ export default function notificationRoute(notification: AppNotification): Route 
   if (link.type === "lms_announcement") {
     return { name: "course", id: courseId, tab: "announcements" };
   }
+  // 출석 마감 알림(lecture_due)은 과목의 강의 탭으로 간다(11/27)
+  if (link.type === "lms_course") {
+    return { name: "course", id: courseId, tab: "lectures" };
+  }
   return { name: "course", id: courseId, tab: "assignments" };
 }

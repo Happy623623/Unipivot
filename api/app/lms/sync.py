@@ -29,7 +29,7 @@ import logging
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import Annotated, Any
 
@@ -69,8 +69,10 @@ from app.repositories.lms import (
 )
 from app.repositories.notifications import (
     AssignmentNotice,
+    LectureNotice,
     MaterialNotice,
     NotificationRepository,
+    object_particle,
 )
 from app.schemas.lms import (
     LECTURE_TOOL,
@@ -578,12 +580,22 @@ class LmsSyncService:
                     call.output = {"skipped": "not_opened"}
                     return
                 read, failed = await self._read_lectures(session, rows)
+                reminders = 0
                 if read:
                     async with self.transaction() as conn:
-                        repo = self.repos(conn).lms
+                        repos = self.repos(conn)
                         for course, items in read:
-                            await repo.save_lectures(job.user_id, course.id, items, now=job.now)
-                        await repo.touch_lectures(job.user_id, now=job.now)
+                            await repos.lms.save_lectures(
+                                job.user_id, course.id, items, now=job.now
+                            )
+                        await repos.lms.touch_lectures(job.user_id, now=job.now)
+                        # 출석 마감 하루 전 알림(11/27) — 읽은 과목만 맞춘다. 못 읽은 과목의 알림은 그대로
+                        reminders = await repos.notes.set_lecture_notices(
+                            job.user_id,
+                            [course.id for course, _ in read],
+                            lecture_notices(read, job.now),
+                            now=job.now,
+                        )
                 call.output = {
                     "courses": len(read),
                     "lectures": sum(len(items) for _, items in read),
@@ -594,6 +606,7 @@ class LmsSyncService:
                         if lecture_status(one, job.now) in OPEN
                     ),
                     "failed_courses": failed,
+                    "reminders": reminders,
                 }
         except Exception as exc:  # 저장이 터진 경우까지. 다음 동기화에서 다시 읽는다
             logger.warning("주차학습 강의 확인을 건너뛰어요: user %s, %r", job.user_id, exc)
@@ -860,6 +873,37 @@ def _notice(course: CourseRow, saved: SavedAssignment) -> AssignmentNotice:
     return AssignmentNotice(
         assignment_id=saved.id, title=NEW_TITLE.format(course=course.short_name), body=body
     )
+
+
+def lecture_notices(
+    read: Sequence[tuple[CourseRow, Sequence[Lecture]]], now: datetime
+) -> list[LectureNotice]:
+    """출석 마감 하루 전 알림 문구(11/27): 아직 안 들은 강의(출석 기간 안, `todo`)를 과목 × 마감 날짜(KST)로 묶는다.
+
+    "데이터베이스 · 6주차 강의 1부 외 1개를 아직 안 들었어요" — 대표는 주차학습 순서로 앞선 강의다. 실시간 수업은
+    빼고(그 시간에 들어가야 출석이다), 완료 여부를 모르는 강의·마감이 없는 강의도 뺀다.
+    """
+    groups: dict[tuple[str, date], list[tuple[CourseRow, Lecture]]] = {}
+    for course, items in read:
+        for one in items:
+            if one.kind == "live" or one.due_at is None or lecture_status(one, now) != "todo":
+                continue
+            groups.setdefault((course.id, one.due_at.astimezone(KST).date()), []).append(
+                (course, one)
+            )
+    notices: list[LectureNotice] = []
+    for (course_id, day), members in sorted(groups.items()):
+        members.sort(key=lambda member: (member[1].position, member[1].title))
+        course, first = members[0]
+        what = first.title + (f" 외 {len(members) - 1}개" if len(members) > 1 else "")
+        notices.append(
+            LectureNotice(
+                course_id=course_id,
+                day=day,
+                body=f"{course.short_name} · {what}{object_particle(what)} 아직 안 들었어요",
+            )
+        )
+    return notices
 
 
 def _material(course: CourseRow, saved: SavedItem) -> MaterialNotice:

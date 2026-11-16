@@ -19,9 +19,9 @@ from app.repositories.notifications import (
     NOTIFY_HOUR,
     PROFILE_DAILY,
     _link,
-    _particle,
     get_notification_repo,
     needed_phrases,
+    object_particle,
 )
 from app.schemas.notifications import NotificationList, ReadRequest
 from tests.conftest import USER_ID
@@ -124,11 +124,11 @@ def test_an_unknown_field_in_read_is_refused(client: TestClient, auth: dict[str,
 
 def test_the_object_particle_follows_the_last_letter() -> None:
     """ "거주지역을 입력하면"과 "나이를 입력하면"이 둘 다 맞아야 한다."""
-    assert _particle("거주지역") == "을"
-    assert _particle("나이") == "를"
-    assert _particle("학년") == "을"
-    assert _particle("학과") == "를"
-    assert _particle("GPA") == "을"  # 한글이 아니면 안전한 쪽
+    assert object_particle("거주지역") == "을"
+    assert object_particle("나이") == "를"
+    assert object_particle("학년") == "을"
+    assert object_particle("학과") == "를"
+    assert object_particle("GPA") == "을"  # 한글이 아니면 안전한 쪽
 
 
 def test_every_asked_field_has_a_phrase() -> None:
@@ -147,6 +147,7 @@ def test_the_link_points_at_the_first_target_it_has() -> None:
             "lms_assignment_id",
             "lms_module_item_id",
             "lms_announcement_id",
+            "lms_course_id",
             "course_id",
         ),
         None,
@@ -164,6 +165,10 @@ def test_the_link_points_at_the_first_target_it_has() -> None:
     )
     assert material is not None
     assert (material.type, material.course_id) == ("lms_module_item", "c-1")
+    # 출석 마감 알림은 과목을 가리킨다 — 누르면 그 과목의 강의 탭(11/27)
+    lecture = _link({**empty, "type": "lecture_due", "lms_course_id": "c-2", "course_id": "c-2"})
+    assert lecture is not None
+    assert (lecture.type, lecture.id, lecture.course_id) == ("lms_course", "c-2", "c-2")
 
 
 def test_the_notification_rules_match_the_documents() -> None:
