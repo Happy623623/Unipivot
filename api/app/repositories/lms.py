@@ -417,18 +417,36 @@ class LmsRepository:
         )
 
     async def mark_error(self, user_id: str, message: str) -> None:
-        """다음 동기화에서 토큰이 막혔을 때. 화면은 이 문구로 다시 연결을 안내한다."""
+        """다음 동기화에서 토큰이 막혔을 때. 화면은 이 문구로 다시 연결을 안내한다.
+
+        아직 보내지 않은 출석 마감 알림도 지운다 — 다시 연결할 때까지 다 들었는지 볼 수 없다(11/27).
+        """
         await self.conn.execute(
             "update lms_connections set status = 'error', last_error = %s where user_id = %s",
             (message, user_id),
         )
+        await self._drop_lecture_notices(user_id)
 
     async def delete_connection(self, user_id: str) -> bool:
-        """토큰을 즉시 지운다. 과목·과제 기록은 남기고 동기화만 멈춘다(명세 9장)."""
+        """토큰을 즉시 지운다. 과목·과제 기록은 남기고 동기화만 멈춘다(명세 9장).
+
+        아직 보내지 않은 출석 마감 알림(lecture_due)도 지운다(11/27).
+        """
         cursor = await self.conn.execute(
             "delete from lms_connections where user_id = %s", (user_id,)
         )
+        if cursor.rowcount > 0:
+            await self._drop_lecture_notices(user_id)
         return cursor.rowcount > 0
+
+    async def _drop_lecture_notices(self, user_id: str) -> None:
+        """아직 보내지 않은 출석 마감 알림(lecture_due)을 지운다. 동기화가 멈추면(연결 끊기·토큰 막힘) 다 들었는지
+        다시 볼 수 없어, 그새 들은 강의를 "아직 안 들었어요"라고 보낼 수 있다(11/27). 보낸 알림은 알림함에 남는다."""
+        await self.conn.execute(
+            "delete from notifications where user_id = %s and type = 'lecture_due'"
+            " and status = 'pending'",
+            (user_id,),
+        )
 
     async def save_courses(
         self, user_id: str, courses: list[dict[str, Any]], *, now: datetime

@@ -12,7 +12,7 @@ export type DisplayStatus = "eligible" | "missing_info" | "needs_review" | "inel
 export type RunStatus = "pending" | "running" | "succeeded" | "failed";
 export type NotificationType =
   | "new_eligible" | "new_assignment" | "new_material" | "schedule_change"
-  | "task_due" | "deadline_soon" | "profile_needed";
+  | "task_due" | "deadline_soon" | "profile_needed" | "lecture_due";
 export type ReportReason = "wrong_info" | "duplicate" | "expired" | "inappropriate";
 // 지금 다니는(졸업했으면 마지막으로 다닌) 학위과정: 학부·석사·박사·석박사통합
 export type DegreeProgram = "bachelor" | "master" | "doctoral" | "integrated";
@@ -347,9 +347,9 @@ export interface PlannerResponse { items: PlannerTask[]; markers: PlannerMarker[
 
 // GET /notifications
 export interface NotificationLink {
-  type: "opportunity" | "planner_task" | "lms_assignment" | "lms_module_item" | "lms_announcement";
+  type: "opportunity" | "planner_task" | "lms_assignment" | "lms_module_item" | "lms_announcement" | "lms_course";
   id: string;
-  course_id?: string | null;             // lms_* 링크의 과목 ID (API v0.3 보완)
+  course_id?: string | null;             // lms_* 링크의 과목 ID (API v0.3 보완). lms_course(출석 마감 알림)는 id와 같다
   focus?: "profile_input" | null;
 }
 export interface AppNotification {

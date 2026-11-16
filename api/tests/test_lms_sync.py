@@ -39,6 +39,7 @@ from app.lms.sync import (
     Repos,
     SyncJob,
     get_lms_sync_service,
+    lecture_notices,
     lms_sync_service_for,
 )
 from app.main import create_app
@@ -58,7 +59,12 @@ from app.repositories.lms import (
     update_scope,
     week_number,
 )
-from app.repositories.notifications import AssignmentNotice, MaterialNotice, ScheduleNotice
+from app.repositories.notifications import (
+    AssignmentNotice,
+    LectureNotice,
+    MaterialNotice,
+    ScheduleNotice,
+)
 from app.repositories.runs import get_run_repo
 from app.schemas.calendar import CalendarEventView
 from app.schemas.lms import (
@@ -395,10 +401,23 @@ class FakeNotes:
         self.tx = tx
         return self
 
+    async def set_lecture_notices(
+        self,
+        user_id: str,
+        course_ids: Sequence[str],
+        notices: Sequence[LectureNotice],
+        *,
+        now: datetime,
+    ) -> int:
+        assert user_id
+        self.lectures.append((list(course_ids), list(notices)))
+        return len(notices)
+
     schedules: list[ScheduleNotice] = field(default_factory=list)
     fail_schedules: bool = False
     tx: Any = None
     writes: list[tuple[str, Any]] = field(default_factory=list)  # (무엇, 트랜잭션 번호)
+    lectures: list[tuple[list[str], list[LectureNotice]]] = field(default_factory=list)
 
 
 @pytest.fixture
@@ -2566,7 +2585,11 @@ def weekly(canvas: respx.MockRouter) -> dict[str, Any]:
 
 @pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
 def test_it_reads_whether_each_lecture_was_watched(
-    client: TestClient, lms: FakeLms, log: FakeLogConnection, weekly: dict[str, Any]
+    client: TestClient,
+    lms: FakeLms,
+    notes: FakeNotes,
+    log: FakeLogConnection,
+    weekly: dict[str, Any],
 ) -> None:
     client.post(SYNC)
     saved = {course: [one.key for one in items] for course, items in lms.lecture_saves}
@@ -2582,7 +2605,22 @@ def test_it_reads_whether_each_lecture_was_watched(
         "lectures": 7,
         "todo": 2,
         "failed_courses": 0,
+        "reminders": 1,
     }
+    # 출석 마감 하루 전 알림(11/27): 읽은 두 과목을 맞추고, 출석 기간 안의 데이터베이스 6주차 1부만 알린다
+    # (기계학습 3주차는 지각 인정 기간이라 뺀다)
+    assert notes.lectures == [
+        (
+            ["course-db", "course-ml"],
+            [
+                LectureNotice(
+                    course_id="course-db",
+                    day=date(2026, 10, 19),
+                    body="데이터베이스 · 6주차 강의 1부를 아직 안 들었어요",
+                )
+            ],
+        )
+    ]
     # 주차학습은 한 번만 열고(첫 과목) 그 표로 두 과목을 읽는다
     assert weekly["post"].call_count == 1
     assert not weekly["tabs/216515"].called
@@ -2669,7 +2707,11 @@ def test_the_batch_reads_lectures_once_an_hour(
 
 @pytest.mark.parametrize("lectures_from", [OPENED], indirect=True)
 def test_a_course_whose_lectures_fail_keeps_what_was_saved(
-    client: TestClient, lms: FakeLms, log: FakeLogConnection, weekly: dict[str, Any]
+    client: TestClient,
+    lms: FakeLms,
+    notes: FakeNotes,
+    log: FakeLogConnection,
+    weekly: dict[str, Any],
 ) -> None:
     weekly["ml"].mock(return_value=httpx.Response(500, json={}))
     client.post(SYNC)
@@ -2677,6 +2719,8 @@ def test_a_course_whose_lectures_fail_keeps_what_was_saved(
         "course-db"
     ]  # 기계학습은 지난 값이 남는다
     assert log.outputs()[LECTURE_TOOL]["failed_courses"] == 1
+    # 출석 마감 알림도 읽은 과목만 맞춘다 — 기계학습의 알림은 건드리지 않는다
+    assert [courses for courses, _ in notes.lectures] == [["course-db"]]
     assert lms.lectures_checked_at == NOW
     assert (lms.synced_at, lms.error) == (NOW, None)
 
@@ -2695,6 +2739,7 @@ def test_a_rejected_pass_does_not_blame_the_student_token(
         "lectures": 0,
         "todo": 0,
         "failed_courses": 2,
+        "reminders": 0,
     }
     assert lms.lectures_checked_at is None  # 읽지 못했으니 다음 배치가 다시 읽는다
     assert (lms.synced_at, lms.error) == (NOW, None)
@@ -2768,3 +2813,79 @@ def test_a_lecture_save_that_breaks_does_not_fail_the_sync(
     assert lms.lectures_checked_at is None
     # 동기화는 끝까지 갔다 — 결과를 남기는 마지막 단계가 있다(`GET /runs/{id}`가 이 출력으로 결과를 만든다)
     assert log.tools()[-1] == "save_lms_sync"
+
+
+# ── 출석 마감 하루 전 알림 문구 (11/27) ────────────────────────────────────
+
+
+def _lec(key: str, title: str, *, kind: str = "video", position: int = 0, **values: Any) -> Lecture:
+    fields: dict[str, Any] = {
+        "completed": False,
+        "period": "open",
+        "due_at": datetime(2026, 10, 19, 23, 59, 59, tzinfo=KST),
+        "unlock_at": None,
+        "late_at": None,
+        **values,
+    }
+    return Lecture(
+        key=key,
+        canvas_item_id=None,
+        module_name="6주차",
+        title=title,
+        kind=kind,  # type: ignore[arg-type]
+        attendance="none",
+        duration_seconds=None,
+        position=position,
+        **fields,
+    )
+
+
+def test_lecture_notices_group_what_is_left_per_course_and_deadline_day() -> None:
+    db = CourseRow(id="course-db", canvas_course_id=214023, short_name="데이터베이스")
+    ml = CourseRow(id="course-ml", canvas_course_id=216515, short_name="기계학습")
+    next_day = datetime(2026, 10, 20, 18, 0, tzinfo=KST)
+    read = [
+        (
+            db,
+            [
+                _lec("2", "6주차 강의 2부", position=2),
+                _lec("1", "6주차 강의 1부", position=1),
+                _lec("3", "6주차 읽기 자료", kind="material", position=3),
+                _lec("4", "6주차 실시간 수업", kind="live", position=4),  # 실시간 수업은 뺀다
+                _lec("5", "다 들은 강의", completed=True),
+                _lec("6", "모르는 강의", completed=None),
+                _lec("7", "마감 없는 강의", due_at=None),
+                _lec("8", "지각 인정 기간", period="late"),
+                _lec("9", "7주차 강의", due_at=next_day, position=9),  # 다른 날 마감은 따로
+            ],
+        ),
+        (ml, [_lec("lx:1", "Week 3 lecture")]),
+    ]
+
+    notices = lecture_notices(read, NOW)
+
+    assert notices == [
+        LectureNotice(
+            course_id="course-db",
+            day=date(2026, 10, 19),
+            body="데이터베이스 · 6주차 강의 1부 외 2개를 아직 안 들었어요",
+        ),
+        LectureNotice(
+            course_id="course-db",
+            day=date(2026, 10, 20),
+            body="데이터베이스 · 7주차 강의를 아직 안 들었어요",
+        ),
+        LectureNotice(
+            course_id="course-ml",
+            day=date(2026, 10, 19),
+            body="기계학습 · Week 3 lecture을 아직 안 들었어요",
+        ),
+    ]
+
+
+def test_lecture_notices_use_the_kst_day_of_the_deadline() -> None:
+    """마감이 KST 자정 직후면 그날(KST)이 마감 날짜다 — UTC 날짜로 하루 당기지 않는다."""
+    db = CourseRow(id="course-db", canvas_course_id=214023, short_name="데이터베이스")
+    just_after = datetime(2026, 10, 19, 0, 30, tzinfo=KST)  # UTC로는 10-18 15:30
+    notices = lecture_notices([(db, [_lec("1", "강의", due_at=just_after)])], NOW)
+    assert [notice.day for notice in notices] == [date(2026, 10, 19)]

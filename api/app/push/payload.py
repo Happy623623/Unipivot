@@ -17,6 +17,7 @@ TABS: dict[str, str] = {
     "lms_assignment": "assignments",
     "lms_module_item": "materials",
     "lms_announcement": "announcements",
+    "lms_course": "lectures",  # 출석 마감 알림은 과목의 강의 탭으로(11/27)
 }
 
 

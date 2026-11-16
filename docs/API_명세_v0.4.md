@@ -140,6 +140,8 @@
 >
 > v0.4 보강(11/26, 정보 필요 알림 2): `profile_needed`는 **판정 불가 원인이 프로필 공백뿐인 공고만** 묻는다(PRD F-33) — 결과가 모름인 묶음 안에 원문 확인 조건(모호·판정할 수 없는 항목·기준 다름)이 함께 모름이면 넣어도 판정이 남는다. 보낸 항목은 **7일이 지나면** 그 항목을 묻는 공고가 남아 있을 때 같은 행을 다시 연다(전에는 항목당 1회). 응답 모양은 그대로다 — 다시 연 행은 예약 응답의 `rescheduled`에 든다
 >
+> v0.4 보강(11/27, 출석 마감 알림): 알림 종류 `lecture_due`가 생겼다 — 주차학습 강의를 읽은 동기화가, 출석 기간 안인데 아직 안 들은 강의가 있으면 **출석 인정 마감 전날 KST 09:00**에 과목마다 한 건을 예약한다(F-55). 링크 종류 `lms_course`(`id`·`course_id` = 내 과목 ID, 누르면 그 과목의 강의 탭)가 생겼고 `muted_notification_types`에 `lecture_due`를 넣을 수 있다. 마이그레이션 하나(`notifications.lms_course_id` 칸·종류 check 더하기)
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -1389,6 +1391,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 - `new_eligible`(새 공고)은 **학생마다 하루 한 행**이다(키 `new_eligible:day:{알릴 날(KST)}`, 11/20). 그날 알릴 공고(등록 7일 안·지원 가능·상세를 열지 않음)가 여럿이면 하나로 묶고, 마감이 가장 가까운 공고(없으면 새 공고)를 `link`로 잇는다. 문구는 "{대표 제목}"이고, 묶인 공고가 둘 이상이면 "외 N개"가 붙는다. 묶음에 넣는 공고는 **지난 묶음을 만든 뒤에 들어온 것**이다(묶음 행의 `created_at`이 다음 묶음의 기준이고, 처음이면 7일 그대로) — 어제 알린 공고를 오늘 또 알리지 않는다. 아직 보내지 않은 묶음은 대표·문구가 바뀌면 고치고 기준 시각도 옮긴다. 공고마다 한 행이던 옛 키(`new_eligible:opp:{id}`)의 보내지 않은 행은 다음 예약이 지우고 묶음에 넣으며, 이미 보낸 공고는 다시 알리지 않는다
 - `profile_needed`(정보 필요)는 **학생 × 물어볼 첫 항목마다 한 행**이다(키 `profile_needed:field:{항목}`, 11/19). **마감까지 3일 넘게 남은 공고만** 묻는다(알릴 날 09:00에서 3일 뒤보다 마감이 늦어야 한다 — 그 안이면 넣어도 준비할 시간이 모자란다, PRD F-33, 11/20). **판정 불가 원인이 프로필 공백뿐인 공고만** 묻는다 — 결과가 모름인 묶음(통과한 조건이 없는 묶음) 안의 모름 조건이 모두 프로필이 비어서여야 한다. 원문 확인 조건(모호·판정할 수 없는 항목·기준 다름)이 그런 묶음에 함께 모름이면 넣어도 판정이 원문 확인으로 남는다(PRD F-33, 11/26). 같은 항목을 묻는 공고가 여럿이면 하나로 묶고, 마감이 가장 가까운 공고(없으면 새 공고)를 `link`로 잇는다 — 누르면 그 공고 상세의 즉석 입력(`focus: profile_input`)으로 가고, 한 번 넣으면 묶인 공고가 함께 판정된다. 문구는 "{대표 제목} · {항목}을 입력하면 판정할 수 있어요"이고, 묶인 공고가 둘 이상이면 제목 뒤에 "외 N개"가 붙는다. 공고 수가 바뀌면 아직 보내지 않은 행의 대표·문구만 고치고, 그 항목을 묻는 공고가 없어지면 지운다. 보낸 항목은 7일 동안 다시 묻지 않는다. 보낸 날(KST)로부터 7일이 지나도 그 항목을 묻는 공고가 남아 있으면 **같은 행을 다시 연다** — 알릴 날 09:00, 읽지 않음으로 돌아가고 대표·문구도 그때 것으로 고친다(11/26, 예약 응답의 `rescheduled`에 든다)
 - `schedule_change`(일정 변경 공지, F-53 2부)는 **찾은 때 바로** 보낸다(다음 아침까지 미루면 휴강을 늦게 안다). 공지는 과목 공통이라 그 과목 수강생 모두에게 한 번씩 가고, 키는 `schedule_change:ann:{lms_announcement_id}`다. 바뀌는 날을 읽지 못했거나 이미 지난 날이면 만들지 않는다
+- `lecture_due`(출석 마감, F-55 뒤, 11/27)는 LMS 동기화가 주차학습 강의를 읽을 때마다 맞춘다. 출석 기간 안인데 아직 안 들은 강의(과목 상세 `lectures[].status = todo`, 실시간 수업은 뺀다)를 **과목 × 출석 인정 마감 날짜(KST)**로 묶어 **마감 전날 KST 09:00**에 한 건 — 키 `lecture_due:{lms_course_id}:{마감 날짜}`, 그 시각이 이미 지났으면 만들지 않는다. 문구는 "{과목} · {첫 강의 제목}(외 N개)을 아직 안 들었어요"이고 `link`는 `{type: lms_course, id: 내 과목 ID, course_id: 같은 값}`이다(누르면 강의 탭). 다시 읽을 때 같은 키의 보내지 않은 행은 문구만 고치고, 그 과목에서 남지 않은 보내지 않은 행(다 들음·마감이 옮겨짐)은 지운다 — 읽지 못한 과목의 알림은 그대로다. LMS 연결을 끊거나 토큰이 막히면(다시 연결하라는 상태) 보내지 않은 출석 마감 알림을 지운다 — 그새 들은 강의를 "아직 안 들었어요"라고 보내지 않게
 
 ### `GET /notifications`
 
@@ -1422,7 +1425,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 ```
 
 - `scheduled_at`이 지난 알림만 최신순으로 내려준다
-- `link.type`은 `opportunity` \| `planner_task` \| `lms_assignment` \| `lms_module_item` \| `lms_announcement`이고, `focus: profile_input`이면 상세에서 정보 입력창을 바로 연다
+- `link.type`은 `opportunity` \| `planner_task` \| `lms_assignment` \| `lms_module_item` \| `lms_announcement` \| `lms_course`(출석 마감 알림 — 그 과목의 강의 탭, 11/27)이고, `focus: profile_input`이면 상세에서 정보 입력창을 바로 연다
 - `lms_*` 링크에는 `course_id`를 함께 내려준다. `link.id`는 과제·자료·공지 ID라서 그것만으로는 과목 탭으로 이동할 수 없다
 - `?unread_only=true`면 안 읽은 알림만 준다. `unread_count`는 필터와 상관없이 전체 기준이다. `cursor`는 `unread_only`가 같은 목록에서만 쓸 수 있고, 다르면 422 `VALIDATION_FAILED`(`details.fields.cursor`)다
 
@@ -1474,10 +1477,10 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 }
 ```
 
-`type`: ERD `notification_type`(`new_eligible`, `new_assignment`, `new_material`, `schedule_change`, `task_due`, `deadline_soon`, `profile_needed`)
+`type`: ERD `notification_type`(`new_eligible`, `new_assignment`, `new_material`, `schedule_change`, `task_due`, `deadline_soon`, `profile_needed`, `lecture_due`)
 - `url`은 **알림함에서 누르는 곳과 같은 화면**이다(같은 규칙을 서버와 web이 함께 쓴다).
   공고 → `/opportunities/{id}`(정보 필요 알림은 `?focus=profile_input`), 플래너 할 일 → `/planner`,
-  LMS 과제·자료·공지 → `/academics/{course_id}?tab=assignments|materials|announcements`.
+  LMS 과제·자료·공지 → `/academics/{course_id}?tab=assignments|materials|announcements`, 출석 마감 → `?tab=lectures`(11/27).
   과목을 찾을 수 없으면(수강을 뺐다) `/academics`, 가리킬 대상이 없으면 `/`다
 - `body`는 없을 수 있다(null). `title`은 늘 있다
 - 본문은 **구독 키로 암호화해서** 보낸다(RFC 8291 aes128gcm). 머리값은 `Authorization: vapid t=<JWT>, k=<공개 키>`,

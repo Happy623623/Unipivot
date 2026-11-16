@@ -140,6 +140,11 @@ def test_the_url_matches_the_web_routes() -> None:
         url_for(kind="new_assignment", link_type="lms_assignment", link_id="a-1", course_id="c-1")
         == "/academics/c-1?tab=assignments"
     )
+    # 출석 마감 알림은 과목의 강의 탭으로(11/27)
+    assert (
+        url_for(kind="lecture_due", link_type="lms_course", link_id="c-1", course_id="c-1")
+        == "/academics/c-1?tab=lectures"
+    )
 
 
 def test_a_notification_without_a_target_goes_home() -> None:

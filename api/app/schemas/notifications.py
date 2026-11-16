@@ -18,9 +18,15 @@ NotificationType = Literal[
     "task_due",
     "deadline_soon",
     "profile_needed",
+    "lecture_due",
 ]
 LinkType = Literal[
-    "opportunity", "planner_task", "lms_assignment", "lms_module_item", "lms_announcement"
+    "opportunity",
+    "planner_task",
+    "lms_assignment",
+    "lms_module_item",
+    "lms_announcement",
+    "lms_course",
 ]
 # 공고에서 오는 알림 세 종류(F-45가 "공고 알림"으로 묶어 부르는 것). ERD 중복 방지 표에 키가 있다
 OPPORTUNITY_TYPES: tuple[str, ...] = ("new_eligible", "deadline_soon", "profile_needed")
@@ -31,7 +37,7 @@ class NotificationLink(BaseModel):
 
     type: LinkType
     id: str
-    course_id: str | None = None  # lms_* 링크만. 그것만으로는 과목 탭으로 갈 수 없다
+    course_id: str | None = None  # lms_* 링크만(과목 알림은 id와 같다). 과목 탭으로 갈 때 쓴다
     focus: Literal["profile_input"] | None = None
 
 
