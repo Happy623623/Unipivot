@@ -206,6 +206,21 @@ ENGINES: dict[str, EngineSpec] = dict(
             code="app.youth.convert",
         ),
         _spec(
+            id="extract.youth_text",
+            version=1,  # app.youth.refine.VERSION
+            layer="understand",
+            kind="llm_single",
+            tier="standard",
+            model_setting="youth_text_model",
+            tools=("submit_youth_conditions",),
+            input_type=None,  # 서술형 글 두 칸(이름 → 글)
+            output_type="app.youth.refine:Found",
+            timeout_s=30.0,
+            shared_output=True,  # 요건은 그 정책을 보는 학생 모두의 판정이 된다
+            eval_suite="EV-EXTRACT",
+            code="app.youth.refine",
+        ),
+        _spec(
             id="extract.poster",
             version=1,
             layer="understand",

@@ -16,6 +16,7 @@ from app.eligibility import KST
 from app.youth import cli, importer
 from app.youth.cli import main
 from app.youth.client import BASE_URL, POLICY_PATH, YouthPolicyClient
+from tests.llm_fakes import ScriptedLlm, call
 from tests.youth_samples import FakeClient, policy, skip_if_other_youth_policies
 
 pytestmark = pytest.mark.anyio
@@ -275,3 +276,78 @@ async def test_fetch_command(
         assert statuses == {"A": "active", "B": "hidden", "J": "active"}
     finally:
         await _cleanup(scenario)
+
+
+# ── 서술형 자격 요건화 견주기(F-11b) ─────────────────────────────────────────
+
+
+def _refine_items() -> list[dict[str, Any]]:
+    return [
+        policy(plcyNo=PREFIX + "R", plcyNm="미취업 청년 정책", addAplyQlfcCndCn="미취업 청년"),
+        policy(plcyNo=PREFIX + "S", plcyNm="서술형 없는 정책"),
+        policy(plcyNo=PREFIX + "T", plcyNm="두 번째 서술형", ptcpPrpTrgtCn="대학 재학생 제외"),
+    ]
+
+
+async def test_refine_compares_before_and_after_without_the_db(
+    tmp_path: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    llm = ScriptedLlm(
+        call(
+            "submit_youth_conditions",
+            conditions=[
+                {
+                    "source": "추가 자격",
+                    "clause_no": 1,
+                    "field": "job_status",
+                    "operator": "in",
+                    "value_json": '["unemployed"]',
+                    "evidence_text": "미취업 청년",
+                }
+            ],
+            covered=["추가 자격"],
+        ),
+        "글로만 답했다",  # 두 번째 정책은 제출하지 않았다(아무것도 옮기지 않음)
+    )
+    out = tmp_path / "refine.md"
+
+    code = await main(
+        ["refine", "--sample", "5", "--md", str(out)],
+        make_client=factory(FakeClient(_refine_items())),
+        make_llm=lambda _settings: llm,
+    )
+
+    assert code == 0 and len(llm.requests) == 2  # 서술형 글이 있는 정책 둘만
+    text = out.read_text(encoding="utf-8")
+    assert "정책 2건 · 옮긴 조건 1 · 버린 조건 0 · 기타 조건을 뺀 글 1 · 실패 0" in text
+    assert "| 1. 기타 조건 추가 자격: 미취업 청년 | 1. 취업 상태 " in text
+    assert "## 두 번째 서술형" in text
+    assert "결과: " in capsys.readouterr().out
+
+
+async def test_refine_can_pick_policies_and_keeps_going_after_a_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def broken(_request: Any) -> Any:
+        raise TimeoutError("느림")
+
+    code = await main(
+        ["refine", "--policy", PREFIX + "T"],
+        make_client=factory(FakeClient(_refine_items())),
+        make_llm=lambda _settings: ScriptedLlm(broken),
+    )
+
+    shown = capsys.readouterr().out
+    assert code == 1  # 실패가 있으면 1
+    assert "## 두 번째 서술형" in shown and "미취업 청년 정책" not in shown
+    assert "모델이 답하지 않았어요: TimeoutError" in shown
+
+
+async def test_refine_needs_a_policy_with_free_text(capsys: pytest.CaptureFixture[str]) -> None:
+    code = await main(
+        ["refine"],
+        make_client=factory(FakeClient([policy(plcyNo=PREFIX + "S")])),
+        make_llm=lambda _settings: None,  # type: ignore[arg-type,return-value]
+    )
+    assert code == 1
+    assert "서술형 자격 글이 있는 정책이 없어요" in capsys.readouterr().out

@@ -27,6 +27,7 @@ from app.config import Settings, get_settings
 from app.db import get_log_connect
 from app.eligibility import KST
 from app.errors import ApiError
+from app.llm.deps import LlmDep
 from app.lms.sync import LmsSyncServiceDep
 from app.push.deps import PushSenderDep
 from app.repositories.metrics import MetricsRepoDep
@@ -46,6 +47,7 @@ from app.schemas.metrics import (
 from app.schemas.notifications import ScheduleResult, SendResult
 from app.schemas.youth import FetchPoliciesResult
 from app.youth.deps import YouthClientFactoryDep
+from app.youth.refine import youth_refiner
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/internal", tags=["내부"])
@@ -133,6 +135,7 @@ async def fetch_policies(
     settings: Annotated[Settings, Depends(get_settings)],
     log_connect: Annotated[LogConnect, Depends(get_log_connect)],
     make_client: YouthClientFactoryDep,
+    llm: LlmDep,
     now: NowDep,
     _: InternalKeyDep,
 ) -> FetchPoliciesResult:
@@ -146,6 +149,7 @@ async def fetch_policies(
         log_connect=log_connect,
         make_client=make_client,
         today=now.astimezone(KST).date(),
+        refiner=youth_refiner(settings, llm),  # 서술형 자격(F-11b, 켰을 때만)
     )
 
 

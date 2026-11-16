@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # 원문 확인 이유가 나올 때만 extraction_model로 처음부터 한 번 더 돈다. 정답셋 비교로 켤지 정한다
     extraction_cascade: bool = False
     extraction_lite_model: str = "gemini-3.5-flash-lite"
+    # 청년정책 서술형 자격(추가 자격·참여 제한) 요건화(F-11b). 켜면 04:00 수집이 그 글을 모델로 요건으로 옮긴다.
+    # 정책을 몇 건 직접 견줘 보고 켠다(python -m app.youth.cli refine)
+    youth_text_enabled: bool = False
+    youth_text_model: str = "gemini-3.8-flash"
     vision_model: str = "gemini-3.8-flash"
     guide_model: str = "gemini-3.5-flash-lite"  # 준비하기의 서류 안내(짧은 구조화 답)
     classify_model: str = "gemini-3.5-flash-lite"  # 과목 공지 갈래 나누기(F-53, 짧은 구조화 답)

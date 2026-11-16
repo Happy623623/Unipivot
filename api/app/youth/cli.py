@@ -2,8 +2,11 @@
 
     uv run python -m app.youth.cli fetch --dry-run   # DB 없이: 받아서 몇 건이 들어갈지, 요건이 어떻게 되는지 본다
     uv run python -m app.youth.cli fetch             # DB에 넣는다. 새 정책·바뀐 정책만 요건을 다시 만든다
+    uv run python -m app.youth.cli refine --sample 15 --md refine.md   # DB 없이: 서술형 자격 요건화(F-11b)를 견준다
 
-YOUTH_API_KEY가 필요하고, --dry-run이 아니면 DATABASE_URL도 필요하다(api/.env). LLM은 쓰지 않는다.
+YOUTH_API_KEY가 필요하고, fetch(--dry-run이 아닐 때)는 DATABASE_URL도 필요하다(api/.env). fetch는 서술형 자격 요건화
+(YOUTH_TEXT_ENABLED)를 켰을 때만 모델을 부른다. refine은 켜지 않아도 모델을 부른다(GOOGLE_CLOUD_PROJECT) —
+서술형 글이 있는 정책 몇 건을 모델로 옮겨 보고, 옮기기 전(기타 조건)과 뒤의 요건을 나란히 적는다. DB에는 쓰지 않는다.
 """
 
 import argparse
@@ -20,13 +23,18 @@ from app.config import Settings
 from app.crawl.cli import _connect
 from app.eligibility import KST, Requirement, condition_text, label
 from app.extraction.models import RequirementDraft
+from app.llm import LlmClient
+from app.llm.gemini import GeminiClient
+from app.pricing import cost_usd
 from app.runtime import event_loop_factory, utf8_output
 from app.youth.client import FetchResult, YouthApiError, YouthPolicyClient
 from app.youth.convert import PolicyRecord, Skip, convert
 from app.youth.importer import collect
+from app.youth.refine import extract, merge, wanted, youth_refiner
 from app.youth.regions import region_table
 
 ClientFactory = Callable[[str], YouthPolicyClient]
+LlmFactory = Callable[[Settings], LlmClient]
 _SAVED = {"new": "새 공고", "updated": "바뀐 공고", "unchanged": "그대로"}
 EXAMPLES = 3
 
@@ -44,16 +52,45 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="목록에서 한 번에 많이 사라진 정책도 숨긴다(온통청년에서 정말 내려갔는지 확인한 뒤)",
     )
-    return parser.parse_args(argv)
+    refine = commands.add_parser(
+        "refine",
+        help="서술형 자격(추가 자격·참여 제한)을 모델로 요건으로 옮겨 견준다(DB에 쓰지 않음)",
+    )
+    refine.add_argument(
+        "--sample", type=int, default=15, help="견줄 정책 수(서술형 글이 있는 정책)"
+    )
+    refine.add_argument(
+        "--policy", action="append", default=[], help="이 정책 번호만(여러 번 줄 수 있다)"
+    )
+    refine.add_argument("--model", help="모델(기본: YOUTH_TEXT_MODEL)")
+    refine.add_argument("--md", help="결과를 Markdown으로 적을 파일")
+    args = parser.parse_args(argv)
+    if args.command == "refine" and args.sample < 1:
+        parser.error("--sample은 1 이상이어야 해요")
+    return args
 
 
-async def main(argv: Sequence[str], *, make_client: ClientFactory = YouthPolicyClient) -> int:
+def _gemini(settings: Settings) -> LlmClient:
+    return GeminiClient(
+        project=settings.google_cloud_project, location=settings.google_cloud_location
+    )
+
+
+async def main(
+    argv: Sequence[str],
+    *,
+    make_client: ClientFactory = YouthPolicyClient,
+    make_llm: LlmFactory = _gemini,
+    settings: Settings | None = None,
+) -> int:
     args = parse_args(argv)
-    settings = Settings()
+    settings = settings or Settings()
     if not settings.youth_api_key.strip():
         print("YOUTH_API_KEY가 없어요. api/.env에 온통청년 OPEN API 인증키를 넣어 주세요")
         return 1
     today = datetime.now(KST).date()
+    if args.command == "refine":
+        return await refine(args, settings, make_client(settings.youth_api_key), make_llm, today)
     if args.dry_run:
         return await dry_run(make_client(settings.youth_api_key), today)
     if not settings.database_url:
@@ -77,6 +114,9 @@ async def main(argv: Sequence[str], *, make_client: ClientFactory = YouthPolicyC
             today=today,
             scenario=args.scenario,
             hide_gone=args.hide_gone,
+            refiner=youth_refiner(settings, make_llm(settings))
+            if settings.youth_text_enabled
+            else None,
         )
     except YouthApiError as exc:
         print(str(exc))
@@ -150,6 +190,89 @@ async def dry_run(client: YouthPolicyClient, today: date) -> int:
         if record.review_reasons:
             print(f"    원문 확인 필요: {', '.join(record.review_reasons)}")
     return 1 if fetched.stopped else 0
+
+
+async def refine(
+    args: argparse.Namespace,
+    settings: Settings,
+    client: YouthPolicyClient,
+    make_llm: LlmFactory,
+    today: date,
+) -> int:
+    """서술형 글이 있는 정책 몇 건을 모델로 옮겨 보고, 옮기기 전과 뒤의 요건을 나란히 적는다(DB에 쓰지 않는다)."""
+    try:
+        fetched = await client.fetch_all()
+    except YouthApiError as exc:
+        print(str(exc))
+        return 1
+    finally:
+        await client.aclose()
+    table = region_table()
+    picked: list[tuple[PolicyRecord, dict[str, str]]] = []
+    for policy in fetched.policies:
+        if args.policy and str(policy.get("plcyNo")) not in args.policy:
+            continue
+        converted = convert(policy, today, table)
+        texts = wanted(policy)
+        if not isinstance(converted, Skip) and texts:
+            picked.append((converted, texts))
+    picked = picked[: len(args.policy) or args.sample]
+    if not picked:
+        print("가져올 정책 중 서술형 자격 글이 있는 정책이 없어요")
+        return 1
+    model = args.model or settings.youth_text_model
+    llm = make_llm(settings)
+    lines = [f"# 청년정책 서술형 자격 요건화 견주기 ({today.isoformat()}, {model})", ""]
+    covered = conditions = dropped = tokens_in = tokens_out = failed = 0
+    for record, texts in picked:
+        lines += [f"## {record.title} ({record.external_id})", ""]
+        lines += [f"- **{name}**: {text}" for name, text in texts.items()]
+        try:
+            found = await extract(llm, model=model, texts=texts)
+        except Exception as exc:  # 한 건이 실패해도 견주기는 이어 간다
+            failed += 1
+            lines += ["", f"모델이 답하지 않았어요: {type(exc).__name__}", ""]
+            continue
+        if found.reply is not None:
+            tokens_in += found.reply.usage.input_tokens
+            tokens_out += found.reply.usage.output_tokens
+        after = merge(record, found, texts)
+        covered += len(found.covered)
+        conditions += len(found.conditions)
+        dropped += found.dropped
+        lines += ["", "| 전(코드 변환) | 뒤(요건화) |", "| --- | --- |"]
+        before_rows = [_row(draft) for draft in record.requirements]
+        after_rows = [_row(draft) for draft in after.requirements]
+        for index in range(max(len(before_rows), len(after_rows))):
+            left = before_rows[index] if index < len(before_rows) else ""
+            right = after_rows[index] if index < len(after_rows) else ""
+            lines.append(f"| {left} | {right} |")
+        lines += [
+            "",
+            f"옮긴 조건 {len(found.conditions)} · 버린 조건 {found.dropped} · 기타 조건을 뺀 글: "
+            + (", ".join(found.covered) or "없음"),
+            "",
+        ]
+    cost = cost_usd(llm.provider, model, tokens_in, tokens_out, today)
+    summary = (
+        f"정책 {len(picked)}건 · 옮긴 조건 {conditions} · 버린 조건 {dropped} · 기타 조건을 뺀 글 {covered}"
+        f" · 실패 {failed} · 토큰 {tokens_in:,}/{tokens_out:,} · 비용 ${float(cost):.4f}"
+    )
+    lines.insert(2, summary + "\n")
+    text = "\n".join(lines) + "\n"
+    if args.md:
+        with open(args.md, "w", encoding="utf-8") as out:
+            out.write(text)
+        print(f"{summary}\n결과: {args.md}")
+    else:
+        print(text)
+    return 1 if failed else 0
+
+
+def _row(draft: RequirementDraft) -> str:
+    requirement = _requirement(draft)
+    text = condition_text(requirement)[:80].replace("|", "/")
+    return f"{draft.clause_no}. {label(requirement)} {text}"
 
 
 def _requirement(draft: RequirementDraft) -> Requirement:

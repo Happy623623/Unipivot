@@ -83,6 +83,8 @@ COPIED = (
     "extraction_model",
     "extraction_cascade",
     "extraction_lite_model",
+    "youth_text_enabled",
+    "youth_text_model",
     "vision_model",
     "guide_model",
     "classify_model",

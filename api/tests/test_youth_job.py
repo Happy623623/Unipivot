@@ -4,6 +4,7 @@
 tests/test_youth_job_db.py가 본다.
 """
 
+import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime, time
 from typing import Any
@@ -12,9 +13,13 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+from app import jobs, scheduler
 from app.config import Settings, get_settings
+from app.llm.deps import get_llm
 from app.main import create_app
 from app.scheduler import FETCH_AT, SCHEDULE_AT, app_jobs, first_run
+from app.youth.refine import YouthRefiner
+from tests.llm_fakes import ScriptedLlm
 
 KEY = "youth-job-internal-test-key"
 
@@ -81,3 +86,57 @@ def test_fetching_runs_before_the_daily_scheduling() -> None:
     """새벽에 받아 두면 08:30 예약에 그날 새 정책이 들어간다."""
     assert FETCH_AT < SCHEDULE_AT
     assert FETCH_AT == time(4, 0)
+
+
+# ── 서술형 자격 요건화(F-11b)를 켰을 때 ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_the_route_and_the_scheduler_hand_the_refiner_only_when_switched_on(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool
+) -> None:
+    """엔드포인트와 스케줄러 줄이 같은 수집 함수에 요건화기를 넘긴다 — 스위치를 켰을 때만(F-11b)."""
+    seen: list[Any] = []
+
+    async def fake_fetch(**options: Any) -> Any:
+        seen.append(options.get("refiner"))
+        return {
+            "run_id": "r",
+            "fetched": 0,
+            "total": 0,
+            "complete": True,
+            "stopped": None,
+            "new": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "expired": 0,
+            "hidden": 0,
+            "skipped": 0,
+            "gone_kept": 0,
+        }
+
+    monkeypatch.setattr(jobs, "fetch_policies_fresh", fake_fetch)
+    monkeypatch.setattr(scheduler, "fetch_policies_fresh", fake_fetch)
+    llm = ScriptedLlm()
+    settings = _settings(
+        youth_api_key="x-key",
+        youth_text_enabled=enabled,
+        database_url="postgresql://postgres:postgres@localhost:5432/not_used_here",
+    )
+    app = create_app(settings)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_llm] = lambda: llm
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/internal/jobs/fetch-policies", headers={"X-Internal-Key": KEY}
+        )
+    assert response.status_code == 200, response.text
+    app.state.llm = llm  # 스케줄러는 app.state의 모델 클라이언트를 쓴다(llm_for)
+    job = {one.name: one for one in app_jobs(app)}["fetch-policies"]
+    asyncio.run(job.run())
+    assert len(seen) == 2
+    for refiner in seen:
+        if enabled:
+            assert isinstance(refiner, YouthRefiner) and refiner.llm is llm
+        else:
+            assert refiner is None

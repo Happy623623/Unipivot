@@ -49,6 +49,7 @@ from app.repositories.notifications import NotificationRepository
 from app.repositories.opportunities import OpportunityRepository
 from app.repositories.push import PushRepository
 from app.youth.client import YouthPolicyClient
+from app.youth.refine import youth_refiner
 
 logger = logging.getLogger(__name__)
 # 블록이 끝나면 커밋하는 연결 공급자(요청 풀의 pool.connection)
@@ -312,6 +313,7 @@ def app_jobs(app: Any, *, now: Callable[[], datetime] = current_time) -> list[Jo
             log_connect=state.log_pool.connection,
             make_client=YouthPolicyClient,
             today=now().astimezone(KST).date(),
+            refiner=youth_refiner(settings, llm_for(state)),  # 서술형 자격(F-11b, 켰을 때만)
         )
 
     jobs = [

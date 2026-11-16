@@ -7,6 +7,9 @@
 정책마다 한 트랜잭션이다.
 - 새 정책·바뀐 정책(변환 결과의 content_hash가 다름): 공고 행을 넣거나 고치고 요건을 바꾼다(save_extraction).
   요건이 바뀌면 requirements_version이 오르고, 판정은 피드를 읽을 때 다시 계산된다.
+- 서술형 자격 요건화(F-11b, `refine.py`)를 켰으면 저장하기 전에 "추가 자격"·"참여 제한" 글을 모델로 요건으로 옮긴다
+  (정책마다 자식 실행 하나, 엔진 `extract.youth_text`). 같은지 볼 해시에 그 엔진의 버전·모델이 들어가, 켠 다음 수집이
+  그 글이 있는 정책을 한 번씩 다시 저장하고 그 뒤로는 바뀐 정책만 모델을 부른다.
 - 같은 정책: 고치지 않는다. 조회수처럼 변환에 안 쓰는 칸만 바뀐 정책이다. 넣은 정책의 content_hash·상태를
   먼저 한 번에 읽어, 같고 활성인 정책은 DB에 다시 가지 않는다(원격 DB에서 정책마다 오가면 느리다).
 - 가져온 정책이 숨김·만료였으면 활성으로 돌린다(만료는 마감이 지나지 않았을 때만). 상시 정책이 마감 코드로
@@ -30,6 +33,7 @@ from app.extraction.store import save_extraction
 from app.youth import BUILD_TOOL, FETCH_TOOL
 from app.youth.client import BASE_URL, FetchResult, YouthPolicyClient
 from app.youth.convert import PolicyRecord, Skip, convert
+from app.youth.refine import YouthRefiner
 from app.youth.regions import region_table
 
 SOURCE_TYPE = "youth_policy"
@@ -76,9 +80,10 @@ async def collect(
     today: date,
     scenario: str | None = None,
     hide_gone: bool = False,
+    refiner: YouthRefiner | None = None,
 ) -> CollectResult:
     """conn은 데이터(autocommit, 정책마다 트랜잭션), log_connect는 실행 로그 연결 공급자다.
-    today는 KST 날짜다.
+    today는 KST 날짜다. refiner를 주면 바뀐 정책의 서술형 자격을 요건으로 옮겨 저장한다(F-11b).
     온통청년 오류(YouthApiError)는 실행을 실패로 남기고 그대로 올라간다."""
     source_id = await ensure_source(conn)
     table = region_table()
@@ -96,10 +101,14 @@ async def collect(
                 if isinstance(converted, Skip):
                     skipped[str(policy["plcyNo"])] = converted
                     result.skips[converted.reason] += 1
-                elif known.get(converted.external_id) == (converted.content_hash, "active"):
+                elif known.get(converted.external_id) == (
+                    refiner.wanted_hash(converted, policy) if refiner else converted.content_hash,
+                    "active",
+                ):
                     result.counts["unchanged"] += 1  # 같고 활성인 공고는 DB에 다시 가지 않는다
                 else:
-                    result.counts[await save_policy(conn, source_id, converted, run.id)] += 1
+                    record = await refiner.apply(run, converted, policy) if refiner else converted
+                    result.counts[await save_policy(conn, source_id, record, run.id)] += 1
             expired, hidden, result.gone_kept = await retire(
                 conn,
                 source_id,

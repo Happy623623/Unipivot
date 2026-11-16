@@ -85,6 +85,7 @@ print(
 | 첨부 이미지·스캔 읽기 | Gemini 3.8 Flash | Gemini 3.5 Flash-Lite | PDF를 그대로 받고 쪽당 560토큰이다 |
 | 포스터 추출 | Gemini 3.8 Flash | Gemini 3.5 Flash-Lite | 작은 글씨가 많다. 이미지를 2,240토큰까지 올릴 수 있다 |
 | 강의계획서 파싱 | Gemini 3.8 Flash | Gemini 3.5 Flash-Lite | 뽑은 날짜가 캘린더에 들어간다 |
+| 청년정책 서술형 자격(F-11b, 켰을 때) | Gemini 3.8 Flash | Gemini 3.5 Flash-Lite | 옮긴 조건이 학생을 떨어뜨릴 수 있어 요건 추출과 같은 모델로 시작한다. 글 두 칸·모델 한 번이라 정책 하나에 $0.003 안팎(입력 2천·출력 3백 토큰, 2027년 단가로 두 배)이고 바뀐 정책만 다시 읽는다 |
 | 서류 안내 | Gemini 3.5 Flash-Lite | Gemini 3.8 Flash | 사실은 서류 사전이 정하고 LLM은 잇기만 하는 짧은 생성이다 |
 | (P1) 공지 분류 | Gemini 3.5 Flash-Lite | — | 짧은 분류다 |
 | (P1) 강의자료 요약 | Gemini 3.5 Flash-Lite | Gemini 3.8 Flash | 입력이 길다 |

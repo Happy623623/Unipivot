@@ -27,6 +27,7 @@ from app.schemas.youth import FetchPoliciesResult
 from app.youth.client import YouthApiError, YouthPolicyClient
 from app.youth.deps import ClientFactory
 from app.youth.importer import collect
+from app.youth.refine import YouthRefiner
 
 logger = logging.getLogger(__name__)
 CONNECT_TIMEOUT = 10  # 수집용 연결. psycopg 기본값(130초)은 막힌 네트워크에서 너무 오래 기다린다
@@ -129,7 +130,12 @@ async def send_notifications(
 
 
 async def fetch_policies(
-    conn: AsyncConnection, log_connect: LogConnect, client: YouthPolicyClient, *, today: date
+    conn: AsyncConnection,
+    log_connect: LogConnect,
+    client: YouthPolicyClient,
+    *,
+    today: date,
+    refiner: YouthRefiner | None = None,
 ) -> FetchPoliciesResult:
     """온통청년 정책을 받아 공고로 넣는다 (F-11). 명령 `python -m app.youth.cli fetch`와 같은 일이다.
 
@@ -137,7 +143,7 @@ async def fetch_policies(
     넣은 정책은 남긴다(요청 풀의 트랜잭션 연결은 맞지 않는다). 온통청년 오류는 502로 올린다.
     """
     try:
-        result = await collect(conn, log_connect, client, today=today)
+        result = await collect(conn, log_connect, client, today=today, refiner=refiner)
     except YouthApiError as exc:
         raise ApiError(502, "YOUTH_API_ERROR", str(exc)) from exc
     return FetchPoliciesResult(
@@ -163,6 +169,7 @@ async def fetch_policies_fresh(
     log_connect: LogConnect,
     make_client: ClientFactory,
     today: date,
+    refiner: YouthRefiner | None = None,
 ) -> FetchPoliciesResult:
     """연결과 클라이언트를 새로 열어 수집을 돌리고 닫는다. 라우터와 스케줄러가 함께 쓴다.
 
@@ -179,7 +186,7 @@ async def fetch_policies_fresh(
         await client.aclose()
         raise ApiError(503, "DB_UNAVAILABLE", "데이터베이스에 연결할 수 없어요.") from exc
     try:
-        return await fetch_policies(conn, log_connect, client, today=today)
+        return await fetch_policies(conn, log_connect, client, today=today, refiner=refiner)
     finally:
         await client.aclose()
         await conn.close()

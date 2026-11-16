@@ -681,6 +681,7 @@ erDiagram
 - opportunities: external_id가 정책 번호(plcyNo), original_url이 온통청년 정책 상세(https://www.youthcenter.go.kr/youthPolicy/ythPlcyTotalSearch/ythPlcyDetail/{정책 번호}), source_type·category가 youth_policy다. organizer는 주관 기관(없으면 등록 기관), easy_summary는 정책 설명 400자, raw_text는 "칸 이름: 내용" 줄(정책 설명·지원 내용·추가 자격·참여 제한·소득·신청 방법·심사 방법·제출 서류·기타·신청 사이트·참고 사이트)이다. apply_start_at·deadline_at은 신청 기간의 00:00·23:59 KST이고 상시면 null이다. extraction_confidence는 null이다(코드로 만든 요건)
 - content_hash: 변환 결과(제목·기관·주소·원문 글·쉬운 설명·기간·요건·원문 확인 이유)의 sha256이다. 조회수처럼 변환에 안 쓰는 칸은 들어가지 않는다. 바뀌면 요건을 다시 넣고 requirements_version을 올린다
 - extraction_run_id: 그 정책을 넣거나 바꾼 수집 실행(agent_runs, trigger batch_crawl)이다. 실행 하나에 tool_calls가 둘이다(fetch_youth_policies, build_youth_requirements)
+- 서술형 자격 요건화(F-11b, 11/28)를 켜면 정책마다 그 수집 실행의 자식 실행(`agent_runs.parent_run_id`, 엔진 `extract.youth_text`)이 모델 한 번을 남긴다. `content_hash`에 그 엔진의 버전·모델이 들어가서, 켠 다음 수집이 서술형 글이 있는 정책을 한 번씩 다시 저장하고(요건 버전이 오른다) 끄면 기타 조건으로 되돌린다. 모델이 실패한 정책은 변환 결과 그대로 저장하고 다음 수집이 다시 시도한다. 스키마 변경 없음
 - status: 넣은 정책이 마감·사업 종료가 되면 expired, 수도권 밖·승인 안 됨이 되면 hidden이다. 목록에서 사라진 정책은 목록을 빠짐없이 받았을 때만 hidden이다(한 번에 활성의 20%·최소 20건을 넘게 사라지면 --hide-gone일 때만). 다시 범위에 들면 active로 돌린다(expired는 마감이 지나지 않았을 때만)
 - 요건 만들기는 docs/판정엔진_규칙.md 11장, 판정 기준일은 같은 문서 8장이다
 
@@ -958,6 +959,7 @@ group by c.id;
 
 ## 변경 이력
 
+- v0.9 보강 (2026-11-28): 청년정책 서술형 자격 요건화(F-11b) — 수집 실행의 자식 실행, content_hash에 엔진 버전·모델. 스키마 변경 없음
 - v0.9 보강 (2026-11-27): notifications.lms_course_id(과목으로 가는 알림 — 출석 마감), 알림 종류 lecture_due(`notifications.type`·`user_settings.muted_notification_types` check)
 - v0.9 보강 (2026-11-26): 정보 필요 알림은 판정 불가 원인이 프로필 공백뿐인 공고만(condition_results의 모름 이유로 본다), 보낸 행은 7일이 지나면 그 항목을 묻는 공고가 남아 있을 때 다시 연다. 스키마 변경 없음
 - v0.9 보강 (2026-11-24): lms_lecture_progress(주차학습 강의와 내 수강 상태, F-55)·lms_connections.lectures_checked_at — 동기화가 LearningX 주차학습을 한 번 열어 읽는다(강의 항목은 열지 않는다). 처리방침 v0.3(11/28 시행)과 동의 문구 2026-11-24 판
