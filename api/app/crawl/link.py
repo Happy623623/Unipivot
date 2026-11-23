@@ -51,7 +51,7 @@ LINK_USER_AGENT = (
     " reads one notice a student asked for; student capstone project)"
 )
 SCHOOL_HOSTS = frozenset({"www.hanyang.ac.kr", "hanyang.ac.kr"})
-MIN_INTERVAL = 1.0  # 학교 서버 요청 사이 초
+MIN_INTERVAL = 5.0  # 학교 서버 요청 사이 초
 TIMEOUT = 20  # 연결·읽기 한 번을 기다리는 초
 TOTAL_TIMEOUT = 60  # 요청 하나(파일을 다 받기까지)의 전체 초. 넘으면 그 파일은 못 받은 것으로 둔다
 MAX_REDIRECTS = 5

@@ -19,6 +19,7 @@ from app.crawl.link import (
     MAX_FILE_BYTES,
     MAX_IMAGE_REQUESTS,
     MAX_IMAGES,
+    MIN_INTERVAL,
     NOT_HANYANG,
     NOT_ONE_NOTICE,
     NOT_URL,
@@ -45,7 +46,7 @@ IMAGE = "/documents/20122/0/poster.jpg/0f1e-2d3c?t=1759"
 
 
 class NoWait:
-    """간격을 기다리지 않는 시계(시험이 1초씩 쉬지 않게). 기다린 초를 적어 둔다."""
+    """간격을 기다리지 않는 시계(시험이 실제로 쉬지 않게). 기다린 초를 적어 둔다."""
 
     def __init__(self) -> None:
         self.now = 100.0
@@ -148,7 +149,7 @@ def test_other_addresses_are_refused_with_a_reason(text: str, message: str) -> N
 
 async def test_requests_go_one_at_a_time_with_a_gap() -> None:
     pace = NoWait()
-    gate = LinkGate(1.0, clock=pace.clock, sleep=pace.sleep)
+    gate = LinkGate(MIN_INTERVAL, clock=pace.clock, sleep=pace.sleep)
     order: list[str] = []
 
     async def ask(name: str) -> None:
@@ -160,7 +161,7 @@ async def test_requests_go_one_at_a_time_with_a_gap() -> None:
 
     await asyncio.gather(ask("가"), ask("나"), ask("다"))
     assert order == ["가 시작", "가 끝", "나 시작", "나 끝", "다 시작", "다 끝"]
-    assert pace.waited == [1.0, 1.0]  # 앞 요청이 끝난 뒤 1초
+    assert pace.waited == [MIN_INTERVAL, MIN_INTERVAL]  # 앞 요청이 끝난 뒤 MIN_INTERVAL초
 
 
 async def test_only_the_school_is_asked_even_through_redirects() -> None:
@@ -328,7 +329,7 @@ async def test_files_are_read_like_a_saved_folder(tmp_path: Path) -> None:
         notice = await read_files(client, page, page_url=url)
     finally:
         await client.aclose()
-    assert pace.waited == [1.0, 1.0]  # 페이지 → 첨부 → 이미지, 요청 사이 1초
+    assert pace.waited == [MIN_INTERVAL, MIN_INTERVAL]  # 페이지 → 첨부 → 이미지
     assert [(f.seq, f.name, f.body_image, f.problem) for f in notice.files] == [
         (1, "1. 선발요강.hwpx", False, None),
         (2, "poster.jpg", True, None),
