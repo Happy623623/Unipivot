@@ -234,7 +234,7 @@ def _notes(saved: SavedNotice) -> list[str]:
 async def check_link(url: str, *, transport: httpx.AsyncBaseTransport | None = None) -> int:
     """학생이 링크를 붙였을 때와 같은 길로 공지 한 건을 읽어 check처럼 보여 준다. 읽지 못하면 1이다.
 
-    학교 서버에는 그 공지 페이지와 거기 걸린 첨부·본문 이미지만 묻는다(요청 사이 1초). 가져오지 못한
+    학교 서버에는 그 공지 페이지와 거기 걸린 첨부·본문 이미지만 묻는다(요청 사이 5초). 가져오지 못한
     파일이 있어도 서비스는 가져오므로(원문 확인 필요가 된다) 알려만 준다.
     """
     try:
