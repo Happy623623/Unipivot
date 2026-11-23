@@ -7,6 +7,7 @@ import {
   EXTRACT_STEPS,
   fieldErrors,
   importNoticeLink,
+  NOTICE_LINK_ENABLED,
   NOTICE_LINK_STEPS,
   registerPosterOpportunity,
   SHOW_MOCK_NOTICE_STEPS,
@@ -23,6 +24,7 @@ import PosterExtractForm from "@/components/PosterExtractForm";
 import PosterNotice from "@/components/PosterNotice";
 import PosterSourcePreview from "@/components/PosterSourcePreview";
 import PosterUploading from "@/components/PosterUploading";
+import SchoolNoticeShortcut from "@/components/SchoolNoticeShortcut";
 import Skeleton from "@/components/Skeleton";
 import Toast from "@/components/Toast";
 import { validatePosterFile } from "@/lib/posterFile";
@@ -50,7 +52,10 @@ const READ_FAILED = "글자를 읽지 못했어요. 포스터 전체가 보이�
 const UPLOAD_FAILED = "파일을 올리지 못했어요. 잠시 후 다시 시도해 주세요";
 // 화면이 기다리는 60초를 넘겼다. 실행은 아직 돌고 있어서 실패가 아니다
 const STILL_READING = "포스터를 아직 읽고 있어요. 조금 뒤에 다시 올려 주세요";
-const SUBTITLE = "학교 공지 링크를 붙이거나 포스터를 올리면 AI가 제목, 마감일, 지원 조건을 정리해요.";
+// 학교 공지 링크를 꺼 둔 동안(NOTICE_LINK_ENABLED)은 링크 대신 공지 화면을 올리라고 안내한다
+const SUBTITLE = NOTICE_LINK_ENABLED
+  ? "학교 공지 링크를 붙이거나 포스터를 올리면 AI가 제목, 마감일, 지원 조건을 정리해요."
+  : "학교 공지 화면이나 포스터를 올리면 AI가 제목, 마감일, 지원 조건을 정리해요.";
 const LINK_FAILED = "공지를 가져오지 못했어요. 잠시 후 다시 붙여 주세요";
 // 화면이 기다리는 시간을 넘겼다. 실행은 계속 돌고, 끝나면 같은 주소를 다시 붙일 때 바로 열린다
 const STILL_LINKING = "공지를 아직 정리하고 있어요. 잠시 뒤 같은 주소를 다시 붙이면 바로 열려요";
@@ -290,13 +295,17 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
       <PosterFileInputs fileRef={fileInputRef} cameraRef={cameraInputRef} onPick={analyze} />
       {status === "idle" && (
         <>
-          <NoticeLinkForm
-            url={linkUrl}
-            onUrlChange={setLinkUrl}
-            onSubmit={importLink}
-            problem={linkProblem}
-            inputRef={linkInputRef}
-          />
+          {NOTICE_LINK_ENABLED ? (
+            <NoticeLinkForm
+              url={linkUrl}
+              onUrlChange={setLinkUrl}
+              onSubmit={importLink}
+              problem={linkProblem}
+              inputRef={linkInputRef}
+            />
+          ) : (
+            <SchoolNoticeShortcut />
+          )}
           <PosterDropzone
             onDropFile={analyze}
             onChooseFile={() => fileInputRef.current?.click()}

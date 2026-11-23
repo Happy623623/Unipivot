@@ -6,6 +6,11 @@ import type { NoticeLinkResult, NoticeLinkStarted, ProcessStep } from "@/types/a
 // 학교 공지 링크로 공고 가져오기(B안, API 명세 6장 POST /notices/link). 공고 등록 화면이 쓴다(client.ts가 다시 내보낸다).
 // 학생이 붙인 한양대 공지 한 건만 서버가 그 자리에서 읽는다. 가져온 공지는 학교 공지라 모든 학생에게 보인다
 
+// 공고 등록·홈에 학교 공지 링크 칸을 보일지. 학교 대표웹이 공지 페이지 요청에 Cloudflare 브라우저 확인(403)을 걸어
+// 서버가 읽을 수 없어(11/23 확인) 기본은 끈다 — 끄면 링크 칸 대신 학교 공지사항 바로가기를 보인다(SchoolNoticeShortcut).
+// 학교가 열어 주면 Vercel의 NEXT_PUBLIC_NOTICE_LINK_ENABLED와 api의 NOTICE_LINK_ENABLED를 둘 다 true로 둔다
+export const NOTICE_LINK_ENABLED = process.env.NEXT_PUBLIC_NOTICE_LINK_ENABLED === "true";
+
 // 서버의 단계 이름과 같게 둔다(app/schemas/notices.py). 첫 폴링 전에는 이 이름을, 그 뒤에는 실행의 단계를 보여 준다
 export const NOTICE_LINK_STEPS = ["공지 페이지 읽기", "첨부 파일 받기", "AI로 지원 자격 정리"];
 export const SHOW_MOCK_NOTICE_STEPS = USE_MOCKS;
