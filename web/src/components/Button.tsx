@@ -21,16 +21,23 @@ interface ButtonLinkProps {
   children: ReactNode;
   secondary?: boolean;
   announceNewTab?: boolean; // 화면 읽기 프로그램에 "(새 탭)"을 붙인다. 보이는 글에 이미 "새 탭"이 있으면 끈다
+  className?: string; // 덧붙일 클래스(좁은 화면에서 폭을 채우는 등)
 }
 
-// 바깥 주소(공고 원문·신청 사이트)를 새 탭으로 여는 버튼 모양 링크
-export function ButtonLink({ href, children, secondary = false, announceNewTab = true }: ButtonLinkProps) {
+// 바깥 주소(공고 원문·신청 사이트·학교 공지사항)를 새 탭으로 여는 버튼 모양 링크
+export function ButtonLink({
+  href,
+  children,
+  secondary = false,
+  announceNewTab = true,
+  className = "",
+}: ButtonLinkProps) {
   return (
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className={`inline-flex items-center ${BASE} ${secondary ? SECONDARY : PRIMARY}`}
+      className={`inline-flex items-center ${BASE} ${secondary ? SECONDARY : PRIMARY} ${className}`}
     >
       {children}
       {announceNewTab && <span className="sr-only">(새 탭)</span>}

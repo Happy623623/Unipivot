@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { errorMessage, getFeed, getMe, setOpportunityMark, type FeedParams } from "@/api/client";
+import {
+  errorMessage,
+  getFeed,
+  getMe,
+  NOTICE_LINK_ENABLED,
+  setOpportunityMark,
+  type FeedParams,
+} from "@/api/client";
 import CategoryChips, { type CategoryFilter } from "@/components/CategoryChips";
 import FeedList from "@/components/FeedList";
 import FeedSummary, { type SummaryFilter } from "@/components/FeedSummary";
@@ -141,7 +148,9 @@ export default function Home({ navigate }: HomeProps) {
     const all = category === "all";
     if (isEmptyFeed) {
       return {
-        title: "학교 공지 링크를 붙이거나 포스터를 올리면 공고로 등록하고 자격을 판정해요",
+        title: NOTICE_LINK_ENABLED
+          ? "학교 공지 링크를 붙이거나 포스터를 올리면 공고로 등록하고 자격을 판정해요"
+          : "학교 공지 화면이나 포스터를 올리면 공고로 등록하고 자격을 판정해요",
         action: "공고 등록",
         onAction: () => navigate({ name: "upload" }),
       };
@@ -162,15 +171,21 @@ export default function Home({ navigate }: HomeProps) {
     if (visibleItems.length + ineligibleItems.length === 0) {
       // 카테고리에 공고가 하나도 없으면 고장이 아니라 들어오는 길이 없어서다(피드백 2③). 왜 비었는지와 할 일을
       // 알린다. 요약 카드로 걸러서 빈 때는 그대로 둔다. 학교 공지는 자동으로 모으지 않고(robots.txt) 학생이 붙인
-      // 공지 링크로 들어온다(B안)
+      // 공지 링크로 들어온다(B안). 링크를 꺼 둔 동안은 학생이 공지 화면을 올린다(학교 사이트가 서버 요청을 막는다, 11/23)
       if (tab === "recommended" && summaryFilter === null && items.length === 0) {
         if (category === "scholarship" || category === "school_program") {
           const name = category === "scholarship" ? "장학금" : "교내 프로그램";
-          return {
-            title: `아직 ${name} 공고가 없어요. 학교 공지 링크를 붙이면 그 공지를 가져와요`,
-            action: "공지 링크 붙이기",
-            onAction: () => navigate({ name: "upload" }),
-          };
+          return NOTICE_LINK_ENABLED
+            ? {
+                title: `아직 ${name} 공고가 없어요. 학교 공지 링크를 붙이면 그 공지를 가져와요`,
+                action: "공지 링크 붙이기",
+                onAction: () => navigate({ name: "upload" }),
+              }
+            : {
+                title: `아직 ${name} 공고가 없어요. 학교 공지사항에서 찾은 공지 화면을 올려 보세요`,
+                action: "공고 등록",
+                onAction: () => navigate({ name: "upload" }),
+              };
         }
         if (category === "contest" || category === "activity") {
           return {
