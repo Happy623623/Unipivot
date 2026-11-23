@@ -41,7 +41,7 @@ export default function OpportunityMarkButtons({ mark, pending, describedBy, onC
     if (!pending) onChange(next);
   };
   const base =
-    "shrink-0 rounded-full px-2.5 py-1 text-[12px] font-semibold transition-colors aria-disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]";
+    "shrink-0 rounded-full px-2.5 py-1 text-[12px] font-semibold transition-colors max-md:min-h-10 max-md:px-3 aria-disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]";
   return (
     <div className="flex items-center gap-1">
       <button

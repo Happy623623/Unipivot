@@ -80,12 +80,12 @@ export default function HomeWeekTasks({ navigate }: { navigate: (route: Route) =
   const rest = entries.length - shown.length;
 
   return (
-    <section aria-labelledby="home-week-tasks" className="max-w-[786px] rounded-2xl border border-[#e5e7eb] bg-white p-5">
-      <div className="flex items-center justify-between gap-3">
+    <section aria-labelledby="home-week-tasks" className="max-w-[786px] rounded-2xl border border-[#e5e7eb] bg-white p-5 max-md:rounded-[14px] max-md:p-4">
+      <div className="flex items-center justify-between gap-3 max-md:items-start">
         <h2 id="home-week-tasks" className="text-[18px] font-semibold">
           이번 주 할 일 {request.data && <span className="text-[14px] font-medium text-[#667085]">{entries.length}</span>}
         </h2>
-        <button type="button" onClick={() => navigate({ name: "planner" })} className="text-[13px] font-semibold text-[#4f6ef7]">
+        <button type="button" onClick={() => navigate({ name: "planner" })} className="text-[13px] font-semibold text-[#4f6ef7] max-md:min-h-10 max-md:max-w-[132px] max-md:text-right">
           플래너에서 모두 보기
         </button>
       </div>
@@ -111,7 +111,7 @@ export default function HomeWeekTasks({ navigate }: { navigate: (route: Route) =
             return (
               <li key={key}>
                 {route ? (
-                  <button type="button" onClick={() => navigate(route)} className={`${row} hover:bg-[#f7f8fa]`}>
+                  <button type="button" onClick={() => navigate(route)} className={`${row} hover:bg-[#f7f8fa] max-md:min-h-[54px] max-md:px-1 max-md:py-2 max-md:[&>span:last-child]:max-w-[44%] max-md:[&>span:last-child]:truncate`}>
                     {line}
                   </button>
                 ) : (

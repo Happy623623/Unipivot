@@ -85,7 +85,7 @@ export default function PlannerDayPanel({
 
   return (
     <>
-      <div className="min-h-[650px] rounded-2xl border border-[#e5e7eb] bg-white p-5">
+      <div className="min-h-[650px] min-w-0 rounded-2xl border border-[#e5e7eb] bg-white p-5 max-md:min-h-0 max-md:p-[14px]">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 ref={heading} tabIndex={-1} className="text-[20px] font-bold outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]">{formatKstLongDate(date)}</h2>
@@ -99,8 +99,9 @@ export default function PlannerDayPanel({
             const meta = getPlannerTaskMeta(task);
             const source = plannerTaskRoute(task); // 제목은 체크 칸의 이름이라 따로 "보기"를 둔다
             return (
-              <article key={task.id} className="relative rounded-xl bg-[#f7f8fa] p-[14px]">
-                <div className="flex items-start justify-between gap-2">
+              <article key={task.id} className="relative min-w-0 rounded-xl bg-[#f7f8fa] p-[14px] max-md:p-3">
+                {/* 좁은 화면에서는 제목 아래 줄 오른쪽에 바로 가기·더 보기를 둔다 */}
+                <div className="flex items-start justify-between gap-2 max-md:flex-col">
                   <label className="flex min-w-0 cursor-pointer items-start gap-2">
                     <input
                       type="checkbox"
@@ -130,7 +131,7 @@ export default function PlannerDayPanel({
                       {task.auto_completed && <span className="mt-1 block text-[11px] text-[#15803d]">제출 확인됨</span>}
                     </span>
                   </label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 max-md:w-full max-md:flex-wrap max-md:justify-end">
                     <Badge tone={meta.tone}>{meta.label}</Badge>
                     {source && (
                       <button

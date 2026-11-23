@@ -247,7 +247,7 @@ export default function Home({ navigate }: HomeProps) {
       <FeedSummary counts={shownCounts} selected={summaryFilter} onToggle={toggleSummary} />
       <HomeWeekTasks navigate={navigate} />
       <section ref={listRef}>
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center justify-between gap-3 max-md:items-end">
           <FeedTabs
             tab={tab}
             counts={tabCounts}
@@ -258,7 +258,7 @@ export default function Home({ navigate }: HomeProps) {
           <select
             value={sort}
             onChange={(event) => setSort(event.target.value as NonNullable<FeedParams["sort"]>)}
-            className="bg-transparent text-[13px] font-medium text-[#667085] outline-none"
+            className="bg-transparent text-[13px] font-medium text-[#667085] outline-none max-md:min-h-10"
           >
             <option value="deadline">마감 임박순</option>
             <option value="recent">최신순</option>

@@ -9,6 +9,7 @@ interface ButtonProps {
   busy?: boolean; // 누른 일이 아직 진행 중. 눌러도 지나가지만 초점은 남는다(아래). disabled와 같이 주지 않는다
   inactive?: boolean; // 다른 일이 진행 중이라 지금은 누를 수 없다(창의 "취소" 등). busy처럼 초점은 남고, 진행 중 표시(aria-busy)는 없다
   title?: string;
+  className?: string; // 덧붙일 클래스(좁은 화면에서 폭을 채우는 등)
 }
 
 const BASE = "h-[42px] rounded-[10px] border px-[18px] text-[14px] font-semibold transition active:scale-[0.98]";
@@ -50,6 +51,7 @@ export default function Button({
   busy = false,
   inactive = false,
   title,
+  className = "",
 }: ButtonProps) {
   const blocked = busy || inactive;
   return (
@@ -68,7 +70,7 @@ export default function Button({
       title={title}
       className={`${BASE} disabled:cursor-not-allowed disabled:opacity-45 aria-disabled:opacity-45 aria-busy:cursor-wait aria-disabled:not-aria-busy:cursor-not-allowed aria-disabled:active:scale-100 ${
         secondary ? SECONDARY : PRIMARY
-      }`}
+      } ${className}`}
     >
       {children}
     </button>

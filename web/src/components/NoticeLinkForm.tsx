@@ -21,7 +21,7 @@ export default function NoticeLinkForm({
   inputRef: RefObject<HTMLInputElement | null>;
 }) {
   return (
-    <section className="rounded-[18px] border border-[#e5e7eb] bg-white p-6 max-[760px]:p-5">
+    <section className="rounded-[18px] border border-[#e5e7eb] bg-white p-6 max-md:rounded-[14px] max-md:px-4 max-md:py-[18px]">
       <h2 className="text-[18px] font-bold">학교 공지 링크로 가져오기</h2>
       <p className="mt-1 text-[13px] leading-5 text-[#667085]">
         한양대 공지사항에서 공지 글을 열고 그 주소를 붙여 주세요. 그 공지 하나만 읽어 와요.
@@ -33,7 +33,7 @@ export default function NoticeLinkForm({
           event.preventDefault();
           onSubmit();
         }}
-        className="mt-4 flex gap-2 max-[760px]:flex-col"
+        className="mt-4 flex gap-2 max-md:flex-col max-md:gap-[10px]"
       >
         <label htmlFor="notice-link" className="sr-only">
           공지 글 주소
@@ -50,9 +50,9 @@ export default function NoticeLinkForm({
           placeholder="https://www.hanyang.ac.kr/notice/url/…"
           aria-invalid={problem?.tone === "error" || undefined}
           aria-describedby={problem ? "notice-link-problem notice-link-help" : "notice-link-help"}
-          className="h-[42px] min-w-0 flex-1 rounded-[10px] border border-[#e5e7eb] px-3 text-[14px] outline-none focus:border-[#4f6ef7] aria-invalid:border-[#d92d20] max-[760px]:flex-none"
+          className="h-[42px] min-w-0 flex-1 rounded-[10px] border border-[#e5e7eb] px-3 text-[14px] outline-none focus:border-[#4f6ef7] aria-invalid:border-[#d92d20] max-md:min-h-[46px] max-md:w-full max-md:flex-none"
         />
-        <Button type="submit" disabled={!url.trim()}>
+        <Button type="submit" disabled={!url.trim()} className="max-md:min-h-[46px] max-md:w-full">
           가져오기
         </Button>
       </form>

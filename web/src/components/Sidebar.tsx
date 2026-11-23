@@ -1,4 +1,5 @@
 import Link from "next/link";
+import NavIcon, { type NavIconName } from "@/components/NavIcons";
 import type { Route } from "@/types/route";
 
 interface SidebarProps {
@@ -6,16 +7,17 @@ interface SidebarProps {
   navigate: (route: Route) => void;
 }
 
-const navItems: { route: Route; label: string; icon: string }[] = [
-  { route: { name: "home" }, label: "홈", icon: "⌂" },
-  { route: { name: "planner" }, label: "플래너", icon: "□" },
-  { route: { name: "academics" }, label: "학업", icon: "▣" },
-  { route: { name: "documents" }, label: "내 파일", icon: "▤" }, // 옛 이름 문서함(피드백 2④ — 학업과 구분이 안 됐다)
+export const navItems: { route: Route; label: string; icon: NavIconName }[] = [
+  { route: { name: "home" }, label: "홈", icon: "home" },
+  { route: { name: "planner" }, label: "플래너", icon: "planner" },
+  { route: { name: "academics" }, label: "학업", icon: "academics" },
+  { route: { name: "documents" }, label: "내 파일", icon: "documents" }, // 옛 이름 문서함(피드백 2④ — 학업과 구분이 안 됐다)
 ];
 
+// 넓은 화면(768px 이상)의 왼쪽 메뉴. 좁은 화면에서는 숨기고 위 막대·아래 메뉴(MobileNav)를 쓴다
 export default function Sidebar({ route, navigate }: SidebarProps) {
   return (
-    <aside className="fixed inset-y-0 left-0 z-20 flex w-[220px] flex-col bg-white px-5 pb-6 pt-7 max-[760px]:relative max-[760px]:w-full max-[760px]:px-4 max-[760px]:py-4">
+    <aside className="fixed inset-y-0 left-0 z-20 flex w-[220px] flex-col bg-white px-5 pb-6 pt-7 max-md:hidden">
       <button
         type="button"
         onClick={() => navigate({ name: "home" })}
@@ -23,7 +25,7 @@ export default function Sidebar({ route, navigate }: SidebarProps) {
       >
         UNIPIVOT
       </button>
-      <nav className="mt-3 flex flex-col gap-[2px] max-[760px]:mt-2 max-[760px]:flex-row max-[760px]:overflow-x-auto">
+      <nav className="mt-3 flex flex-col gap-[2px]">
         {navItems.map((item) => (
           <button
             type="button"
@@ -35,7 +37,7 @@ export default function Sidebar({ route, navigate }: SidebarProps) {
                 : "font-medium text-[#667085] hover:bg-[#f7f8fa]"
             }`}
           >
-            <span className="text-[15px] font-normal">{item.icon}</span>
+            <NavIcon name={item.icon} stroke="#5369FF" />
             {item.label}
           </button>
         ))}
@@ -50,23 +52,11 @@ export default function Sidebar({ route, navigate }: SidebarProps) {
         >
           <span className="text-[15px]">＋</span>공고 등록
         </button>
-        {/* 760px 이하에서는 아래 설정 버튼이 숨으므로 가로 메뉴에 설정을 넣는다 */}
-        <button
-          type="button"
-          onClick={() => navigate({ name: "settings" })}
-          className={`hidden items-center gap-[10px] whitespace-nowrap rounded-[10px] px-3 py-[10px] text-[14px] max-[760px]:flex ${
-            route.name === "settings"
-              ? "bg-[#eef2ff] font-semibold text-[#4f6ef7]"
-              : "font-medium text-[#667085] hover:bg-[#f7f8fa]"
-          }`}
-        >
-          <span className="text-[15px]">⚙</span>설정
-        </button>
       </nav>
       <button
         type="button"
         onClick={() => navigate({ name: "settings" })}
-        className={`mt-auto flex items-center gap-[10px] rounded-[10px] px-3 py-[10px] text-[14px] max-[760px]:hidden ${
+        className={`mt-auto flex items-center gap-[10px] rounded-[10px] px-3 py-[10px] text-[14px] ${
           route.name === "settings"
             ? "bg-[#eef2ff] font-semibold text-[#4f6ef7]"
             : "font-medium text-[#667085]"
@@ -78,7 +68,7 @@ export default function Sidebar({ route, navigate }: SidebarProps) {
           Google 인증 플랫폼에 적는 홈페이지에서 처리방침으로 갈 수 있다. 좁은 화면에서는 설정 화면의 링크를 쓴다 */}
       <Link
         href="/privacy"
-        className="mt-1 px-3 text-[12px] text-[#667085] underline-offset-2 hover:text-[#4f6ef7] hover:underline max-[760px]:hidden"
+        className="mt-1 px-3 text-[12px] text-[#667085] underline-offset-2 hover:text-[#4f6ef7] hover:underline"
       >
         개인정보 처리방침
       </Link>

@@ -43,15 +43,15 @@ export default function PlannerCalendar({
   };
 
   return (
-    <div className="min-h-[650px] rounded-2xl border border-[#e5e7eb] bg-white p-[22px]">
+    <div className="min-h-[650px] min-w-0 rounded-2xl border border-[#e5e7eb] bg-white p-[22px] max-md:min-h-0 max-md:p-[14px]">
       <div className="flex items-center justify-between">
-        <h2 className="text-[22px] font-bold">{year}년 {month}월</h2>
+        <h2 className="text-[22px] font-bold max-md:text-[19px]">{year}년 {month}월</h2>
         <div className="flex gap-2">
           <button type="button" aria-label="이전 달" onClick={() => changeMonth(-1)} className="size-9 rounded-[10px] bg-[#f7f8fa] text-[22px] font-semibold text-[#667085]">‹</button>
           <button type="button" aria-label="다음 달" onClick={() => changeMonth(1)} className="size-9 rounded-[10px] bg-[#f7f8fa] text-[22px] font-semibold text-[#667085]">›</button>
         </div>
       </div>
-      <div className="mt-[18px] grid grid-cols-7 text-center text-[12px] font-semibold text-[#667085]">
+      <div className="mt-[18px] grid grid-cols-7 text-center max-md:mt-[14px] text-[12px] font-semibold text-[#667085]">
         {["일", "월", "화", "수", "목", "금", "토"].map((day, index) => (
           <div key={day} className={`h-[34px] ${index === 0 ? "text-[#c53030]" : ""}`}>{day}</div>
         ))}
@@ -66,7 +66,7 @@ export default function PlannerCalendar({
               type="button"
               key={cell.date}
               onClick={() => onSelectDate(cell.date)}
-              className={`h-20 min-w-0 overflow-hidden rounded-[10px] p-1.5 text-left text-[13px] ${
+              className={`h-20 min-w-0 overflow-hidden rounded-[10px] p-1.5 text-left text-[13px] max-md:h-16 max-md:p-1 max-md:text-[12px] ${
                 selected ? "bg-[#eef2ff]" : ""
               }`}
             >
@@ -89,7 +89,7 @@ export default function PlannerCalendar({
                 }).label} 마감`,
                 className: "border border-[#4f6ef7] bg-white text-[#4f6ef7]",
               }))].slice(0, 3).map((chip) => (
-                <span key={chip.id} className={`mt-1 block w-fit max-w-full truncate rounded-md px-1.5 py-[3px] text-[9px] font-semibold ${chip.className}`}>
+                <span key={chip.id} className={`mt-1 block w-fit max-w-full truncate rounded-md px-1.5 py-[3px] text-[9px] font-semibold max-md:mt-0.5 max-md:px-[3px] max-md:py-0.5 max-md:text-[8px] ${chip.className}`}>
                   {chip.label}
                 </span>
               ))}

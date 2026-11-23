@@ -280,7 +280,7 @@ export default function OpportunityPreparation({
         />
       )}
       {completed && (
-        <div className="fixed bottom-6 left-1/2 z-[90] flex -translate-x-1/2 items-center gap-3 rounded-[10px] bg-[#181a20] px-4 py-3 text-[13px] font-semibold text-white">
+        <div className="fixed bottom-6 left-1/2 z-[90] max-md:bottom-[calc(88px+env(safe-area-inset-bottom))] flex -translate-x-1/2 items-center gap-3 rounded-[10px] bg-[#181a20] px-4 py-3 text-[13px] font-semibold text-white">
           준비 일정을 만들었어요
           <button type="button" onClick={() => navigate({ name: "planner" })} className="text-[#cfd7ff]">
             플래너에서 보기
