@@ -96,14 +96,14 @@ function UpdateGroup({
               <button
                 type="button"
                 onClick={() => navigate(updateRoute(update))}
-                className="flex w-full items-start justify-between gap-3 rounded-[10px] px-2 py-1.5 text-left hover:bg-[#f7f8fa]"
+                className="flex w-full items-start justify-between gap-3 rounded-[10px] px-2 py-1.5 text-left hover:bg-[#f7f8fa] max-md:min-h-[58px] max-md:px-1 max-md:py-2"
               >
                 <span className="min-w-0">
                   <span className="block text-[12px] text-[#667085]">{line.label}</span>
                   <b className="block truncate text-[14px] font-semibold">{update.title}</b>
                   {line.note && <span className="block truncate text-[12px] text-[#667085]">{line.note}</span>}
                 </span>
-                <span className={`mt-0.5 shrink-0 text-[12px] font-semibold ${line.urgent ? "text-[#c53030]" : "text-[#667085]"}`}>
+                <span className={`mt-0.5 shrink-0 text-[12px] font-semibold max-md:max-w-[42%] max-md:text-right ${line.urgent ? "text-[#c53030]" : "text-[#667085]"}`}>
                   {line.when}
                 </span>
               </button>
@@ -119,7 +119,7 @@ function UpdateGroup({
 function UpdateGroups({ groups, navigate }: { groups: LmsUpdateGroups; navigate: (route: Route) => void }) {
   const total = groups.assignments.length + groups.materials.length + groups.announcements.length;
   return (
-    <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
+    <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5 max-md:rounded-[14px] max-md:p-4">
       <h2 className="text-[18px] font-semibold">새로 들어온 학업 정보</h2>
       {total === 0 ? (
         <p className="mt-3 text-[13px] text-[#667085]">
@@ -221,27 +221,27 @@ export default function Academics({ navigate }: AcademicsProps) {
       <Header title="학업" subtitle={SUBTITLE} />
       {reloadFailed}
       {connection.status === "error" ? (
-        <section className="flex items-center justify-between gap-4 rounded-[14px] bg-[#fef2f2] p-[18px]">
+        <section className="flex items-center justify-between gap-4 rounded-[14px] bg-[#fef2f2] p-[18px] max-md:flex-col max-md:items-start max-md:p-[15px]">
           <p className="text-[13px] font-semibold text-[#c53030]">
             {connection.last_error ?? "LearningX 연결이 끊겼어요. 토큰이 만료됐거나 삭제됐어요"}
           </p>
           <Button secondary onClick={() => setConnectOpen(true)}>다시 연결</Button>
         </section>
       ) : (
-        <section className="flex items-center gap-3 rounded-[14px] bg-[#eef2ff] p-[18px]">
+        <section className="flex items-center gap-3 rounded-[14px] bg-[#eef2ff] p-[18px] max-md:flex-col max-md:items-start max-md:p-[15px]">
           <Badge tone="green">LearningX 연결됨</Badge>
           <p className="text-[13px] font-medium text-[#344054]">
             마지막 동기화: {connection.last_synced_at ? formatRelativeTime(connection.last_synced_at, nowIso()) : "아직 없음"} · 토큰 끝 4자리 {connection.token_last4}
           </p>
         </section>
       )}
-      <section className="grid grid-cols-4 gap-4 max-[1100px]:grid-cols-2 max-[760px]:grid-cols-1">
+      <section className="grid grid-cols-4 gap-4 max-[1100px]:grid-cols-2 max-md:grid-cols-1 max-md:gap-3">
         {courses.map((course) => (
           <button
             type="button"
             key={course.id}
             onClick={() => navigate({ name: "course", id: course.id })}
-            className="min-h-[230px] rounded-2xl border border-[#e5e7eb] bg-white p-[18px] text-left transition hover:-translate-y-0.5 hover:border-[#cfd7ff]"
+            className="min-h-[230px] min-w-0 rounded-2xl border border-[#e5e7eb] bg-white p-[18px] text-left max-md:min-h-0 max-md:p-4 transition hover:-translate-y-0.5 hover:border-[#cfd7ff]"
           >
             <h2 className="text-[17px] font-semibold">{course.name}</h2>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -255,14 +255,14 @@ export default function Academics({ navigate }: AcademicsProps) {
                 ? `${course.next_due.title} · ${formatDday(course.next_due.due_at, todayKst())}`
                 : "예정된 일정 없음"}
             </p>
-            <span className="mt-3 block text-[12px] font-semibold text-[#4f6ef7]">
+            <span className="mt-3 block text-[12px] font-semibold text-[#4f6ef7] max-md:min-h-10 max-md:pt-[11px]">
               과제 · 자료 · 공지 · 계획서 보기&nbsp; →
             </span>
           </button>
         ))}
       </section>
       {courses.length === 0 && (
-        <section className="rounded-2xl border border-[#e5e7eb] bg-white p-8 text-center">
+        <section className="rounded-2xl border border-[#e5e7eb] bg-white p-8 text-center max-md:rounded-[14px]">
           {/* 다시 받는 동안에는 지난(빈) 목록을 두므로 받는 중이라고 쓴다(연결한 바로 뒤에도 그렇다) */}
           <p className="text-[14px] font-semibold">{request.loading ? "과목을 받아오고 있어요" : "아직 받아온 과목이 없어요"}</p>
           <p className="mt-2 text-[13px] text-[#667085]">

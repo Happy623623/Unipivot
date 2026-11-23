@@ -39,7 +39,7 @@ export default function FeedTabs({ tab, counts, arrived, onArrivedEnd, onSelect 
   return (
     <>
       <h2 className="sr-only">공고 목록</h2>
-      <div role="group" aria-label="공고 목록" className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+      <div role="group" aria-label="공고 목록" className="flex flex-wrap items-baseline gap-x-4 gap-y-1 max-md:gap-x-3">
         {feedTabs.map((feedTab) => {
           const arriving = arrived?.tab === feedTab.value ? arrived : null;
           return (
@@ -48,7 +48,7 @@ export default function FeedTabs({ tab, counts, arrived, onArrivedEnd, onSelect 
               type="button"
               onClick={() => onSelect(feedTab.value)}
               aria-pressed={tab === feedTab.value}
-              className={`text-[20px] font-semibold transition-colors ${
+              className={`text-[20px] font-semibold transition-colors max-md:min-h-9 max-md:text-[18px] ${
                 tab === feedTab.value ? "text-[#181a20]" : "text-[#a0a4ab] hover:text-[#667085]"
               }`}
             >
@@ -59,7 +59,7 @@ export default function FeedTabs({ tab, counts, arrived, onArrivedEnd, onSelect 
               >
                 {feedTab.label}
                 {feedTab.value !== "recommended" && counts[feedTab.value] > 0 && (
-                  <span className="ml-1 text-[14px]">{counts[feedTab.value]}</span>
+                  <span className="ml-1 text-[14px] max-md:text-[18px]">{counts[feedTab.value]}</span>
                 )}
               </span>
             </button>

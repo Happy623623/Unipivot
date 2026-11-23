@@ -18,7 +18,7 @@ export default function Toast({ toast, onHold }: ToastProps) {
       onBlur={() => onHold?.("focus", false)}
       className={
         toast.text
-          ? "fixed bottom-6 left-1/2 z-[90] -translate-x-1/2 rounded-[10px] bg-[#181a20] px-4 py-3 text-[13px] font-semibold text-white"
+          ? "fixed bottom-6 left-1/2 z-[90] max-md:bottom-[calc(88px+env(safe-area-inset-bottom))] -translate-x-1/2 rounded-[10px] bg-[#181a20] px-4 py-3 text-[13px] font-semibold text-white"
           : "sr-only"
       }
     >

@@ -129,7 +129,7 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
         title="플래너"
         subtitle="공고 준비, LMS 과제, 수업 일정을 한곳에서 관리해요."
       />
-      <section className="grid grid-cols-[1.77fr_1fr] gap-5 max-[1000px]:grid-cols-1">
+      <section className="grid grid-cols-[1.77fr_1fr] gap-5 max-[1000px]:grid-cols-1 max-md:gap-[14px]">
         <PlannerCalendar
           year={view.year}
           month={view.month}
@@ -170,13 +170,13 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
         />
       </section>
       {/* 캘린더 연결은 설정 한 곳에서 한다(Google 화면을 거쳐 설정으로 돌아온다) */}
-      <section className="flex items-center justify-between gap-4 rounded-[14px] border border-[#e5e7eb] bg-white p-[18px]">
+      <section className="flex items-center justify-between gap-4 rounded-[14px] border border-[#e5e7eb] bg-white p-[18px] max-md:flex-col max-md:items-start max-md:p-4">
         <div>
           <p className="text-[14px] font-semibold">
             <b className="mr-3 text-[#4f6ef7]">G</b>
             {calendarConnected ? "Google Calendar 연결됨" : "Google Calendar 연결 안 됨"}
           </p>
-          <p className="ml-7 mt-1 text-[12px] text-[#667085]">
+          <p className="ml-7 mt-1 text-[12px] text-[#667085] max-md:ml-0">
             {calendarConnected
               ? "준비 중인 공고 마감일과 LMS 과제 마감일을 Google Calendar에 등록해요."
               : "설정에서 연결하면 준비 일정과 마감일을 Google Calendar에 넣을 수 있어요."}
@@ -189,14 +189,14 @@ export default function Planner({ navigate }: { navigate: (route: Route) => void
         )}
       </section>
       {/* Google 캘린더를 쓰지 않는 학생은 파일로 받아 기본 캘린더 앱에 넣는다(F-34) */}
-      <section className="flex items-center justify-between gap-4 rounded-[14px] border border-[#e5e7eb] bg-white p-[18px]">
+      <section className="flex items-center justify-between gap-4 rounded-[14px] border border-[#e5e7eb] bg-white p-[18px] max-md:flex-col max-md:items-start max-md:p-4">
         <div>
           <p className="text-[14px] font-semibold">.ics 파일로 내려받기</p>
           <p className="mt-1 text-[12px] text-[#667085]">
             Google 캘린더를 쓰지 않으면 다가오는 마감일과 수업 일정을 파일로 받아 iPhone·삼성·Outlook 캘린더에 넣을 수 있어요.
           </p>
         </div>
-        <Button secondary onClick={downloadIcs} busy={downloading}>
+        <Button secondary onClick={downloadIcs} busy={downloading} className="max-md:min-h-11 max-md:w-full">
           {downloading ? "파일 만드는 중…" : ".ics 내려받기"}
         </Button>
       </section>

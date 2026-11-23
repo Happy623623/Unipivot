@@ -1,6 +1,5 @@
-import { useRef, useState, type ReactNode } from "react";
-import { useAppShell } from "@/components/AppShell";
-import NotificationPanel from "@/components/NotificationPanel";
+import { useRef, type ReactNode } from "react";
+import { useAppShell, useNotificationPanel } from "@/components/AppShell";
 
 interface HeaderProps {
   title: string;
@@ -8,61 +7,60 @@ interface HeaderProps {
   action?: ReactNode;
 }
 
-// 화면 제목과 알림 버튼. 배지 숫자는 내 정보의 안 읽은 알림 수이고, 알림함을 열면 목록이 센 수로 맞춘다
+// 화면 제목과 알림 버튼. 배지 숫자는 내 정보의 안 읽은 알림 수이고, 알림함을 열면 목록이 센 수로 맞춘다.
+// 알림 패널은 AppShell에 하나 있다. 좁은 화면(768px 미만)에서는 이 종을 숨기고 위 막대(MobileNav)의 종을 쓴다
 export default function Header({ title, subtitle, action }: HeaderProps) {
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const { unreadNotifications } = useAppShell();
+  const notifications = useNotificationPanel();
   const bellRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <>
-      <header className="flex items-center justify-between gap-6">
-        <div className="min-w-0">
-          {/* 좁은 화면에서 제목과 버튼이 한 줄에 다 들어가지 않으면 버튼을 다음 줄로 내린다 */}
-          <div className="flex items-center gap-3 max-[760px]:flex-wrap max-[760px]:gap-y-1">
-            {/* 다른 화면에서 옮겨 오면 초점을 받는다(lib/useRouteFocus.ts). Tab 순서에는 넣지 않는다 */}
-            <h1
-              tabIndex={-1}
-              className="truncate text-[28px] font-bold leading-[1.45] text-[#181a20] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]"
-            >
-              {title}
-            </h1>
-            {action}
-          </div>
-          <p className="mt-[2px] text-[14px] leading-[1.45] text-[#667085]">{subtitle}</p>
-        </div>
-        <button
-          ref={bellRef}
-          type="button"
-          onClick={() => setNotificationsOpen(true)}
-          aria-expanded={notificationsOpen}
-          aria-controls="notification-panel"
-          aria-haspopup="dialog"
-          className="relative flex size-10 shrink-0 items-center justify-center rounded-full bg-[#4f6ef7] text-white transition hover:-translate-y-0.5 hover:bg-[#425fe0] hover:shadow-[0_6px_16px_rgba(79,110,247,0.24)] active:scale-95"
-          aria-label={`읽지 않은 알림 ${unreadNotifications}개 열기`}
-        >
-          <svg
-            aria-hidden="true"
-            width="19"
-            height="19"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+    <header className="flex items-center justify-between gap-6 max-md:items-start max-md:gap-3">
+      <div className="min-w-0">
+        {/* 좁은 화면에서 제목과 버튼이 한 줄에 다 들어가지 않으면 버튼을 다음 줄로 내린다 */}
+        <div className="flex items-center gap-3 max-[760px]:flex-wrap max-[760px]:gap-y-1">
+          {/* 다른 화면에서 옮겨 오면 초점을 받는다(lib/useRouteFocus.ts). Tab 순서에는 넣지 않는다.
+              좁은 화면에서는 제목을 자르지 않고 줄을 바꾼다 */}
+          <h1
+            tabIndex={-1}
+            className="truncate text-[28px] font-bold leading-[1.45] text-[#181a20] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7] max-md:overflow-visible max-md:whitespace-normal max-md:text-clip max-md:text-[24px] max-md:leading-[1.35]"
           >
-            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-            <path d="M10 21h4" />
-          </svg>
-          {unreadNotifications > 0 && (
-            <span className="absolute -right-1 -top-1 flex min-w-5 items-center justify-center rounded-full bg-[#c53030] px-1.5 py-0.5 text-[10px] font-bold leading-4 text-white">
-              {unreadNotifications}
-            </span>
-          )}
-        </button>
-      </header>
-      <NotificationPanel open={notificationsOpen} onClose={() => setNotificationsOpen(false)} returnFocusRef={bellRef} />
-    </>
+            {title}
+          </h1>
+          {action}
+        </div>
+        <p className="mt-[2px] text-[14px] leading-[1.45] text-[#667085] max-md:mt-[5px] max-md:text-[13px] max-md:leading-[1.55]">{subtitle}</p>
+      </div>
+      <button
+        ref={bellRef}
+        type="button"
+        onClick={() => notifications.openFrom(bellRef)}
+        aria-expanded={notifications.open}
+        aria-controls="notification-panel"
+        aria-haspopup="dialog"
+        className="relative flex size-10 shrink-0 items-center justify-center rounded-full bg-[#4f6ef7] text-white transition hover:-translate-y-0.5 hover:bg-[#425fe0] hover:shadow-[0_6px_16px_rgba(79,110,247,0.24)] active:scale-95 max-md:hidden"
+        aria-label={`읽지 않은 알림 ${unreadNotifications}개 열기`}
+      >
+        <svg
+          aria-hidden="true"
+          width="19"
+          height="19"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+          <path d="M10 21h4" />
+        </svg>
+        {unreadNotifications > 0 && (
+          <span className="absolute -right-1 -top-1 flex min-w-5 items-center justify-center rounded-full bg-[#c53030] px-1.5 py-0.5 text-[10px] font-bold leading-4 text-white">
+            {unreadNotifications}
+          </span>
+        )}
+      </button>
+    </header>
   );
 }

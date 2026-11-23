@@ -59,8 +59,8 @@ function DocumentRow({ item, onError, onSummary, summaryOpen = false }: Document
     .join(" · ");
   return (
     // 마지막 쪽이 와서 더 보기가 사라지면 새로 온 첫 줄로 초점을 옮긴다(lib/useLoadMoreFocus.ts)
-    <li data-row={item.file_id} tabIndex={-1} className="flex items-center gap-3 rounded-[10px] py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]">
-      <div className="min-w-0 flex-1">
+    <li data-row={item.file_id} tabIndex={-1} className="flex items-center gap-3 rounded-[10px] py-3 max-md:min-h-[88px] max-md:flex-wrap max-md:gap-2 max-md:[&>button]:ml-auto max-md:[&>button]:min-h-10 max-md:[&>button]:min-w-16 max-md:[&>button+button]:ml-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]">
+      <div className="min-w-0 flex-1 max-md:basis-full">
         <p className="break-all text-[14px] font-semibold text-[#181a20]">{item.file_name}</p>
         <p className="mt-0.5 text-[12px] text-[#667085]">{meta}</p>
       </div>
@@ -120,7 +120,7 @@ export default function Documents({ navigate }: { navigate: (route: Route) => vo
         <EmptyBox title={error} action="다시 시도" onAction={reload} />
       )}
       {!loading && error === null && items.length === 0 && (
-        <section className="flex flex-col items-center rounded-2xl border border-[#e5e7eb] bg-white p-8 text-center">
+        <section className="flex flex-col items-center rounded-2xl border border-[#e5e7eb] bg-white p-8 text-center max-md:rounded-[14px]">
           <p className="text-[16px] font-semibold">아직 모인 자료가 없어요</p>
           <p className="mt-2 text-[13px] text-[#667085]">
             LearningX를 연결하면 과목 공지의 첨부가 여기에 모여요. 과목 화면에서 올린 강의계획서도 여기서 받을 수 있어요.
@@ -132,11 +132,11 @@ export default function Documents({ navigate }: { navigate: (route: Route) => vo
           </div>
         </section>
       )}
-      <div ref={listRef} className="contents">
+      <div ref={listRef} className="contents max-md:flex max-md:flex-col max-md:gap-[14px]">
         {groups.map((group) => (
-          <section key={group.key} className="rounded-2xl border border-[#e5e7eb] bg-white px-5 pb-2 pt-5">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-[17px] font-semibold">
+          <section key={group.key} className="rounded-2xl border border-[#e5e7eb] bg-white px-5 pb-2 pt-5 max-md:rounded-[14px] max-md:px-4 max-md:pb-1 max-md:pt-4">
+            <div className="flex items-center justify-between gap-3 max-md:items-start">
+              <h2 className="text-[17px] font-semibold max-md:min-w-0 max-md:[overflow-wrap:anywhere]">
                 {group.course?.short_name ?? "과목을 정하지 않은 파일"}
                 <span className="ml-2 text-[13px] font-medium text-[#667085]">{group.items.length}개</span>
               </h2>

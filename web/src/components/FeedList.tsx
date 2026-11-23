@@ -26,7 +26,7 @@ export default function FeedList({ listKey, main, group, groupTotal, showGroup, 
   const groupRef = useRef<HTMLDivElement>(null);
   return (
     <>
-      <div ref={mainRef} key={`${listKey}-${main.page}`} className="opportunity-list mt-7 flex scroll-mt-6 flex-col gap-7">
+      <div ref={mainRef} key={`${listKey}-${main.page}`} className="opportunity-list mt-7 flex scroll-mt-6 flex-col gap-7 max-md:mt-5 max-md:gap-[14px]">
         {main.items.map(card)}
       </div>
       <Pager

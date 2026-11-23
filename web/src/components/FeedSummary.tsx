@@ -23,14 +23,14 @@ export default function FeedSummary({ counts, selected, onToggle }: FeedSummaryP
     { filter: "deadline_soon", title: "마감 임박", value: counts.deadline_soon, tone: "text-[#c53030]", note: "3일 이내" },
   ];
   return (
-    <section className="grid max-w-[786px] grid-cols-3 gap-4 max-[760px]:grid-cols-1">
+    <section className="grid max-w-[786px] grid-cols-3 gap-4 max-md:grid-cols-1 max-md:gap-[10px]">
       {cards.map((card) => (
         <button
           key={card.filter}
           type="button"
           onClick={() => onToggle(card.filter)}
           aria-pressed={selected === card.filter}
-          className={`h-28 rounded-2xl border bg-white p-5 text-left ${
+          className={`h-28 rounded-2xl border bg-white p-5 text-left max-md:h-auto max-md:min-h-[88px] max-md:px-4 max-md:py-[14px] ${
             selected === card.filter ? "border-[#4f6ef7]" : "border-[#e5e7eb]"
           }`}
         >

@@ -44,20 +44,21 @@ export default function OpportunityCard({ item, pending, found = false, navigate
   const titleId = `opportunity-title-${item.id}`;
 
   return (
-    <div className={`opportunity-card ${found ? "card-arrive " : ""}relative w-full rounded-2xl border border-[#e5e7eb] bg-white transition-all duration-300 hover:-translate-y-1 hover:border-[#cfd7ff] hover:shadow-[0_14px_36px_rgba(79,110,247,0.11)]`}>
+    <div className={`opportunity-card ${found ? "card-arrive " : ""}relative w-full min-w-0 rounded-2xl border border-[#e5e7eb] bg-white transition-all max-md:rounded-[14px] duration-300 hover:-translate-y-1 hover:border-[#cfd7ff] hover:shadow-[0_14px_36px_rgba(79,110,247,0.11)]`}>
       <button
         type="button"
         data-card={item.id}
         onClick={() => navigate({ name: "opportunity", id: item.id })}
-        className="w-full rounded-2xl p-[22px] text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]"
+        className="w-full rounded-2xl p-[22px] text-left max-md:p-4 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#4f6ef7]"
       >
-        <div className="flex items-start justify-between gap-4">
+        {/* 좁은 화면에서는 출처 줄과 상태 줄을 위아래로 둔다 */}
+        <div className="flex items-start justify-between gap-4 max-md:flex-col max-md:gap-2">
           <div className="flex flex-wrap items-center gap-2">
             <Badge>{getCategoryLabel(item.category)}</Badge>
             <span className="text-[12px] font-medium text-[#667085]">{item.organizer}</span>
             {context && <span className="text-[12px] text-[#667085]">· {context}</span>}
           </div>
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2 max-md:justify-start">
             <StatusBadge displayStatus={displayStatus} />
             {item.eligibility.display_status === "eligible" && item.needs_review && (
               <Badge tone="gray">원문 확인 필요</Badge>
@@ -68,7 +69,7 @@ export default function OpportunityCard({ item, pending, found = false, navigate
             </span>
           </div>
         </div>
-        <h3 id={titleId} className="mt-3 flex items-center gap-2 text-[18px] font-semibold leading-[1.45]">
+        <h3 id={titleId} className="mt-3 flex items-center gap-2 text-[18px] font-semibold leading-[1.45] max-md:text-[17px]">
           {item.is_new && <span className="size-2 shrink-0 rounded-full bg-[#4f6ef7]" />}
           {item.title}
         </h3>
@@ -80,12 +81,12 @@ export default function OpportunityCard({ item, pending, found = false, navigate
         </div>
         {/* 추천 사유(F-24): 내 정보로 맞는다고 판정한 조건. 지원 어려움·맞는 조건이 없으면 서버가 비운다 */}
         {item.recommend_reason && <p className="mt-2 text-[12px] font-medium text-[#344054]">추천 이유 · {item.recommend_reason}</p>}
-        {/* 오른쪽 아래 관심·숨기기 자리를 비워 둔다. 좁은 화면에서는 글이 줄을 바꾼다 */}
-        <p className="mt-3 pr-[148px] text-[12px] leading-[26px] text-[#667085]">
+        {/* 오른쪽 아래 관심·숨기기 자리를 비워 둔다. 좁은 화면에서는 관심·숨기기가 카드 아래 줄로 내려간다 */}
+        <p className="mt-3 pr-[148px] text-[12px] leading-[26px] text-[#667085] max-md:pr-0">
           {getSourceLabel(item.source_type)} · {sourceAction}
         </p>
       </button>
-      <div className="absolute bottom-[22px] right-[22px]">
+      <div className="absolute bottom-[22px] right-[22px] max-md:static max-md:flex max-md:justify-end max-md:px-3 max-md:pb-3">
         <OpportunityMarkButtons
           mark={item.my_mark}
           pending={pending}
