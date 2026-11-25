@@ -99,7 +99,8 @@ COPIED = (
 )
 DECIDED = ("cors_origins", "scheduler_enabled")  # 배포에서 정한다
 # 배포 서버는 기본값을 쓴다. 시험용으로만 바꾸는 주소와 web이 기대는 경로, 처리방침에 묶인 링크 가져오기·
-# 주차학습 읽기의 여는 시각(로컬에서 미리 보려고 바꾼 값이 배포로 가지 않게)이다
+# 주차학습 읽기의 여는 시각, 학교 허가에 묶인 링크 가져오기의 닫는 시각(로컬에서 미리 보려고 바꾼 값이 배포로
+# 가지 않게)이다
 DEFAULTS_ONLY = (
     "google_token_url",
     "google_revoke_url",
@@ -108,6 +109,7 @@ DEFAULTS_ONLY = (
     "lms_api_base",
     "api_prefix",
     "notice_link_opens_at",
+    "notice_link_closes_at",
     "lecture_progress_opens_at",
 )
 

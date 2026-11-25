@@ -144,6 +144,8 @@
 >
 > v0.4 보강(11/28, 청년정책 서술형 자격): `POST /internal/jobs/fetch-policies`(04:00 수집)가 `YOUTH_TEXT_ENABLED`를 켰을 때 바뀐 정책의 "추가 자격"·"참여 제한" 글을 모델로 판정할 수 있는 조건으로 옮겨 저장한다(F-11b). 정책마다 수집 실행의 자식 실행(엔진 `extract.youth_text`)이 생기고, 켠 다음 수집은 그 글이 있는 정책을 한 번씩 다시 저장한다(`updated`가 는다). 응답 모양은 그대로다
 >
+> v0.4 보강(12/01, 학교 공지 링크 닫는 시각): `POST /notices/link`는 학교(미디어전략팀)가 허가한 시범 운영이 끝나는 2027-01-01 0시(KST, `NOTICE_LINK_CLOSES_AT`)부터 새로 읽지 않는다(409 `NOTICE_LINK_DISABLED`). 웹은 `NOTICE_FETCH_FAILED`에 공지 화면 캡처 안내를 덧붙인다
+>
 > v0.3 변경: 디자인 초안 대조 반영 — 엔드포인트 6개 추가(동의 기록, 설정, 알림함 목록·읽음, 과목 상세), 피드·상세에 `display_status`·`easy_summary`·`is_new`·조건 문구·`eligibility.summary`, 서류와 플래너 할 일 연결, 포스터 2쪽 PDF, 플래너 마감 `markers`, 상시 공고 `target_date`, LMS 과목 새 자료 수·`course.html_url`, 알림 `link.course_id`, 에러 코드 4개(`CONSENT_REQUIRED`·`PAGE_LIMIT_EXCEEDED`·`DB_UNAVAILABLE`·`INTERNAL_ERROR`)
 >
 > v0.2 변경: 강의자료 API를 구간 요약 + 선택 구간 번역 구조로 변경, 분량 상한을 토큰 기준으로 변경
@@ -861,6 +863,7 @@ lms_module_item_id: (선택) uuid — 새 자료 알림에서 넘어온 경우
 - 가져온 공고는 학교 공지라 로그인한 모든 학생에게 보인다(5장 공개 범위). 판정은 각자 피드·상세를 열 때 한다
 - 끄는 스위치: 서버 설정 `NOTICE_LINK_ENABLED`가 false면 새로 읽지 않고 `409 NOTICE_LINK_DISABLED`("지금은 학교 공지 링크를 받지 않아요. 포스터로 올려 주세요.")다. 이미 가져온 공지는 그대로 200 `existing`이다(학교 사이트에 묻지 않는다). 학교가 멈춰 달라고 할 때 쓴다
 - 여는 시각: 이 기능을 적은 처리방침 v0.2가 시행되는 2026-11-12 0시(KST, 설정 `NOTICE_LINK_OPENS_AT`의 기본값)부터 새로 읽는다. 그 전에는 같은 `409 NOTICE_LINK_DISABLED`이고 문구는 "학교 공지 링크는 11월 12일부터 받아요. 그 전에는 포스터로 올려 주세요."다(이미 가져온 공지는 200 `existing`)
+- 닫는 시각: 학교(미디어전략팀)가 허가한 시범 운영이 12/31까지라 2027-01-01 0시(KST, 설정 `NOTICE_LINK_CLOSES_AT`의 기본값)부터 새로 읽지 않는다. 같은 `409 NOTICE_LINK_DISABLED`이고 문구는 "학교 공지 링크는 12월 31일까지 받았어요. 공지 화면을 캡처해 올려 주세요."다(이미 가져온 공지는 200 `existing`). deploy는 이 값을 옮기지 않는다
 
 완료 시 `GET /runs/{run_id}`의 `result`:
 
@@ -1604,7 +1607,7 @@ P1 축소판이다. **글자가 있는 PDF**만 요약하고, 뽑은 글이 토�
 | `SEOUL_NOTICE` | 422 | 서울캠퍼스 공지라 가져오지 않음(이미 숨긴 공지면 바로, 처음 읽은 공지면 실행 결과의 error로) | 입력 칸 아래 안내 |
 | `NOTICE_NOT_FOUND` · `NOT_NOTICE_PAGE` | 404 · 422 | 학교 사이트에 그 글이 없음 · 공지 글 페이지가 아님(실행 결과의 error로 전달) | 입력 칸 아래 안내 |
 | `NOTICE_FETCH_FAILED` | 502 | 학교 사이트가 공지나 첨부를 잠시 주지 못함(실행 결과의 error로 전달) | 잠시 후 다시 붙이기 |
-| `NOTICE_LINK_DISABLED` | 409 | 서버가 학교 공지 링크 읽기를 꺼 둠(`NOTICE_LINK_ENABLED=false`) 또는 여는 시각(처리방침 v0.2 시행, 11/12 0시 KST) 전 | 입력 칸 아래 안내 |
+| `NOTICE_LINK_DISABLED` | 409 | 서버가 학교 공지 링크 읽기를 꺼 둠(`NOTICE_LINK_ENABLED=false`) 또는 여는 시각(처리방침 v0.2 시행, 11/12 0시 KST) 전·닫는 시각(학교 허가 12/31까지, 1/1 0시 KST) 뒤 | 입력 칸 아래 안내 |
 | `REPORT_NOT_ALLOWED` · `ALREADY_REPORTED` | 400 · 409 | 신고 불가·중복 신고 (P1, 신고와 함께) | 토스트 |
 | `NOT_ELIGIBLE` | 409 | 부적격 공고 준비하기 | "그래도 준비하기" 확인 |
 | `DEADLINE_PASSED` | 409 | 마감이 지난 공고 준비하기 | 안내 문구 |

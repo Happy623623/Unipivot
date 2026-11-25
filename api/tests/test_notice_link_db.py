@@ -98,8 +98,8 @@ def no_requirements() -> Any:
 
 @pytest.fixture
 def settings(settings: Settings) -> Settings:
-    """링크 가져오기를 연 서버. 여는 시각은 test_notice_link_api.py가 본다."""
-    return settings.model_copy(update={"notice_link_opens_at": None})
+    """링크 가져오기를 연 서버. 여는 시각·닫는 시각은 test_notice_link_api.py가 본다."""
+    return settings.model_copy(update={"notice_link_opens_at": None, "notice_link_closes_at": None})
 
 
 class WatchedGate(LinkGate):
