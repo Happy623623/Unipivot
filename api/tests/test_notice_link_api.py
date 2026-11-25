@@ -2,16 +2,17 @@
 실제 실행·학교 사이트·SQL은 test_notice_link_db.py가 본다."""
 
 from contextlib import nullcontext
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.clock import current_time
-from app.config import POLICY_V02_EFFECTIVE, Settings, get_settings
+from app.config import NOTICE_LINK_PERMIT_ENDS, POLICY_V02_EFFECTIVE, Settings, get_settings
 from app.crawl.link import NoticeLink
 from app.crawl.service import DAILY_LINK_LIMIT, SEOUL, Existing, get_notice_link_service
+from app.deploy import plan as deploy_plan
 from tests.conftest import USER_ID
 from tests.school_fakes import permalink, view_link
 
@@ -52,8 +53,9 @@ class FakeLinkService:
 
 @pytest.fixture
 def settings(settings: Settings) -> Settings:
-    """링크 가져오기를 연 서버. 여는 시각은 test_links_open_when_the_policy_takes_effect가 본다."""
-    return settings.model_copy(update={"notice_link_opens_at": None})
+    """링크 가져오기를 연 서버. 여는 시각은 test_links_open_when_the_policy_takes_effect가, 닫는 시각은
+    test_links_close_when_the_school_permit_ends가 본다."""
+    return settings.model_copy(update={"notice_link_opens_at": None, "notice_link_closes_at": None})
 
 
 @pytest.fixture
@@ -191,6 +193,43 @@ def test_links_open_when_the_policy_takes_effect(
     opened = datetime(2026, 11, 11, 15, 0, tzinfo=UTC)  # 11/12 0시 KST
     client.app.dependency_overrides[current_time] = lambda: opened  # type: ignore[attr-defined]
     assert post(client, auth, permalink(ENTRY)).status_code == 202
+
+
+def test_links_close_when_the_school_permit_ends(
+    client: TestClient, auth: dict[str, str], service: FakeLinkService, settings: Settings
+) -> None:
+    """학교(미디어전략팀)가 허가한 시범 운영은 12/31까지다(11/24). 1/1 0시(KST)부터는 새로 읽지 않는다."""
+    permit = settings.model_copy(update={"notice_link_closes_at": NOTICE_LINK_PERMIT_ENDS})
+    client.app.dependency_overrides[get_settings] = lambda: permit  # type: ignore[attr-defined]
+    last = datetime(2026, 12, 31, 14, 59, 59, tzinfo=UTC)  # 12/31 23:59:59 KST
+    client.app.dependency_overrides[current_time] = lambda: last  # type: ignore[attr-defined]
+    assert post(client, auth, permalink(ENTRY)).status_code == 202
+    service.begun.clear()
+    service.since.clear()
+    ended = datetime(2026, 12, 31, 15, 0, tzinfo=UTC)  # 1/1 0시 KST
+    client.app.dependency_overrides[current_time] = lambda: ended  # type: ignore[attr-defined]
+    late = post(client, auth, permalink(ENTRY))
+    assert late.status_code == 409
+    error = late.json()["error"]
+    assert (error["code"], error["message"]) == (
+        "NOTICE_LINK_DISABLED",
+        "학교 공지 링크는 12월 31일까지 받았어요. 공지 화면을 캡처해 올려 주세요.",
+    )
+    assert service.begun == [] and service.since == []  # 학교에 묻지 않고 하루 한도도 쓰지 않는다
+    service.found["119702"] = Existing("00000000-0000-4000-8000-0000000000c1", False, "제목")
+    existing = post(client, auth, permalink(ENTRY))  # 이미 가져온 공지는 닫은 뒤에도 준다
+    assert existing.status_code == 200 and existing.json()["status"] == "existing"
+
+
+def test_the_close_time_defaults_to_the_end_of_the_school_permit() -> None:
+    """배포는 이 값을 옮기지 않으니(DEFAULTS_ONLY) 기본값이 곧 운영 값이다. 시간대 없이 적으면 KST로 본다."""
+    assert Settings.model_fields["notice_link_closes_at"].default == datetime(
+        2027, 1, 1, tzinfo=timezone(timedelta(hours=9))
+    )
+    naive = Settings(_env_file=None, notice_link_closes_at="2026-12-01T00:00:00")  # type: ignore[call-arg]
+    assert naive.notice_link_closes_at == datetime(2026, 11, 30, 15, 0, tzinfo=UTC)
+    # 로컬에서 미리 보려고 바꾼 값이 배포로 가지 않는다
+    assert "notice_link_closes_at" in deploy_plan.DEFAULTS_ONLY
 
 
 def test_a_server_without_a_model_starts_nothing(

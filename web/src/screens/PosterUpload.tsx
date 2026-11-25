@@ -52,11 +52,14 @@ const READ_FAILED = "글자를 읽지 못했어요. 포스터 전체가 보이�
 const UPLOAD_FAILED = "파일을 올리지 못했어요. 잠시 후 다시 시도해 주세요";
 // 화면이 기다리는 60초를 넘겼다. 실행은 아직 돌고 있어서 실패가 아니다
 const STILL_READING = "포스터를 아직 읽고 있어요. 조금 뒤에 다시 올려 주세요";
-// 학교 공지 링크를 꺼 둔 동안(NOTICE_LINK_ENABLED)은 링크 대신 공지 화면을 올리라고 안내한다
+// 학교 공지 링크를 켜면(NOTICE_LINK_ENABLED) 링크와 공지 화면 캡처 두 길이 다 있다. 끄면 공지 화면을 올리라고 안내한다
 const SUBTITLE = NOTICE_LINK_ENABLED
-  ? "학교 공지 링크를 붙이거나 포스터를 올리면 AI가 제목, 마감일, 지원 조건을 정리해요."
+  ? "학교 공지 링크를 붙이거나 공지 화면·포스터를 올리면 AI가 제목, 마감일, 지원 조건을 정리해요."
   : "학교 공지 화면이나 포스터를 올리면 AI가 제목, 마감일, 지원 조건을 정리해요.";
 const LINK_FAILED = "공지를 가져오지 못했어요. 잠시 후 다시 붙여 주세요";
+// 학교 사이트가 공지를 내주지 않을 때(NOTICE_FETCH_FAILED — 대표웹의 Cloudflare 브라우저 확인 403도 여기로 온다)
+// 다시 붙여도 같을 수 있다. 바로 아래 바로가기로 같은 공지를 올리는 길을 알린다
+const SITE_FAILED_HINT = "계속 안 되면 아래 '한양대 공지사항 열기'로 공지를 열어 화면을 캡처해 올려 주세요.";
 // 화면이 기다리는 시간을 넘겼다. 실행은 계속 돌고, 끝나면 같은 주소를 다시 붙일 때 바로 열린다
 const STILL_LINKING = "공지를 아직 정리하고 있어요. 잠시 뒤 같은 주소를 다시 붙이면 바로 열려요";
 const REGISTER_FAILED = "공고를 등록하지 못했어요. 잠시 후 다시 시도해 주세요";
@@ -175,10 +178,12 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
     if (read.error || !read.value) {
       // 실패 이유는 입력 칸 아래에 둔다. 주소를 고쳐 다시 붙이면 된다
       const timedOut = read.error instanceof ApiError && read.error.code === "RUN_TIMEOUT";
+      const siteFailed = read.error instanceof ApiError && read.error.code === "NOTICE_FETCH_FAILED";
+      const reason = fieldErrors(read.error).url ?? errorMessage(read.error, LINK_FAILED);
       setLinkProblem(
         timedOut
           ? { tone: "info", text: STILL_LINKING }
-          : { tone: "error", text: fieldErrors(read.error).url ?? errorMessage(read.error, LINK_FAILED) },
+          : { tone: "error", text: siteFailed ? `${reason} ${SITE_FAILED_HINT}` : reason },
       );
       setStatus("idle");
       return;
@@ -295,7 +300,8 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
       <PosterFileInputs fileRef={fileInputRef} cameraRef={cameraInputRef} onPick={analyze} />
       {status === "idle" && (
         <>
-          {NOTICE_LINK_ENABLED ? (
+          {/* 링크 칸은 켰을 때만, 학교 공지사항 바로가기(공지 화면 캡처)는 늘 둔다 */}
+          {NOTICE_LINK_ENABLED && (
             <NoticeLinkForm
               url={linkUrl}
               onUrlChange={setLinkUrl}
@@ -303,9 +309,8 @@ export default function PosterUpload({ navigate }: PosterUploadProps) {
               problem={linkProblem}
               inputRef={linkInputRef}
             />
-          ) : (
-            <SchoolNoticeShortcut />
           )}
+          <SchoolNoticeShortcut />
           <PosterDropzone
             onDropFile={analyze}
             onChooseFile={() => fileInputRef.current?.click()}

@@ -4,7 +4,7 @@
 뒤에서 돈다(app/crawl/service.py). 가져온 공고는 학교 공지라 모든 학생에게 보인다.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response
@@ -28,6 +28,11 @@ def not_yet(opens: datetime) -> str:
     return f"학교 공지 링크는 {day.month}월 {day.day}일부터 받아요. 그 전에는 포스터로 올려 주세요."
 
 
+def closed(closes: datetime) -> str:
+    last = (closes - timedelta(microseconds=1)).astimezone(KST)  # 닫는 시각 바로 전날이 마지막 날
+    return f"학교 공지 링크는 {last.month}월 {last.day}일까지 받았어요. 공지 화면을 캡처해 올려 주세요."
+
+
 @router.post(
     "/link",
     response_model=NoticeLinkStarted,
@@ -45,7 +50,8 @@ async def link_notice(
 
     이미 가져온 공지면 학교 서버에 묻지 않고 200과 그 공고를 준다(`existing`). 같은 공지를 이미 읽고 있으면
     200과 그 실행을 준다. 새로 읽으면 202다. 하루 한도는 새로 읽는 것만 센다.
-    `NOTICE_LINK_ENABLED`를 끄거나 여는 시각(`NOTICE_LINK_OPENS_AT`, 처리방침 v0.2 시행) 전이면 새로 읽지 않는다
+    `NOTICE_LINK_ENABLED`를 끄거나 여는 시각(`NOTICE_LINK_OPENS_AT`, 처리방침 v0.2 시행) 전이거나 닫는 시각
+    (`NOTICE_LINK_CLOSES_AT`, 학교가 허가한 시범 운영 12/31까지의 다음 날 0시) 뒤면 새로 읽지 않는다
     (409 NOTICE_LINK_DISABLED, 이미 가져온 공지는 그대로 준다). 모델 설정이 없는 서버는 502 LLM_ERROR다(실행을
     만들지 않는다). 같은 공지를 읽는 중인지와 하루 한도는 한 요청씩 보고 실행을 만든다(동시에 보내도 넘지 않는다).
     """
@@ -67,6 +73,9 @@ async def link_notice(
     opens = settings.notice_link_opens_at
     if opens is not None and now < opens:  # 이 기능을 적은 처리방침이 시행되기 전
         raise ApiError(409, "NOTICE_LINK_DISABLED", not_yet(opens))
+    closes = settings.notice_link_closes_at
+    if closes is not None and now >= closes:  # 학교가 허가한 시범 운영 기간이 끝났다
+        raise ApiError(409, "NOTICE_LINK_DISABLED", closed(closes))
     if not service.has_model():
         raise ApiError(502, "LLM_ERROR", NO_MODEL)
     async with service.admission():

@@ -3,7 +3,7 @@ import { ButtonLink } from "@/components/Button";
 // 한양대 공지사항(전체) 목록. 학생이 자기 브라우저로 열어 공지를 찾는다
 export const SCHOOL_NOTICE_BOARD_URL = "https://www.hanyang.ac.kr/notice_all";
 
-// 학교 공지 링크 가져오기(B안)를 꺼 둔 동안 링크 칸 자리에 둔다(noticeClient.ts의 NOTICE_LINK_ENABLED).
+// 공고 등록에 늘 둔다 — 학교 공지 링크 칸(B안)을 켜면 그 아래, 끄면 맨 위(noticeClient.ts의 NOTICE_LINK_ENABLED).
 // 학생이 학교 공지사항을 새 탭으로 열어 공지를 찾고, 그 화면을 캡처해 아래 업로드로 올린다 — 포스터와 같은 길이라
 // 올린 학생의 피드에만 보인다. 서버는 학교 사이트에 묻지 않는다(링크는 학생 브라우저가 연다)
 export default function SchoolNoticeShortcut() {
